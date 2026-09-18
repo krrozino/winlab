@@ -595,19 +595,24 @@ liberar-wallpaper.ps1
   Libera somente a troca de wallpaper por ${config.wallpaperUnlockMinutes} minutos.
   O bloqueio volta automaticamente.
 
+verify.ps1
+  Verifica Windows, AppLocker, contas e caminhos conhecidos dos aplicativos antes do setup.
+
 config.json
-  Configuração usada para gerar este pacote.
+  Configuração versionada usada para gerar este pacote.
+  Pode ser importada novamente no WinLab.
 
 FLUXO RECOMENDADO
 -----------------
-1. Gere inicialmente em modo AUDITORIA.
-2. Execute setup.ps1 como administrador.
-3. Reinicie.
-4. Use normalmente a conta ${config.studentUser}.
-5. Execute audit.ps1 e confira os eventos.
-6. Ajuste a allowlist no WinLab.
-7. Gere novamente em modo BLOQUEIO ATIVO.
-8. Execute o novo setup.ps1.
+1. Execute verify.ps1 como administrador e confira a máquina.
+2. Gere inicialmente em modo AUDITORIA.
+3. Execute setup.ps1 como administrador.
+4. Reinicie.
+5. Use normalmente a conta ${config.studentUser}.
+6. Execute audit.ps1 e confira os eventos.
+7. Ajuste a allowlist no WinLab.
+8. Gere novamente em modo BLOQUEIO ATIVO.
+9. Execute o novo setup.ps1.
 
 Nenhuma senha é armazenada nos arquivos.
 `;
