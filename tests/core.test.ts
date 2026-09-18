@@ -5,6 +5,7 @@ import { defaultConfig } from "../src/lib/default-config";
 import { parseConfigJson, serializeConfig } from "../src/lib/config-io";
 import {
   generateConfigJson,
+  generateMaintenanceScript,
   generateSetupScript,
   generateVerifyScript
 } from "../src/lib/generator";
@@ -185,4 +186,95 @@ test("local account management permission survives config import", () => {
   );
 
   assert.equal(imported.allowLocalAccountManagement, true);
+});
+
+
+test("web URL policies generate Chrome and Edge lists", () => {
+  const script = generateSetupScript({
+    ...defaultConfig,
+    browserUrlMode: "AllowListOnly",
+    allowedUrls: ["microlins.com.br", "office.com"]
+  });
+
+  assert.match(script, /Google\\Chrome/);
+  assert.match(script, /Microsoft\\Edge/);
+  assert.match(script, /URLBlocklist/);
+  assert.match(script, /URLAllowlist/);
+  assert.match(script, /microlins\.com\.br/);
+});
+
+test("usb defaults allow files but block execution through AppLocker", () => {
+  const script = generateSetupScript(defaultConfig);
+
+  assert.equal(defaultConfig.blockUsbRead, false);
+  assert.equal(defaultConfig.blockUsbWrite, false);
+  assert.equal(defaultConfig.blockUsbExecute, true);
+  assert.match(script, /%HOT%/);
+  assert.match(script, /%REMOVABLE%/);
+  assert.match(script, /Deny_Read/);
+  assert.match(script, /Deny_Write/);
+});
+
+test("maintenance defaults to report-only and protects configured users", () => {
+  const script = generateMaintenanceScript(defaultConfig);
+
+  assert.equal(defaultConfig.profileCleanupMode, "ReportOnly");
+  assert.match(script, /Mode = "ReportOnly"/);
+  assert.match(script, /Get-CimInstance Win32_UserProfile/);
+  assert.match(script, /protectedSids/);
+  assert.match(script, /maintenance-latest\.json/);
+});
+
+test("new 0.5 settings survive config import", () => {
+  const imported = parseConfigJson(
+    JSON.stringify({
+      ...defaultConfig,
+      browserUrlMode: "BlockList",
+      blockedUrls: ["youtube.com"],
+      allowedUrls: ["youtube.com/curso"],
+      blockUsbWrite: true,
+      profileCleanupMode: "Delete",
+      profileCleanupDays: 45,
+      storageWarningFreePercent: 15
+    })
+  );
+
+  assert.equal(imported.browserUrlMode, "BlockList");
+  assert.deepEqual(imported.blockedUrls, ["youtube.com"]);
+  assert.equal(imported.blockUsbWrite, true);
+  assert.equal(imported.profileCleanupMode, "Delete");
+  assert.equal(imported.profileCleanupDays, 45);
+  assert.equal(imported.storageWarningFreePercent, 15);
+});
+
+test("inventory parser accepts optional disk storage data", () => {
+  const inventory = parseInventoryJson(
+    JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: "",
+      computerName: "LAB-STORAGE",
+      windows: {
+        caption: "Windows 11 Pro",
+        version: "10.0",
+        buildNumber: "26100",
+        architecture: "64 bits"
+      },
+      appLocker: {
+        available: true,
+        applicationIdentityStatus: "Running"
+      },
+      storage: {
+        systemDrive: "C:",
+        sizeGB: 238.5,
+        freeGB: 51.2,
+        freePercent: 21.5
+      },
+      localUsers: [],
+      knownApps: [],
+      installedApps: []
+    })
+  );
+
+  assert.equal(inventory.storage?.systemDrive, "C:");
+  assert.equal(inventory.storage?.freePercent, 21.5);
 });
