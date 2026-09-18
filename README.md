@@ -2,36 +2,63 @@
 
 Gerador de configurações PowerShell para preparar computadores Windows usados em escolas, laboratórios, totens e pequenas empresas.
 
-O WinLab não armazena senhas. A interface gera um pacote portátil que pode ser levado em um pendrive e executado localmente como administrador.
+O WinLab gera os scripts no próprio navegador. Senhas não são armazenadas pelo projeto.
 
-## MVP 0.3
+## MVP 0.4
+
+O WinLab agora possui um fluxo de **inventário da máquina**.
+
+1. Baixe `scan-pc.ps1` pelo WinLab.
+2. Execute o scanner no computador Windows.
+3. Ele cria `winlab-inventory-NOMEDOPC.json`.
+4. Importe o JSON no WinLab.
+5. O app mostra a máquina e sugere aplicativos detectados para a allowlist.
+
+### O inventário coleta
+
+- nome do computador;
+- edição, versão, build e arquitetura do Windows;
+- disponibilidade do AppLocker;
+- estado do serviço Application Identity;
+- nomes e estado das contas locais;
+- quais contas locais são administradoras;
+- aplicativos conhecidos encontrados em caminhos padrão;
+- lista de programas registrados no Windows.
+
+### O inventário não coleta
+
+- senhas;
+- documentos;
+- fotos;
+- conteúdo de arquivos;
+- histórico do navegador;
+- cookies;
+- mensagens;
+- credenciais.
+
+O JSON só é processado localmente pela interface do WinLab.
+
+## Funcionalidades acumuladas
 
 - Presets Microlins, Escola, Empresa e Totem
-- Importação de `config.json` do WinLab 0.2 e 0.3
-- `schemaVersion` para evolução segura do formato de configuração
-- Revisão de riscos antes de gerar o pacote
-- Catálogo ampliado de aplicativos:
-  - Chrome
-  - Edge
-  - Firefox
-  - Word
-  - Excel
-  - PowerPoint
-  - Power BI
-  - Adobe Acrobat / Reader
-  - Visual Studio Code
-  - VLC
-- Caminhos personalizados com alerta para diretórios graváveis pelo usuário
+- Importação de `config.json`
+- Formato versionado com `schemaVersion`
+- Revisão de riscos antes da geração
+- Catálogo de aplicativos conhecidos
 - AppLocker em `AuditOnly` ou `Enabled`
-- Políticas do Chrome aplicadas somente ao usuário restrito
-- Conta administrativa fora das restrições por usuário
+- Conta administrativa fora das políticas por usuário
+- Políticas do Chrome somente para o usuário restrito
 - Bloqueio opcional de MSI, Store/Appx, CMD, PowerShell e Regedit
-- Controle de wallpaper, ponteiro e esquema de sons
-- Liberação temporária do wallpaper com rebloqueio automático
-- `verify.ps1` para validar o PC antes da implantação
-- `audit.ps1` para revisar eventos do AppLocker
-- Testes automatizados do importador e dos geradores
-- ZIP criado localmente no navegador, sem backend
+- Wallpaper, ponteiro e sons controláveis
+- Liberação temporária de wallpaper
+- `verify.ps1`
+- `audit.ps1`
+- `scan-pc.ps1`
+- Scanner + importação de inventário
+- Sugestões de allowlist a partir da máquina
+- Busca nos programas instalados
+- ZIP criado localmente no navegador
+- Testes automatizados + CI
 
 ## Pacote gerado
 
@@ -40,6 +67,7 @@ setup.ps1
 rollback.ps1
 audit.ps1
 verify.ps1
+scan-pc.ps1
 liberar-wallpaper.ps1
 config.json
 README.txt
@@ -47,15 +75,33 @@ README.txt
 
 ## Fluxo recomendado
 
-1. Configure o perfil no WinLab.
-2. Gere o ZIP em `AuditOnly`.
-3. Rode `verify.ps1` no PC piloto.
-4. Rode `setup.ps1`.
-5. Reinicie e use a conta restrita normalmente.
-6. Rode `audit.ps1`.
-7. Ajuste a allowlist se necessário.
-8. Gere novamente com `Enabled`.
-9. Só depois replique para as demais máquinas.
+```text
+PC piloto
+   ↓
+scan-pc.ps1
+   ↓
+winlab-inventory.json
+   ↓
+Importar no WinLab
+   ↓
+Revisar apps / allowlist
+   ↓
+Gerar em AuditOnly
+   ↓
+verify.ps1
+   ↓
+setup.ps1
+   ↓
+Uso real
+   ↓
+audit.ps1
+   ↓
+Ajustes
+   ↓
+Enabled
+   ↓
+Replicar
+```
 
 ## Desenvolvimento
 
@@ -82,6 +128,9 @@ src/
     ├── config-io.ts
     ├── default-config.ts
     ├── generator.ts
+    ├── inventory-script.ts
+    ├── inventory-types.ts
+    ├── inventory.ts
     ├── presets.ts
     ├── review.ts
     ├── security.ts
@@ -94,9 +143,9 @@ tests/
 
 ## Próximos passos
 
-- importar relatórios do `verify.ps1`
-- interpretar automaticamente os logs do AppLocker
-- companion app para detectar softwares instalados
-- regras AppLocker por publisher/assinatura quando apropriado
-- presets personalizados salvos no navegador
-- testes em matriz real de Windows 10/11
+- permitir transformar um programa detectado fora do catálogo em regra customizada;
+- importar e interpretar automaticamente os logs do AppLocker;
+- sugerir regras por publisher/assinatura;
+- presets personalizados salvos localmente;
+- companion app opcional para fluxo de inventário ainda mais simples;
+- testes em matriz real Windows 10/11.
