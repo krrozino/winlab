@@ -3,6 +3,15 @@
 import { useMemo, useState } from "react";
 import { APP_CATALOG } from "@/lib/apps";
 import { parseConfigJson } from "@/lib/config-io";
+import {
+  applyInventorySuggestions,
+  detectedKnownApps,
+  findPotentiallyRelevantInstalledApps,
+  parseInventoryJson,
+  suggestedAllowedApps
+} from "@/lib/inventory";
+import type { PcInventory } from "@/lib/inventory-types";
+import { generateInventoryScannerScript } from "@/lib/inventory-script";
 import { getConfigReview } from "@/lib/review";
 import { getPreset, presets } from "@/lib/presets";
 import { Config, AllowedAppId, PresetId } from "@/lib/types";
@@ -36,9 +45,17 @@ export default function Home() {
   const [activePreset, setActivePreset] = useState<PresetId | null>("microlins");
   const [newPath, setNewPath] = useState("");
   const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [inventory, setInventory] = useState<PcInventory | null>(null);
+  const [inventoryStatus, setInventoryStatus] = useState<string | null>(null);
+  const [inventorySearch, setInventorySearch] = useState("");
 
   const setupScript = useMemo(() => generateSetupScript(config), [config]);
   const reviewItems = useMemo(() => getConfigReview(config), [config]);
+  const inventoryDetectedApps = inventory ? detectedKnownApps(inventory) : [];
+  const inventorySuggestions = inventory ? suggestedAllowedApps(inventory, config) : [];
+  const inventoryInstalledApps = inventory
+    ? findPotentiallyRelevantInstalledApps(inventory, inventorySearch)
+    : [];
   const riskyCustomPaths = config.customAllowedPaths
     .map((path) => ({ path, warning: pathRisk(path) }))
     .filter((item) => item.warning);
@@ -88,6 +105,27 @@ export default function Home() {
     }
   }
 
+  async function importInventory(file: File | undefined) {
+    if (!file) return;
+
+    try {
+      const parsed = parseInventoryJson(await file.text());
+      setInventory(parsed);
+      setInventoryStatus(`Inventário carregado: ${parsed.computerName}`);
+    } catch (error) {
+      setInventory(null);
+      setInventoryStatus(
+        error instanceof Error ? error.message : "Não foi possível importar o inventário."
+      );
+    }
+  }
+
+  function applyDetectedApps() {
+    if (!inventory) return;
+    setActivePreset(null);
+    setConfig((current) => applyInventorySuggestions(current, inventory));
+  }
+
   function exportPackage() {
     const blob = createZip([
       { name: "setup.ps1", content: generateSetupScript(config) },
@@ -95,6 +133,7 @@ export default function Home() {
       { name: "audit.ps1", content: generateAuditScript(config) },
       { name: "liberar-wallpaper.ps1", content: generateUnlockWallpaperScript(config) },
       { name: "verify.ps1", content: generateVerifyScript(config) },
+      { name: "scan-pc.ps1", content: generateInventoryScannerScript() },
       { name: "config.json", content: generateConfigJson(config) },
       { name: "README.txt", content: generateReadme(config) }
     ]);
@@ -113,7 +152,7 @@ export default function Home() {
     <main>
       <header className="hero">
         <div>
-          <p className="eyebrow">WinLab Configurator · MVP 0.3</p>
+          <p className="eyebrow">WinLab Configurator · MVP 0.4</p>
           <h1>Configure o Windows sem configurar máquina por máquina.</h1>
           <p className="subtitle">
             Escolha um preset, ajuste as políticas e gere um pacote portátil com
@@ -153,6 +192,150 @@ export default function Home() {
           />
         </label>
         {importStatus && <p className="importStatus">{importStatus}</p>}
+      </section>
+
+      <section className="inventoryPanel">
+        <div className="inventoryIntro">
+          <div>
+            <p className="eyebrow">Analisar este PC</p>
+            <h2>Descubra o que já existe na máquina antes de configurar.</h2>
+            <p>
+              Baixe o scanner, execute no Windows e importe o JSON gerado. O WinLab
+              usa o inventário somente no seu navegador.
+            </p>
+          </div>
+
+          <div className="inventoryActions">
+            <button
+              className="secondary"
+              onClick={() =>
+                downloadText("scan-pc.ps1", generateInventoryScannerScript())
+              }
+            >
+              Baixar scan-pc.ps1
+            </button>
+
+            <label className="importButton">
+              Importar inventário
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={(event) => importInventory(event.target.files?.[0])}
+              />
+            </label>
+          </div>
+        </div>
+
+        {inventoryStatus && <p className="importStatus">{inventoryStatus}</p>}
+
+        {inventory && (
+          <div className="inventoryResults">
+            <div className="machineSummary">
+              <div>
+                <span>Computador</span>
+                <strong>{inventory.computerName}</strong>
+              </div>
+              <div>
+                <span>Windows</span>
+                <strong>{inventory.windows.caption || "Não identificado"}</strong>
+                <small>Build {inventory.windows.buildNumber || "?"}</small>
+              </div>
+              <div>
+                <span>AppLocker</span>
+                <strong>{inventory.appLocker.available ? "Disponível" : "Não detectado"}</strong>
+                <small>
+                  Application Identity: {inventory.appLocker.applicationIdentityStatus ?? "?"}
+                </small>
+              </div>
+              <div>
+                <span>Programas registrados</span>
+                <strong>{inventory.installedApps.length}</strong>
+              </div>
+            </div>
+
+            <div className="inventoryColumns">
+              <div>
+                <div className="sectionHeading">
+                  <div>
+                    <h3>Apps reconhecidos</h3>
+                    <p>{inventoryDetectedApps.length} encontrado(s) no catálogo.</p>
+                  </div>
+                  {inventorySuggestions.length > 0 && (
+                    <button className="secondary" onClick={applyDetectedApps}>
+                      Adicionar {inventorySuggestions.length} à allowlist
+                    </button>
+                  )}
+                </div>
+
+                <div className="detectedApps">
+                  {inventoryDetectedApps.length ? (
+                    inventoryDetectedApps.map((app) => (
+                      <div className="detectedApp" key={app.id}>
+                        <div>
+                          <strong>{app.label}</strong>
+                          <small>{app.path ?? "Caminho não informado"}</small>
+                        </div>
+                        <span
+                          className={
+                            config.allowedApps.includes(app.id)
+                              ? "status allowed"
+                              : "status detected"
+                          }
+                        >
+                          {config.allowedApps.includes(app.id)
+                            ? "Permitido"
+                            : "Detectado"}
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="muted">Nenhum app do catálogo foi detectado.</p>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <div className="sectionHeading">
+                  <div>
+                    <h3>Programas instalados</h3>
+                    <p>Consulta do registro do Windows.</p>
+                  </div>
+                </div>
+
+                <input
+                  className="inventorySearch"
+                  placeholder="Buscar programa ou fabricante..."
+                  value={inventorySearch}
+                  onChange={(event) => setInventorySearch(event.target.value)}
+                />
+
+                <div className="installedApps">
+                  {inventoryInstalledApps.map((app) => (
+                    <div className="installedApp" key={`${app.name}-${app.version ?? ""}`}>
+                      <strong>{app.name}</strong>
+                      <span>
+                        {[app.version, app.publisher].filter(Boolean).join(" · ") || "Sem detalhes"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="localUsers">
+              <h3>Contas locais</h3>
+              <div className="userChips">
+                {inventory.localUsers.map((user) => (
+                  <span key={user.name} className={user.isAdministrator ? "userChip admin" : "userChip"}>
+                    {user.name}
+                    {user.isAdministrator ? " · admin" : ""}
+                    {!user.enabled ? " · desativada" : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       <div className="grid">
@@ -304,6 +487,11 @@ export default function Home() {
             value={config.blockRegedit}
             onChange={(value) => set("blockRegedit", value)}
           />
+          <Toggle
+            label="Permitir adicionar contas locais (continua exigindo credencial de administrador)"
+            value={config.allowLocalAccountManagement}
+            onChange={(value) => set("allowLocalAccountManagement", value)}
+          />
         </section>
 
         <section className="panel">
@@ -400,6 +588,7 @@ export default function Home() {
             <File name="audit.ps1" description="Lê os eventos do AppLocker dos últimos 7 dias." />
             <File name="liberar-wallpaper.ps1" description="Libera o wallpaper e agenda o rebloqueio." />
             <File name="verify.ps1" description="Verifica Windows, AppLocker, contas e caminhos dos aplicativos." />
+            <File name="scan-pc.ps1" description="Gera inventário JSON para importar novamente no WinLab." />
             <File name="config.json" description="Permite reproduzir a mesma configuração." />
             <File name="README.txt" description="Instruções para o técnico." />
           </div>

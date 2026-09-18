@@ -25,6 +25,13 @@ export function getConfigReview(config: Config): ReviewItem[] {
       .join(", ") || "nenhum"}.`
   });
 
+  items.push({
+    level: "info",
+    text: config.allowLocalAccountManagement
+      ? "A página de Contas > Outros usuários ficará disponível para o usuário restrito. Criar/remover contas continua exigindo privilégios administrativos do Windows."
+      : "A página de Contas > Outros usuários ficará oculta para o usuário restrito."
+  });
+
   for (const path of config.customAllowedPaths) {
     const risk = pathRisk(path);
     if (risk) {

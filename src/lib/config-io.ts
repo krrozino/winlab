@@ -67,6 +67,10 @@ export function parseConfigJson(raw: string): Config {
     blockCmd: bool(parsed.blockCmd, defaultConfig.blockCmd),
     blockPowerShell: bool(parsed.blockPowerShell, defaultConfig.blockPowerShell),
     blockRegedit: bool(parsed.blockRegedit, defaultConfig.blockRegedit),
+    allowLocalAccountManagement: bool(
+      parsed.allowLocalAccountManagement,
+      defaultConfig.allowLocalAccountManagement
+    ),
 
     blockChromeExtensions: bool(
       parsed.blockChromeExtensions,

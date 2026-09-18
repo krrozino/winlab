@@ -13,6 +13,7 @@ export const defaultConfig: Config = {
   blockCmd: true,
   blockPowerShell: true,
   blockRegedit: true,
+  allowLocalAccountManagement: false,
 
   blockChromeExtensions: true,
   blockChromeGuest: true,

@@ -110,6 +110,7 @@ $BlockStoreApps = ${psBool(config.blockStoreApps)}
 $BlockCmd = ${psBool(config.blockCmd)}
 $BlockPowerShell = ${psBool(config.blockPowerShell)}
 $BlockRegedit = ${psBool(config.blockRegedit)}
+$AllowLocalAccountManagement = ${psBool(config.allowLocalAccountManagement)}
 
 $BlockChromeExtensions = ${psBool(config.blockChromeExtensions)}
 $BlockChromeGuest = ${psBool(config.blockChromeGuest)}
@@ -169,6 +170,22 @@ function Set-StudentChromePolicies {
             $extensions = Join-Path $base "ExtensionInstallBlocklist"
             New-Item -Path $extensions -Force | Out-Null
             New-ItemProperty -Path $extensions -Name "1" -PropertyType String -Value "*" -Force | Out-Null
+        }
+    }
+}
+
+function Set-StudentAccountPolicies {
+    Invoke-WithUserHive -UserName $Aluno -Action {
+        param($sid)
+
+        $explorer = "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+        New-Item -Path $explorer -Force | Out-Null
+
+        if ($AllowLocalAccountManagement) {
+            Remove-ItemProperty -Path $explorer -Name SettingsPageVisibility -ErrorAction SilentlyContinue
+        }
+        else {
+            New-ItemProperty -Path $explorer -Name SettingsPageVisibility -PropertyType String -Value "hide:otherusers" -Force | Out-Null
         }
     }
 }
@@ -303,6 +320,7 @@ $denyRules
 function Install-WinLabProfile {
     Ensure-Accounts
     Set-StudentChromePolicies
+    Set-StudentAccountPolicies
     Set-StudentPersonalizationPolicies
 
     Backup-AppLocker
@@ -344,6 +362,7 @@ function Remove-StudentPolicies {
         Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization" -Name NoChangingMousePointers -ErrorAction SilentlyContinue
         Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization" -Name NoChangingSoundScheme -ErrorAction SilentlyContinue
         Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\ActiveDesktop" -Name NoChangingWallPaper -ErrorAction SilentlyContinue
+        Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer" -Name SettingsPageVisibility -ErrorAction SilentlyContinue
     }
 }
 
@@ -598,6 +617,11 @@ liberar-wallpaper.ps1
 verify.ps1
   Verifica Windows, AppLocker, contas e caminhos conhecidos dos aplicativos antes do setup.
 
+scan-pc.ps1
+  Gera um inventário JSON local com informações do Windows, contas locais,
+  AppLocker e programas instalados para importar no WinLab.
+  Não coleta senhas, documentos ou histórico do navegador.
+
 config.json
   Configuração versionada usada para gerar este pacote.
   Pode ser importada novamente no WinLab.
@@ -613,6 +637,10 @@ FLUXO RECOMENDADO
 7. Ajuste a allowlist no WinLab.
 8. Gere novamente em modo BLOQUEIO ATIVO.
 9. Execute o novo setup.ps1.
+
+CONTAS LOCAIS
+-------------
+${config.allowLocalAccountManagement ? "A página Contas > Outros usuários fica disponível para a conta restrita. Criar ou remover contas continua exigindo credencial administrativa." : "A página Contas > Outros usuários fica oculta para a conta restrita."}
 
 Nenhuma senha é armazenada nos arquivos.
 `;
