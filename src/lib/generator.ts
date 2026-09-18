@@ -24,7 +24,7 @@ function getAllowedPaths(config: Config) {
   ];
 }
 
-function commonHeader(config: Config, title: string) {
+function commonHeader(config: Config, title: string, parameterBlock = "") {
   return `#requires -version 5.1
 <#
 ${title}
@@ -103,7 +103,7 @@ export function generateSetupScript(config: Config): string {
   const allowedPaths = getAllowedPaths(config);
   const enforcement = config.enforcementMode;
 
-  return `${commonHeader(config, "SETUP")}
+  return `${commonHeader(config, "SETUP", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 $CreateAccounts = ${psBool(config.createAccounts)}
 $BlockInstallers = ${psBool(config.blockInstallers)}
 $BlockStoreApps = ${psBool(config.blockStoreApps)}
@@ -453,7 +453,7 @@ Install-WinLabProfile
 }
 
 export function generateRollbackScript(config: Config): string {
-  return `${commonHeader(config, "ROLLBACK")}
+  return `${commonHeader(config, "ROLLBACK", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 function Remove-StudentPolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
@@ -511,7 +511,7 @@ Write-Host "Reinicie o computador." -ForegroundColor Yellow
 export function generateUnlockWallpaperScript(config: Config): string {
   const minutes = Math.max(5, Math.min(480, Math.round(config.wallpaperUnlockMinutes || 90)));
 
-  return `${commonHeader(config, "LIBERAÇÃO TEMPORÁRIA DE WALLPAPER")}
+  return `${commonHeader(config, "LIBERAÇÃO TEMPORÁRIA DE WALLPAPER", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 $Minutos = ${minutes}
 
 function Set-WallpaperLock {
@@ -703,7 +703,7 @@ Write-Host "Use este relatório antes de ativar o AppLocker em modo Enabled." -F
 }
 
 export function generateMaintenanceScript(config: Config): string {
-  return `${commonHeader(config, "MANUTENÇÃO E LIMPEZA DE PERFIS")}
+  return `${commonHeader(config, "MANUTENÇÃO E LIMPEZA DE PERFIS", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 
 Assert-Administrator
 
