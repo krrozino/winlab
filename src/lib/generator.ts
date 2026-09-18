@@ -702,6 +702,136 @@ Write-Host "Use este relatório antes de ativar o AppLocker em modo Enabled." -F
 `;
 }
 
+export function generateMaintenanceScript(config: Config): string {
+  return `${commonHeader(config, "MANUTENÇÃO E LIMPEZA DE PERFIS")}
+
+Assert-Administrator
+
+$Mode = "${config.profileCleanupMode}"
+$Days = ${config.profileCleanupDays}
+$StorageWarningFreePercent = ${config.storageWarningFreePercent}
+
+function Get-WinLabLastUseTime {
+    param($Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value }
+
+    try {
+        return [Management.ManagementDateTimeConverter]::ToDateTime([string]$Value)
+    }
+    catch {
+        return $null
+    }
+}
+
+$disk = Get-CimInstance Win32_LogicalDisk |
+    Where-Object { $_.DeviceID -eq $env:SystemDrive } |
+    Select-Object -First 1
+
+$freePercent = if ($disk -and $disk.Size -gt 0) {
+    [math]::Round(($disk.FreeSpace / $disk.Size) * 100, 1)
+}
+else {
+    $null
+}
+
+Write-Host "=== WinLab - Manutenção ===" -ForegroundColor Cyan
+Write-Host ("Modo: {0}" -f $Mode)
+Write-Host ("Perfis inativos: {0} dias" -f $Days)
+
+if ($disk) {
+    $freeGb = [math]::Round($disk.FreeSpace / 1GB, 1)
+    $totalGb = [math]::Round($disk.Size / 1GB, 1)
+    Write-Host ("Disco {0}: {1} GB livres de {2} GB ({3}%)" -f $disk.DeviceID, $freeGb, $totalGb, $freePercent)
+
+    if ($freePercent -lt $StorageWarningFreePercent) {
+        Write-Warning ("Espaço livre abaixo do limite configurado de {0}%." -f $StorageWarningFreePercent)
+    }
+}
+
+$protectedSids = @()
+
+foreach ($name in @($Aluno, $Admin)) {
+    $user = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
+    if ($user) {
+        $protectedSids += $user.SID.Value
+    }
+}
+
+$cutoff = (Get-Date).AddDays(-$Days)
+$candidates = @()
+
+foreach ($profile in Get-CimInstance Win32_UserProfile) {
+    if ($profile.Special -or $profile.Loaded) { continue }
+    if (-not $profile.LocalPath -or -not $profile.SID) { continue }
+    if ($protectedSids -contains $profile.SID) { continue }
+    if ($profile.LocalPath -match "\\(Default|Public|defaultuser0)$") { continue }
+
+    $lastUse = Get-WinLabLastUseTime $profile.LastUseTime
+    if ($null -eq $lastUse -or $lastUse -ge $cutoff) { continue }
+
+    $candidates += [PSCustomObject]@{
+        SID = [string]$profile.SID
+        LocalPath = [string]$profile.LocalPath
+        LastUseTime = $lastUse
+    }
+}
+
+Write-Host ""
+Write-Host ("Perfis candidatos: {0}" -f $candidates.Count) -ForegroundColor Yellow
+
+foreach ($profile in $candidates) {
+    Write-Host ("- {0} | último uso: {1}" -f $profile.LocalPath, $profile.LastUseTime)
+}
+
+$deleted = 0
+
+if ($Mode -eq "Delete" -and $candidates.Count -gt 0) {
+    Write-Warning "Modo Delete ativo: perfis candidatos serão removidos. Valide em PC piloto e mantenha backup dos dados necessários."
+
+    foreach ($candidate in $candidates) {
+        $profile = Get-CimInstance Win32_UserProfile |
+            Where-Object { $_.SID -eq $candidate.SID } |
+            Select-Object -First 1
+
+        if ($profile -and -not $profile.Loaded -and -not $profile.Special) {
+            Remove-CimInstance -InputObject $profile
+            $deleted++
+            Write-Host ("Removido: {0}" -f $candidate.LocalPath) -ForegroundColor Green
+        }
+    }
+}
+elseif ($Mode -eq "ReportOnly") {
+    Write-Host "Modo relatório: nenhum perfil foi removido." -ForegroundColor Cyan
+}
+else {
+    Write-Host "Limpeza de perfis desativada." -ForegroundColor DarkGray
+}
+
+$folder = "C:\\ProgramData\\WinLab"
+New-Item -Path $folder -ItemType Directory -Force | Out-Null
+
+$report = [ordered]@{
+    generatedAt = (Get-Date).ToString("o")
+    computerName = $env:COMPUTERNAME
+    mode = $Mode
+    inactiveDays = $Days
+    storageWarningFreePercent = $StorageWarningFreePercent
+    freePercent = $freePercent
+    candidates = @($candidates)
+    deleted = $deleted
+}
+
+$reportPath = Join-Path $folder "maintenance-latest.json"
+$report | ConvertTo-Json -Depth 5 | Set-Content -Path $reportPath -Encoding UTF8
+
+Write-Host ""
+Write-Host ("Relatório salvo em {0}" -f $reportPath) -ForegroundColor Cyan
+`;
+}
+
+
 export function generateConfigJson(config: Config): string {
   return serializeConfig(config);
 }
