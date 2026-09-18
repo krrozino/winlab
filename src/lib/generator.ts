@@ -924,13 +924,19 @@ FLUXO RECOMENDADO
 -----------------
 1. Execute verify.ps1 como administrador e confira a máquina.
 2. Gere inicialmente em modo AUDITORIA.
-3. Execute setup.ps1 como administrador.
-4. Reinicie.
-5. Use normalmente a conta ${config.studentUser}.
-6. Execute audit.ps1 e confira os eventos.
-7. Ajuste a allowlist no WinLab.
-8. Gere novamente em modo BLOQUEIO ATIVO.
-9. Execute o novo setup.ps1.
+3. Execute setup.ps1 SEM -Apply para revisar o plano.
+4. Quando estiver de acordo, execute setup.ps1 -Apply como administrador.
+5. Reinicie.
+6. Use normalmente a conta ${config.studentUser}.
+7. Execute audit.ps1 e confira os eventos.
+8. Ajuste a allowlist no WinLab.
+9. Gere novamente em modo BLOQUEIO ATIVO.
+10. Revise o preview e só então execute o novo setup.ps1 -Apply.
+
+SEGURANÇA DE EXECUÇÃO
+---------------------
+setup.ps1, rollback.ps1 e liberar-wallpaper.ps1 não alteram o Windows sem -Apply.
+maintenance.ps1 pode gerar relatório sem -Apply; exclusões no modo Delete exigem -Apply.
 
 CONTAS LOCAIS
 -------------
