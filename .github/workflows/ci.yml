@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Typecheck and build
+    name: Tests, typecheck and build
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -39,3 +39,31 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  windows-powershell:
+    name: Generated PowerShell on Windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Generate representative WinLab scripts
+        run: npm run fixtures
+
+      - name: Validate with Windows PowerShell 5.1
+        shell: powershell
+        run: .\scripts\validate-generated-powershell.ps1
+
+      - name: Validate syntax with PowerShell 7
+        shell: pwsh
+        run: .\scripts\validate-generated-powershell.ps1 -ParserOnly
