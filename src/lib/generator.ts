@@ -1,27 +1,6 @@
-import { AllowedAppId, Config } from "./types";
-
-const APP_PATHS: Record<AllowedAppId, string[]> = {
-  chrome: [
-    "%PROGRAMFILES%\\Google\\Chrome\\Application\\chrome.exe",
-    "%PROGRAMFILES(X86)%\\Google\\Chrome\\Application\\chrome.exe"
-  ],
-  word: [
-    "%PROGRAMFILES%\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
-    "%PROGRAMFILES(X86)%\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
-  ],
-  excel: [
-    "%PROGRAMFILES%\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
-    "%PROGRAMFILES(X86)%\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
-  ],
-  powerpoint: [
-    "%PROGRAMFILES%\\Microsoft Office\\root\\Office16\\POWERPNT.EXE",
-    "%PROGRAMFILES(X86)%\\Microsoft Office\\root\\Office16\\POWERPNT.EXE"
-  ],
-  powerbi: [
-    "%PROGRAMFILES%\\Microsoft Power BI Desktop\\bin\\PBIDesktop.exe",
-    "%PROGRAMFILES(X86)%\\Microsoft Power BI Desktop\\bin\\PBIDesktop.exe"
-  ]
-};
+import { APP_CATALOG } from "./apps";
+import { serializeConfig } from "./config-io";
+import { Config } from "./types";
 
 function psBool(value: boolean) {
   return value ? "$true" : "$false";
@@ -40,7 +19,7 @@ ${values.map((value) => `    ${psString(value)}`).join(",\n")}
 
 function getAllowedPaths(config: Config) {
   return [
-    ...config.allowedApps.flatMap((app) => APP_PATHS[app]),
+    ...config.allowedApps.flatMap((app) => APP_CATALOG[app].paths),
     ...config.customAllowedPaths.map((path) => path.trim()).filter(Boolean)
   ];
 }
@@ -497,8 +476,69 @@ foreach ($log in $logs) {
 `;
 }
 
+
+export function generateVerifyScript(config: Config): string {
+  const allowedPaths = getAllowedPaths(config);
+
+  return \`${commonHeader(config, "VERIFICAÇÃO DO PC")}
+
+Assert-Administrator
+
+$AllowedExecutables = ${psArray(allowedPaths)}
+
+function Write-Check {
+    param(
+        [string]$Name,
+        [bool]$Ok,
+        [string]$Details
+    )
+
+    $status = if ($Ok) { "OK" } else { "ATENÇÃO" }
+    $color = if ($Ok) { "Green" } else { "Yellow" }
+    Write-Host ("[{0}] {1} - {2}" -f $status, $Name, $Details) -ForegroundColor $color
+}
+
+Write-Host "=== WinLab - Verificação da máquina ===" -ForegroundColor Cyan
+Write-Host "Perfil: ${config.profileName}"
+Write-Host ""
+
+$os = Get-CimInstance Win32_OperatingSystem
+
+Write-Host ("Computador: {0}" -f $env:COMPUTERNAME)
+Write-Host ("Windows: {0}" -f $os.Caption)
+Write-Host ("Versão: {0}" -f $os.Version)
+Write-Host ("Build: {0}" -f $os.BuildNumber)
+Write-Host ("Arquitetura: {0}" -f $os.OSArchitecture)
+Write-Host ""
+
+$hasAppLocker = $null -ne (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyContinue)
+Write-Check "AppLocker" $hasAppLocker $(if ($hasAppLocker) { "cmdlets disponíveis" } else { "cmdlets não encontrados" })
+
+$service = Get-Service AppIDSvc -ErrorAction SilentlyContinue
+Write-Check "Application Identity" ($null -ne $service) $(if ($service) { "serviço encontrado: $($service.Status)" } else { "serviço não encontrado" })
+
+$student = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
+$admin = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
+Write-Check "Conta restrita" ($null -ne $student) $(if ($student) { "existe: $Aluno" } else { "será criada pelo setup: $Aluno" })
+Write-Check "Conta administrativa" ($null -ne $admin) $(if ($admin) { "existe: $Admin" } else { "será criada pelo setup: $Admin" })
+
+Write-Host ""
+Write-Host "=== Aplicativos permitidos ===" -ForegroundColor Cyan
+
+foreach ($rawPath in $AllowedExecutables) {
+    $expanded = [Environment]::ExpandEnvironmentVariables($rawPath)
+    $exists = Test-Path $expanded
+    Write-Check $rawPath $exists $(if ($exists) { "encontrado" } else { "não encontrado neste caminho" })
+}
+
+Write-Host ""
+Write-Host "A ausência de um caminho não significa necessariamente erro: alguns programas usam outro caminho/edição." -ForegroundColor DarkGray
+Write-Host "Use este relatório antes de ativar o AppLocker em modo Enabled." -ForegroundColor Yellow
+\`;
+}
+
 export function generateConfigJson(config: Config): string {
-  return JSON.stringify(config, null, 2);
+  return serializeConfig(config);
 }
 
 export function generateReadme(config: Config): string {
