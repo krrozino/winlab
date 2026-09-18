@@ -17,6 +17,7 @@ import {
   suggestedAllowedApps
 } from "../src/lib/inventory";
 import { generateInventoryScannerScript } from "../src/lib/inventory-script";
+import { getConfigErrors } from "../src/lib/validation";
 
 test("imports legacy 0.2 config without schemaVersion", () => {
   const imported = parseConfigJson(
@@ -422,4 +423,45 @@ test("state and rollback are bound to account SIDs", () => {
   assert.ok(setup.includes("adminSid = $adminObject.SID.Value"));
   assert.ok(setup.includes("foi recriada com outro SID"));
   assert.ok(rollback.includes("SID diferente do registrado pelo WinLab"));
+});
+
+test("fatal validation follows Windows local-user naming rules", () => {
+  assert.equal(getConfigErrors(defaultConfig).length, 0);
+
+  assert.ok(
+    getConfigErrors({ ...defaultConfig, studentUser: "Aluno/Inválido" }).some(
+      (error) => error.field === "studentUser"
+    )
+  );
+
+  assert.ok(
+    getConfigErrors({ ...defaultConfig, adminUser: "123456789012345678901" }).some(
+      (error) => error.field === "adminUser"
+    )
+  );
+
+  assert.ok(
+    getConfigErrors({ ...defaultConfig, studentUser: "...." }).some(
+      (error) => error.field === "studentUser"
+    )
+  );
+});
+
+test("fatal validation rejects equal student and admin accounts", () => {
+  const errors = getConfigErrors({
+    ...defaultConfig,
+    studentUser: "MesmoUsuario",
+    adminUser: "mesmousuario"
+  });
+
+  assert.ok(errors.some((error) => error.message.includes("nomes diferentes")));
+});
+
+test("generated preflight independently validates local-user names", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("function Test-WinLabUserName"));
+  assert.ok(setup.includes("Nome inválido para a conta restrita"));
+  assert.ok(setup.includes("Value.Length -gt 20"));
+  assert.ok(setup.includes("^[.\\s]+$"));
 });
