@@ -638,6 +638,10 @@ FLUXO RECOMENDADO
 8. Gere novamente em modo BLOQUEIO ATIVO.
 9. Execute o novo setup.ps1.
 
+CONTAS LOCAIS
+-------------
+${config.allowLocalAccountManagement ? "A página Contas > Outros usuários fica disponível para a conta restrita. Criar ou remover contas continua exigindo credencial administrativa." : "A página Contas > Outros usuários fica oculta para a conta restrita."}
+
 Nenhuma senha é armazenada nos arquivos.
 `;
 }
