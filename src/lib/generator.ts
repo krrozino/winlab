@@ -138,6 +138,86 @@ $WinLabRoot = "C:\\ProgramData\\WinLab"
 $StatePath = Join-Path $WinLabRoot "state.json"
 $DeferredTaskName = "WinLab-Apply-UserPolicies-$Aluno"
 
+function Get-WinLabState {
+    if (-not (Test-Path $StatePath)) { return $null }
+
+    try {
+        return Get-Content -Path $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw "O estado WinLab existente em '$StatePath' está corrompido ou ilegível. Não é seguro continuar."
+    }
+}
+
+function Save-WinLabState {
+    param([Parameter(Mandatory=$true)]$State)
+
+    New-Item -Path $WinLabRoot -ItemType Directory -Force | Out-Null
+    $State | ConvertTo-Json -Depth 8 | Set-Content -Path $StatePath -Encoding UTF8
+}
+
+function Test-WinLabPreflight {
+    $errors = New-Object System.Collections.Generic.List[string]
+
+    if ([string]::Equals($Aluno, $Admin, [StringComparison]::OrdinalIgnoreCase)) {
+        $errors.Add("A conta restrita e a conta administrativa usam o mesmo nome.")
+    }
+
+    $requiredCommands = @(
+        "Get-LocalUser",
+        "Get-LocalGroup",
+        "Get-AppLockerPolicy",
+        "Set-AppLockerPolicy"
+    )
+
+    if ($CreateAccounts) {
+        $requiredCommands += @(
+            "New-LocalUser",
+            "Add-LocalGroupMember",
+            "Remove-LocalGroupMember"
+        )
+    }
+
+    foreach ($command in $requiredCommands) {
+        if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
+            $errors.Add("Comando obrigatório não encontrado: $command")
+        }
+    }
+
+    if (-not $CreateAccounts) {
+        if (-not (Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue)) {
+            $errors.Add("A conta restrita '$Aluno' não existe e a criação automática está desativada.")
+        }
+
+        if (-not (Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue)) {
+            $errors.Add("A conta administrativa '$Admin' não existe e a criação automática está desativada.")
+        }
+    }
+
+    $appIdService = Get-Service AppIDSvc -ErrorAction SilentlyContinue
+    if (-not $appIdService) {
+        $errors.Add("Serviço Application Identity (AppIDSvc) não encontrado.")
+    }
+
+    $state = Get-WinLabState
+    if ($state) {
+        if ($state.studentUser -and -not [string]::Equals([string]$state.studentUser, $Aluno, [StringComparison]::OrdinalIgnoreCase)) {
+            $errors.Add("Já existe estado WinLab para o usuário '$($state.studentUser)'. Execute o rollback antes de mudar o usuário restrito.")
+        }
+
+        if ($state.adminUser -and -not [string]::Equals([string]$state.adminUser, $Admin, [StringComparison]::OrdinalIgnoreCase)) {
+            $errors.Add("Já existe estado WinLab para o administrador '$($state.adminUser)'. Execute o rollback antes de mudar a conta administrativa.")
+        }
+    }
+
+    if ($errors.Count -gt 0) {
+        $message = "Preflight WinLab falhou:" + [Environment]::NewLine + (($errors | ForEach-Object { " - $_" }) -join [Environment]::NewLine)
+        throw $message
+    }
+
+    Write-Host "Preflight WinLab: OK" -ForegroundColor Green
+}
+
 function Ensure-Accounts {
     if (-not $CreateAccounts) { return }
 
