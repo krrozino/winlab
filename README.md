@@ -72,7 +72,9 @@ O padrão é **ReportOnly**.
 - alerta de armazenamento;
 - rollback;
 - auditoria;
-- testes automatizados e CI.
+- testes automatizados e CI;
+- validação dos scripts gerados em runner Windows com PowerShell 5.1 e PowerShell 7;
+- montagem e validação automática do XML AppLocker em CI.
 
 ## Pacote gerado
 
@@ -115,6 +117,30 @@ Enabled
 ```
 
 ## Segurança
+
+### Preview por padrão
+
+Os scripts que alteram o Windows exigem confirmação explícita:
+
+```powershell
+.\setup.ps1
+# apenas mostra o plano
+
+.\setup.ps1 -Apply
+# aplica a configuração
+
+.\rollback.ps1
+# apenas mostra o que seria removido
+
+.\rollback.ps1 -Apply
+# executa o rollback
+
+.\maintenance.ps1
+# relatório/previsão
+
+.\maintenance.ps1 -Apply
+# só é necessário para permitir exclusões quando o modo Delete estiver configurado
+```
 
 - teste em PC piloto;
 - mantenha uma conta administrativa funcional;
