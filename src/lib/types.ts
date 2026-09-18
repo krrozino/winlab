@@ -5,12 +5,16 @@ export type AllowedAppId =
   | "powerpoint"
   | "powerbi";
 
+export type EnforcementMode = "AuditOnly" | "Enabled";
+export type PresetId = "microlins" | "school" | "company" | "kiosk";
+
 export type Config = {
   profileName: string;
   studentUser: string;
   adminUser: string;
-
   createAccounts: boolean;
+
+  enforcementMode: EnforcementMode;
 
   blockInstallers: boolean;
   blockStoreApps: boolean;
@@ -27,6 +31,7 @@ export type Config = {
   blockWallpaper: boolean;
   blockMousePointers: boolean;
   blockSoundScheme: boolean;
+  wallpaperUnlockMinutes: number;
 
   allowedApps: AllowedAppId[];
   customAllowedPaths: string[];

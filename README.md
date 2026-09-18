@@ -1,60 +1,102 @@
 # WinLab Configurator
 
-MVP de um gerador de scripts PowerShell para preparar computadores Windows de escolas, laboratórios e empresas.
+Gerador de configurações PowerShell para preparar computadores Windows usados em escolas, laboratórios, totens e pequenas empresas.
 
-## Objetivo
+O WinLab não armazena senhas. A interface gera um pacote portátil que pode ser levado em um pendrive e executado localmente como administrador.
 
-O usuário seleciona políticas numa interface e o app gera arquivos reutilizáveis:
+## MVP 0.2
 
-- `setup.ps1`
-- `config.json`
-- `README.txt`
-
-Nesta primeira versão toda a geração acontece localmente no navegador. Nenhuma senha é armazenada.
-
-## MVP 0.1
-
-- Conta de aluno e administrador
+- Presets:
+  - Microlins
+  - Escola
+  - Empresa
+  - Totem
+- Conta restrita + conta administrativa
+- Administrador fora das políticas por usuário
+- Políticas do Chrome aplicadas somente ao usuário restrito
 - Allowlist de Chrome, Word, Excel, PowerPoint e Power BI
-- Caminhos adicionais personalizados
-- Bloqueio de MSI / Store / CMD / PowerShell / Regedit
-- Políticas do Google Chrome
-- Bloqueio de wallpaper, ponteiro e esquema de sons
-- Geração de PowerShell
-- Configuração exportável em JSON
-- Modo de reversão dentro do script
+- Caminhos personalizados com alerta para diretórios graváveis pelo usuário
+- AppLocker em:
+  - `AuditOnly`
+  - `Enabled`
+- Bloqueio opcional de:
+  - MSI
+  - apps empacotados / Microsoft Store
+  - CMD
+  - PowerShell
+  - Regedit
+- Personalização:
+  - wallpaper
+  - ponteiro do mouse
+  - esquema de sons
+- Liberação temporária de wallpaper com rebloqueio agendado
+- Pacote ZIP gerado no navegador com:
+  - `setup.ps1`
+  - `rollback.ps1`
+  - `audit.ps1`
+  - `liberar-wallpaper.ps1`
+  - `config.json`
+  - `README.txt`
 
-## Como executar
+## Segurança de implantação
+
+A configuração padrão usa AppLocker em `AuditOnly`.
+
+Fluxo recomendado:
+
+1. Gere um pacote em modo de auditoria.
+2. Aplique em um único PC piloto.
+3. Use a conta restrita durante as atividades normais.
+4. Execute `audit.ps1`.
+5. Ajuste a allowlist conforme os eventos.
+6. Só então gere um pacote em `Enabled`.
+
+O AppLocker ainda precisa ser validado com os softwares reais de cada curso antes de uma implantação ampla.
+
+## Executar o projeto
 
 ```bash
 npm install
 npm run dev
 ```
 
-Abra http://localhost:3000
+Abra `http://localhost:3000`.
+
+## Estrutura
+
+```text
+src/
+├── app/
+│   ├── globals.css
+│   ├── layout.tsx
+│   └── page.tsx
+└── lib/
+    ├── default-config.ts
+    ├── generator.ts
+    ├── presets.ts
+    ├── security.ts
+    ├── types.ts
+    └── zip.ts
+```
 
 ## Próximas etapas
 
-### 0.2
-- Download ZIP único em vez de arquivos individuais
-- Presets: Escola / Empresa / Totem
-- Liberação temporária de wallpaper
-- Mais aplicações conhecidas
-- Validação de caminhos
+### MVP 0.3
+- importar `config.json`
+- catálogo maior de aplicativos
+- relatório visual das políticas antes da geração
+- parser dos logs de auditoria
+- testes automatizados para o gerador
 
-### 0.3
-- Importar `config.json`
-- Gerar script de auditoria
-- Modo AppLocker Audit Only
-- Relatório do que será alterado
-
-### 0.4
-- Aplicativo auxiliar para Windows que analisa programas instalados
-- Detecção automática de executáveis
-- Exportar allowlist com um clique
+### MVP 0.4
+- companion app para Windows
+- detectar softwares instalados
+- descobrir executáveis automaticamente
+- montar allowlist a partir da máquina analisada
 
 ### 1.0
-- Assinatura/verificação de scripts
-- Catálogo de políticas versionado
-- Testes automatizados das regras geradas
-- Histórico de presets/configurações
+- catálogo versionado de políticas
+- assinatura/verificação dos scripts
+- histórico de presets
+- testes em matriz Windows 10/11
+- publicação estável
