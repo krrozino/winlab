@@ -548,7 +548,8 @@ function Save-WinLabAppliedState {
         [Parameter(Mandatory=$true)][string]$BaselineAppLockerBackup,
         [Parameter(Mandatory=$true)][string]$RegistryBaselineDir,
         [Parameter(Mandatory=$true)][bool]$UserPoliciesDeferred,
-        [ValidateSet("Applying", "Applied")][string]$Status = "Applied"
+        [ValidateSet("Applying", "Applied", "RecoveredAfterFailure", "RecoveryFailed")][string]$Status = "Applied",
+        [string]$ErrorMessage = $null
     )
 
     $previous = Get-WinLabState
@@ -583,12 +584,16 @@ function Save-WinLabAppliedState {
         baselineAppLockerBackup = $BaselineAppLockerBackup
         registryBaselineDir = $RegistryBaselineDir
         userPoliciesDeferred = $UserPoliciesDeferred
-        userPoliciesAppliedAt = if ($UserPoliciesDeferred) {
-            if ($previous) { $previous.userPoliciesAppliedAt } else { $null }
-        }
-        else {
+        userPoliciesAppliedAt = if ($Status -eq "Applied" -and -not $UserPoliciesDeferred) {
             (Get-Date).ToString("o")
         }
+        elseif ($previous) {
+            $previous.userPoliciesAppliedAt
+        }
+        else {
+            $null
+        }
+        errorMessage = $ErrorMessage
         createdAt = $createdAt
         lastAttemptAt = (Get-Date).ToString("o")
         lastAppliedAt = if ($Status -eq "Applied") { (Get-Date).ToString("o") } elseif ($previous) { $previous.lastAppliedAt } else { $null }
@@ -597,6 +602,103 @@ function Save-WinLabAppliedState {
 
     Save-WinLabState -State $state
     Write-Host "Estado WinLab salvo em $StatePath ($Status)" -ForegroundColor DarkGray
+}
+
+function Remove-StudentWinLabPoliciesForRecovery {
+    if (-not (Test-StudentProfileReady)) { return }
+
+    Invoke-WithUserHive -UserName $Aluno -Action {
+        param($sid, $context)
+
+        $chrome = "Registry::HKEY_USERS\$sid\Software\Policies\Google\Chrome"
+        Remove-ItemProperty -Path $chrome -Name BrowserGuestModeEnabled -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $chrome -Name BrowserAddPersonEnabled -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $chrome -Name IncognitoModeAvailability -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $chrome -Name PasswordManagerEnabled -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $chrome "ExtensionInstallBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $chrome "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $chrome "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
+
+        $edge = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Edge"
+        Remove-Item -Path (Join-Path $edge "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $edge "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
+
+        $usb = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+        Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $usb -Name Deny_Write -ErrorAction SilentlyContinue
+
+        Remove-ItemProperty "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\Personalization" -Name NoChangingMousePointers -ErrorAction SilentlyContinue
+        Remove-ItemProperty "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\Personalization" -Name NoChangingSoundScheme -ErrorAction SilentlyContinue
+        Remove-ItemProperty "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop" -Name NoChangingWallPaper -ErrorAction SilentlyContinue
+        Remove-ItemProperty "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name SettingsPageVisibility -ErrorAction SilentlyContinue
+    }
+}
+
+function Restore-RegistryBaselineForRecovery {
+    param([Parameter(Mandatory=$true)][string]$RegistryBaselineDir)
+
+    if (-not (Test-Path $RegistryBaselineDir)) {
+        throw "Baseline de registro ausente durante recuperação: $RegistryBaselineDir"
+    }
+
+    $files = @(Get-ChildItem -Path $RegistryBaselineDir -Filter *.reg -File -ErrorAction SilentlyContinue)
+    if ($files.Count -eq 0) { return }
+
+    if (-not (Test-StudentProfileReady)) {
+        throw "Existem backups de registro, mas o perfil de '$Aluno' não está disponível para restauração automática."
+    }
+
+    Invoke-WithUserHive -UserName $Aluno -Context $files -Action {
+        param($sid, $context)
+
+        foreach ($file in @($context)) {
+            reg.exe import $file.FullName | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Falha ao importar baseline de registro: $($file.FullName)"
+            }
+        }
+    }
+}
+
+function Recover-FromFailedSetup {
+    param(
+        [Parameter(Mandatory=$true)][string]$BaselineAppLockerBackup,
+        [Parameter(Mandatory=$true)][string]$RegistryBaselineDir,
+        [Parameter(Mandatory=$true)][string]$OriginalError
+    )
+
+    Write-Warning "Falha durante o setup. Iniciando recuperação automática."
+
+    try {
+        if (Test-Path $BaselineAppLockerBackup) {
+            Set-AppLockerPolicy -XmlPolicy $BaselineAppLockerBackup
+        }
+
+        Remove-StudentWinLabPoliciesForRecovery
+        Restore-RegistryBaselineForRecovery -RegistryBaselineDir $RegistryBaselineDir
+
+        Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
+        gpupdate /force | Out-Null
+
+        Save-WinLabAppliedState -BaselineAppLockerBackup $BaselineAppLockerBackup -RegistryBaselineDir $RegistryBaselineDir -UserPoliciesDeferred $false -Status "RecoveredAfterFailure" -ErrorMessage $OriginalError
+
+        Write-Host "Recuperação automática concluída; baselines restaurados." -ForegroundColor Green
+        return $true
+    }
+    catch {
+        $recoveryError = $_.Exception.Message
+
+        try {
+            Save-WinLabAppliedState -BaselineAppLockerBackup $BaselineAppLockerBackup -RegistryBaselineDir $RegistryBaselineDir -UserPoliciesDeferred $false -Status "RecoveryFailed" -ErrorMessage ("Setup: " + $OriginalError + " | Recovery: " + $recoveryError)
+        }
+        catch {
+            Write-Warning "Também não foi possível atualizar state.json após falha de recuperação."
+        }
+
+        Write-Warning ("Recuperação automática falhou: " + $recoveryError)
+        return $false
+    }
 }
 
 function New-WinLabAppLockerXml {
@@ -732,28 +834,40 @@ function Install-WinLabProfile {
 
     $userPoliciesDeferred = $false
 
-    if (Test-StudentProfileReady) {
-        Apply-StudentPolicies
-        Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
-        Write-Host "Políticas por usuário aplicadas imediatamente." -ForegroundColor Green
+    try {
+        if (Test-StudentProfileReady) {
+            Apply-StudentPolicies
+            Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
+            Write-Host "Políticas por usuário aplicadas imediatamente." -ForegroundColor Green
+        }
+        else {
+            Queue-StudentPoliciesForFirstLogon
+            $userPoliciesDeferred = $true
+        }
+
+        sc.exe config appidsvc start=auto | Out-Null
+        Start-Service AppIDSvc -ErrorAction SilentlyContinue
+
+        $xml = New-WinLabAppLockerXml
+        $temp = Join-Path $env:TEMP "WinLab-AppLocker.xml"
+        $xml | Set-Content -Path $temp -Encoding UTF8
+
+        Set-AppLockerPolicy -XmlPolicy $temp
+        gpupdate /force | Out-Null
+
+        Save-WinLabAppliedState -BaselineAppLockerBackup $baseline -RegistryBaselineDir $registryBaseline -UserPoliciesDeferred $userPoliciesDeferred -Status "Applied"
     }
-    else {
-        Queue-StudentPoliciesForFirstLogon
-        $userPoliciesDeferred = $true
+    catch {
+        $originalError = $_.Exception.Message
+        $recovered = Recover-FromFailedSetup -BaselineAppLockerBackup $baseline -RegistryBaselineDir $registryBaseline -OriginalError $originalError
+
+        if ($recovered) {
+            throw ("Setup WinLab falhou, mas a recuperação automática restaurou os baselines. Erro original: " + $originalError)
+        }
+
+        throw ("Setup WinLab falhou e a recuperação automática também falhou. Consulte state.json. Erro original: " + $originalError)
     }
-
-    sc.exe config appidsvc start=auto | Out-Null
-    Start-Service AppIDSvc -ErrorAction SilentlyContinue
-
-    $xml = New-WinLabAppLockerXml
-    $temp = Join-Path $env:TEMP "WinLab-AppLocker.xml"
-    $xml | Set-Content -Path $temp -Encoding UTF8
-
-    Set-AppLockerPolicy -XmlPolicy $temp
-    gpupdate /force | Out-Null
-
-    Save-WinLabAppliedState -BaselineAppLockerBackup $baseline -RegistryBaselineDir $registryBaseline -UserPoliciesDeferred $userPoliciesDeferred -Status "Applied"
 
     Write-Host ""
     Write-Host "WinLab aplicado ao perfil '$Aluno'." -ForegroundColor Green
