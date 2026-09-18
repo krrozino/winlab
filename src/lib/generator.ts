@@ -383,6 +383,63 @@ function Set-StudentPersonalizationPolicies {
     }
 }
 
+function Test-StudentProfileReady {
+    $user = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
+    if (-not $user) { return $false }
+
+    $sid = $user.SID.Value
+    $profile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'" -ErrorAction SilentlyContinue
+    if (-not $profile -or -not $profile.LocalPath) { return $false }
+
+    return Test-Path (Join-Path $profile.LocalPath "NTUSER.DAT")
+}
+
+function Apply-StudentPolicies {
+    Set-StudentChromePolicies
+    Set-StudentEdgePolicies
+    Set-StudentUsbPolicies
+    Set-StudentAccountPolicies
+    Set-StudentPersonalizationPolicies
+}
+
+function Queue-StudentPoliciesForFirstLogon {
+    if (-not $PSCommandPath) {
+        throw "Não foi possível localizar o próprio setup.ps1 para preparar a aplicação no primeiro logon."
+    }
+
+    New-Item -Path $WinLabRoot -ItemType Directory -Force | Out-Null
+
+    $deferredScript = Join-Path $WinLabRoot "setup-deferred.ps1"
+    Copy-Item -Path $PSCommandPath -Destination $deferredScript -Force
+
+    $actionArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $deferredScript + '" -Apply -UserPoliciesOnly'
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $actionArgs
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $Aluno
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+
+    Register-ScheduledTask -TaskName $DeferredTaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+
+    Write-Host "Políticas por usuário agendadas para o primeiro logon de '$Aluno'." -ForegroundColor Yellow
+}
+
+function Complete-DeferredUserPolicies {
+    if (-not (Test-StudentProfileReady)) {
+        throw "O perfil de '$Aluno' ainda não está pronto. A tarefa será mantida para tentar novamente no próximo logon."
+    }
+
+    Apply-StudentPolicies
+
+    $state = Get-WinLabState
+    if ($state) {
+        $state.userPoliciesDeferred = $false
+        $state.userPoliciesAppliedAt = (Get-Date).ToString("o")
+        Save-WinLabState -State $state
+    }
+
+    Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Host "Políticas por usuário aplicadas e tarefa de primeiro logon removida." -ForegroundColor Green
+}
+
 function Ensure-AppLockerBaseline {
     $backupDir = Join-Path $WinLabRoot "Backups"
     New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
