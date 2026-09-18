@@ -795,3 +795,79 @@ textarea:focus {
 .textAreaField {
   margin-top: 14px;
 }
+
+
+.safetyPanel {
+  border-color: rgba(83, 209, 138, 0.34);
+  background:
+    linear-gradient(135deg, rgba(83, 209, 138, 0.06), transparent 48%),
+    var(--panel);
+}
+
+.safetyGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.safetyGrid > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+
+.safetyGrid strong,
+.safetyGrid span {
+  display: block;
+}
+
+.safetyGrid strong {
+  color: var(--success);
+  margin-bottom: 5px;
+  font-size: 13px;
+}
+
+.safetyGrid span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.safetyGrid code {
+  color: var(--accent-2);
+}
+
+@media (max-width: 650px) {
+  .safetyGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.validationErrors {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 123, 123, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 123, 123, 0.08);
+}
+
+.validationErrors strong {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.validationErrors span {
+  color: #ffc1c1;
+  font-size: 12px;
+  line-height: 1.45;
+}
