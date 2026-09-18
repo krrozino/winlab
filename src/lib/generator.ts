@@ -166,7 +166,12 @@ function Test-WinLabPreflight {
         "Get-LocalUser",
         "Get-LocalGroup",
         "Get-AppLockerPolicy",
-        "Set-AppLockerPolicy"
+        "Set-AppLockerPolicy",
+        "New-ScheduledTaskAction",
+        "New-ScheduledTaskTrigger",
+        "New-ScheduledTaskPrincipal",
+        "Register-ScheduledTask",
+        "Unregister-ScheduledTask"
     )
 
     if ($CreateAccounts) {
@@ -467,7 +472,8 @@ function Ensure-AppLockerBaseline {
 function Save-WinLabAppliedState {
     param(
         [Parameter(Mandatory=$true)][string]$BaselineAppLockerBackup,
-        [Parameter(Mandatory=$true)][bool]$UserPoliciesDeferred
+        [Parameter(Mandatory=$true)][bool]$UserPoliciesDeferred,
+        [ValidateSet("Applying", "Applied")][string]$Status = "Applied"
     )
 
     $previous = Get-WinLabState
@@ -478,13 +484,18 @@ function Save-WinLabAppliedState {
         (Get-Date).ToString("o")
     }
 
-    $applyCount = 1
+    $applyCount = 0
     if ($previous -and $previous.applyCount) {
-        $applyCount = [int]$previous.applyCount + 1
+        $applyCount = [int]$previous.applyCount
+    }
+
+    if ($Status -eq "Applied") {
+        $applyCount++
     }
 
     $state = [ordered]@{
         schemaVersion = 2
+        status = $Status
         profileName = $ProfileName
         studentUser = $Aluno
         adminUser = $Admin
@@ -492,12 +503,13 @@ function Save-WinLabAppliedState {
         baselineAppLockerBackup = $BaselineAppLockerBackup
         userPoliciesDeferred = $UserPoliciesDeferred
         createdAt = $createdAt
-        lastAppliedAt = (Get-Date).ToString("o")
+        lastAttemptAt = (Get-Date).ToString("o")
+        lastAppliedAt = if ($Status -eq "Applied") { (Get-Date).ToString("o") } elseif ($previous) { $previous.lastAppliedAt } else { $null }
         applyCount = $applyCount
     }
 
     Save-WinLabState -State $state
-    Write-Host "Estado WinLab salvo em $StatePath" -ForegroundColor DarkGray
+    Write-Host "Estado WinLab salvo em $StatePath ($Status)" -ForegroundColor DarkGray
 }
 
 function New-WinLabAppLockerXml {
@@ -626,13 +638,20 @@ function Show-WinLabPlan {
 
 function Install-WinLabProfile {
     Ensure-Accounts
-    Set-StudentChromePolicies
-    Set-StudentEdgePolicies
-    Set-StudentUsbPolicies
-    Set-StudentAccountPolicies
-    Set-StudentPersonalizationPolicies
 
-    Backup-AppLocker
+    $baseline = Ensure-AppLockerBaseline
+    Save-WinLabAppliedState -BaselineAppLockerBackup $baseline -UserPoliciesDeferred $false -Status "Applying"
+
+    $userPoliciesDeferred = $false
+
+    if (Test-StudentProfileReady) {
+        Apply-StudentPolicies
+        Write-Host "Políticas por usuário aplicadas imediatamente." -ForegroundColor Green
+    }
+    else {
+        Queue-StudentPoliciesForFirstLogon
+        $userPoliciesDeferred = $true
+    }
 
     sc.exe config appidsvc start=auto | Out-Null
     Start-Service AppIDSvc -ErrorAction SilentlyContinue
@@ -644,10 +663,16 @@ function Install-WinLabProfile {
     Set-AppLockerPolicy -XmlPolicy $temp
     gpupdate /force | Out-Null
 
+    Save-WinLabAppliedState -BaselineAppLockerBackup $baseline -UserPoliciesDeferred $userPoliciesDeferred -Status "Applied"
+
     Write-Host ""
     Write-Host "WinLab aplicado ao perfil '$Aluno'." -ForegroundColor Green
     Write-Host "Conta administrativa '$Admin' permanece fora das políticas por usuário." -ForegroundColor Green
     Write-Host "AppLocker: $EnforcementMode" -ForegroundColor Cyan
+
+    if ($userPoliciesDeferred) {
+        Write-Host "As políticas do usuário serão concluídas automaticamente no primeiro logon de '$Aluno'." -ForegroundColor Yellow
+    }
 
     if ($EnforcementMode -eq "AuditOnly") {
         Write-Host "Os bloqueios AppLocker estão em AUDITORIA. Valide os logs antes de gerar uma configuração em modo Enabled." -ForegroundColor Yellow
@@ -658,7 +683,14 @@ function Install-WinLabProfile {
 
 if ($Apply) {
     Assert-Administrator
-    Install-WinLabProfile
+    Test-WinLabPreflight
+
+    if ($UserPoliciesOnly) {
+        Complete-DeferredUserPolicies
+    }
+    else {
+        Install-WinLabProfile
+    }
 }
 else {
     Show-WinLabPlan
