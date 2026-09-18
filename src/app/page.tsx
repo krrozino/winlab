@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import { APP_CATALOG } from "@/lib/apps";
 import { parseConfigJson } from "@/lib/config-io";
 import { getConfigReview } from "@/lib/review";
-import { defaultConfig } from "@/lib/default-config";
 import { getPreset, presets } from "@/lib/presets";
 import { Config, AllowedAppId, PresetId } from "@/lib/types";
 import { pathRisk } from "@/lib/security";
