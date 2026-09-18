@@ -532,6 +532,7 @@ function Ensure-AppLockerBaseline {
 function Save-WinLabAppliedState {
     param(
         [Parameter(Mandatory=$true)][string]$BaselineAppLockerBackup,
+        [Parameter(Mandatory=$true)][string]$RegistryBaselineDir,
         [Parameter(Mandatory=$true)][bool]$UserPoliciesDeferred,
         [ValidateSet("Applying", "Applied")][string]$Status = "Applied"
     )
@@ -561,6 +562,7 @@ function Save-WinLabAppliedState {
         adminUser = $Admin
         enforcementMode = $EnforcementMode
         baselineAppLockerBackup = $BaselineAppLockerBackup
+        registryBaselineDir = $RegistryBaselineDir
         userPoliciesDeferred = $UserPoliciesDeferred
         createdAt = $createdAt
         lastAttemptAt = (Get-Date).ToString("o")
@@ -700,7 +702,8 @@ function Install-WinLabProfile {
     Ensure-Accounts
 
     $baseline = Ensure-AppLockerBaseline
-    Save-WinLabAppliedState -BaselineAppLockerBackup $baseline -UserPoliciesDeferred $false -Status "Applying"
+    $registryBaseline = Ensure-RegistryBaseline
+    Save-WinLabAppliedState -BaselineAppLockerBackup $baseline -RegistryBaselineDir $registryBaseline -UserPoliciesDeferred $false -Status "Applying"
 
     $userPoliciesDeferred = $false
 
@@ -723,7 +726,7 @@ function Install-WinLabProfile {
     Set-AppLockerPolicy -XmlPolicy $temp
     gpupdate /force | Out-Null
 
-    Save-WinLabAppliedState -BaselineAppLockerBackup $baseline -UserPoliciesDeferred $userPoliciesDeferred -Status "Applied"
+    Save-WinLabAppliedState -BaselineAppLockerBackup $baseline -RegistryBaselineDir $registryBaseline -UserPoliciesDeferred $userPoliciesDeferred -Status "Applied"
 
     Write-Host ""
     Write-Host "WinLab aplicado ao perfil '$Aluno'." -ForegroundColor Green
