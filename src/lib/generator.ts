@@ -161,7 +161,7 @@ function Test-WinLabUserName {
 
     if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
     if ($Value.Length -gt 20) { return $false }
-    if ($Value -match '^[.\s]+
+    if ($Value -match '^[.\\s]+
         $errors.Add("A conta restrita e a conta administrativa usam o mesmo nome.")
     }
 
