@@ -49,6 +49,7 @@ O JSON só é processado localmente pela interface do WinLab.
 - Conta administrativa fora das políticas por usuário
 - Políticas do Chrome somente para o usuário restrito
 - Bloqueio opcional de MSI, Store/Appx, CMD, PowerShell e Regedit
+- Controle da página de Contas > Outros usuários para a conta restrita
 - Wallpaper, ponteiro e sons controláveis
 - Liberação temporária de wallpaper
 - `verify.ps1`
