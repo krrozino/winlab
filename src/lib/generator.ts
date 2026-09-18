@@ -445,6 +445,66 @@ function Complete-DeferredUserPolicies {
     Write-Host "Políticas por usuário aplicadas e tarefa de primeiro logon removida." -ForegroundColor Green
 }
 
+function Ensure-RegistryBaseline {
+    $state = Get-WinLabState
+    if ($state -and $state.registryBaselineDir) {
+        $existing = [string]$state.registryBaselineDir
+
+        if (Test-Path $existing) {
+            Write-Host "Baseline de registro preservado: $existing" -ForegroundColor DarkGray
+            return $existing
+        }
+
+        throw "O estado WinLab aponta para um baseline de registro inexistente: $existing."
+    }
+
+    $backupRoot = Join-Path $WinLabRoot "Backups"
+    New-Item -Path $backupRoot -ItemType Directory -Force | Out-Null
+
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $baselineDir = Join-Path $backupRoot "Registry-Baseline-$stamp"
+    New-Item -Path $baselineDir -ItemType Directory -Force | Out-Null
+
+    $profileReady = Test-StudentProfileReady
+
+    if ($profileReady) {
+        Invoke-WithUserHive -UserName $Aluno -Action {
+            param($sid)
+
+            $targets = @(
+                @{ Name = "Chrome"; Native = "HKU\$sid\Software\Policies\Google\Chrome"; Provider = "Registry::HKEY_USERS\$sid\Software\Policies\Google\Chrome" },
+                @{ Name = "Edge"; Native = "HKU\$sid\Software\Policies\Microsoft\Edge"; Provider = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Edge" },
+                @{ Name = "Personalization"; Native = "HKU\$sid\Software\Policies\Microsoft\Windows\Personalization"; Provider = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\Personalization" },
+                @{ Name = "ActiveDesktop"; Native = "HKU\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop"; Provider = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop" },
+                @{ Name = "Explorer"; Native = "HKU\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Provider = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" },
+                @{ Name = "RemovableStorage"; Native = "HKU\$sid\Software\Policies\Microsoft\Windows\RemovableStorageDevices"; Provider = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\RemovableStorageDevices" }
+            )
+
+            foreach ($target in $targets) {
+                if (Test-Path $target.Provider) {
+                    $file = Join-Path $baselineDir ($target.Name + ".reg")
+                    reg.exe export $target.Native $file /y | Out-Null
+
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Falha ao exportar baseline de registro: $($target.Native)"
+                    }
+                }
+            }
+        }
+    }
+
+    $manifest = [ordered]@{
+        createdAt = (Get-Date).ToString("o")
+        studentUser = $Aluno
+        profileReadyAtBaseline = $profileReady
+    }
+
+    $manifest | ConvertTo-Json | Set-Content -Path (Join-Path $baselineDir "manifest.json") -Encoding UTF8
+
+    Write-Host "Baseline de registro criado: $baselineDir" -ForegroundColor DarkGray
+    return $baselineDir
+}
+
 function Ensure-AppLockerBaseline {
     $backupDir = Join-Path $WinLabRoot "Backups"
     New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
