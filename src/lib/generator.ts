@@ -430,7 +430,7 @@ function Queue-StudentPoliciesForFirstLogon {
 
     $actionArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $deferredScript + '" -Apply -UserPoliciesOnly'
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $actionArgs
-    $triggerUser = "$env:COMPUTERNAME\$Aluno"
+    $triggerUser = "$env:COMPUTERNAME\\$Aluno"
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $triggerUser
     $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
@@ -486,12 +486,12 @@ function Ensure-RegistryBaseline {
             $baselineDir = [string]$context
 
             $targets = @(
-                @{ Name = "Chrome"; Native = "HKU\$sid\Software\Policies\Google\Chrome"; Provider = "Registry::HKEY_USERS\$sid\Software\Policies\Google\Chrome" },
-                @{ Name = "Edge"; Native = "HKU\$sid\Software\Policies\Microsoft\Edge"; Provider = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Edge" },
-                @{ Name = "Personalization"; Native = "HKU\$sid\Software\Policies\Microsoft\Windows\Personalization"; Provider = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\Personalization" },
-                @{ Name = "ActiveDesktop"; Native = "HKU\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop"; Provider = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop" },
-                @{ Name = "Explorer"; Native = "HKU\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Provider = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" },
-                @{ Name = "RemovableStorage"; Native = "HKU\$sid\Software\Policies\Microsoft\Windows\RemovableStorageDevices"; Provider = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\RemovableStorageDevices" }
+                @{ Name = "Chrome"; Native = "HKU\\$sid\\Software\\Policies\\Google\\Chrome"; Provider = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome" },
+                @{ Name = "Edge"; Native = "HKU\\$sid\\Software\\Policies\\Microsoft\\Edge"; Provider = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge" },
+                @{ Name = "Personalization"; Native = "HKU\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization"; Provider = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization" },
+                @{ Name = "ActiveDesktop"; Native = "HKU\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\ActiveDesktop"; Provider = "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\ActiveDesktop" },
+                @{ Name = "Explorer"; Native = "HKU\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"; Provider = "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer" },
+                @{ Name = "RemovableStorage"; Native = "HKU\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices"; Provider = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices" }
             )
 
             foreach ($target in $targets) {
@@ -610,7 +610,7 @@ function Remove-StudentWinLabPoliciesForRecovery {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid, $context)
 
-        $chrome = "Registry::HKEY_USERS\$sid\Software\Policies\Google\Chrome"
+        $chrome = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"
         Remove-ItemProperty -Path $chrome -Name BrowserGuestModeEnabled -ErrorAction SilentlyContinue
         Remove-ItemProperty -Path $chrome -Name BrowserAddPersonEnabled -ErrorAction SilentlyContinue
         Remove-ItemProperty -Path $chrome -Name IncognitoModeAvailability -ErrorAction SilentlyContinue
@@ -619,18 +619,18 @@ function Remove-StudentWinLabPoliciesForRecovery {
         Remove-Item -Path (Join-Path $chrome "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -Path (Join-Path $chrome "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
 
-        $edge = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Edge"
+        $edge = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
         Remove-Item -Path (Join-Path $edge "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -Path (Join-Path $edge "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
 
-        $usb = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+        $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
         Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
         Remove-ItemProperty -Path $usb -Name Deny_Write -ErrorAction SilentlyContinue
 
-        Remove-ItemProperty "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\Personalization" -Name NoChangingMousePointers -ErrorAction SilentlyContinue
-        Remove-ItemProperty "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\Personalization" -Name NoChangingSoundScheme -ErrorAction SilentlyContinue
-        Remove-ItemProperty "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop" -Name NoChangingWallPaper -ErrorAction SilentlyContinue
-        Remove-ItemProperty "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name SettingsPageVisibility -ErrorAction SilentlyContinue
+        Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization" -Name NoChangingMousePointers -ErrorAction SilentlyContinue
+        Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization" -Name NoChangingSoundScheme -ErrorAction SilentlyContinue
+        Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\ActiveDesktop" -Name NoChangingWallPaper -ErrorAction SilentlyContinue
+        Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer" -Name SettingsPageVisibility -ErrorAction SilentlyContinue
     }
 }
 
