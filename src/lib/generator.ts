@@ -415,6 +415,23 @@ $denyRules
 "@
 }
 
+function Show-WinLabPlan {
+    Write-Host "=== WinLab - PREVIEW do setup ===" -ForegroundColor Cyan
+    Write-Host ("Perfil: ${config.profileName}")
+    Write-Host ("Usuário restrito: {0}" -f $Aluno)
+    Write-Host ("Administrador: {0}" -f $Admin)
+    Write-Host ("AppLocker: {0}" -f $EnforcementMode)
+    Write-Host ("Criar/ajustar contas: {0}" -f $CreateAccounts)
+    Write-Host ("Sites: {0}" -f $BrowserUrlMode)
+    Write-Host ("USB leitura bloqueada: {0}" -f $BlockUsbRead)
+    Write-Host ("USB gravação bloqueada: {0}" -f $BlockUsbWrite)
+    Write-Host ("USB execução bloqueada: {0}" -f $BlockUsbExecute)
+    Write-Host ("Aplicativos/caminhos permitidos: {0}" -f $AllowedExecutables.Count)
+    Write-Host ""
+    Write-Host "Nenhuma alteração foi aplicada." -ForegroundColor Green
+    Write-Host "Para aplicar de verdade, execute novamente com -Apply." -ForegroundColor Yellow
+}
+
 function Install-WinLabProfile {
     Ensure-Accounts
     Set-StudentChromePolicies
@@ -447,8 +464,13 @@ function Install-WinLabProfile {
     Write-Host "Reinicie o computador." -ForegroundColor Yellow
 }
 
-Assert-Administrator
-Install-WinLabProfile
+if ($Apply) {
+    Assert-Administrator
+    Install-WinLabProfile
+}
+else {
+    Show-WinLabPlan
+}
 `;
 }
 
@@ -498,13 +520,22 @@ function Remove-AppLockerPolicy {
     Set-AppLockerPolicy -XmlPolicy $temp
 }
 
-Assert-Administrator
-Remove-StudentPolicies
-Remove-AppLockerPolicy
-gpupdate /force | Out-Null
+if ($Apply) {
+    Assert-Administrator
+    Remove-StudentPolicies
+    Remove-AppLockerPolicy
+    gpupdate /force | Out-Null
 
-Write-Host "Políticas WinLab removidas. As contas locais foram preservadas." -ForegroundColor Green
-Write-Host "Reinicie o computador." -ForegroundColor Yellow
+    Write-Host "Políticas WinLab removidas. As contas locais foram preservadas." -ForegroundColor Green
+    Write-Host "Reinicie o computador." -ForegroundColor Yellow
+}
+else {
+    Write-Host "=== WinLab - PREVIEW do rollback ===" -ForegroundColor Cyan
+    Write-Host "Serão removidas as políticas gerenciadas pelo WinLab e a política AppLocker local gerada pelo pacote." -ForegroundColor Yellow
+    Write-Host "As contas locais serão preservadas."
+    Write-Host "Nenhuma alteração foi aplicada." -ForegroundColor Green
+    Write-Host "Para executar o rollback, rode novamente com -Apply." -ForegroundColor Yellow
+}
 `;
 }
 
@@ -524,6 +555,14 @@ function Set-WallpaperLock {
         New-Item -Path $desktop -Force | Out-Null
         New-ItemProperty -Path $desktop -Name NoChangingWallPaper -PropertyType DWord -Value $Value -Force | Out-Null
     }
+}
+
+if (-not $Apply) {
+    Write-Host "=== WinLab - PREVIEW da liberação de wallpaper ===" -ForegroundColor Cyan
+    Write-Host "Wallpaper seria liberado por $Minutos minutos para '$Aluno'."
+    Write-Host "Nenhuma alteração foi aplicada." -ForegroundColor Green
+    Write-Host "Para liberar, rode novamente com -Apply." -ForegroundColor Yellow
+    return
 }
 
 Assert-Administrator
@@ -787,7 +826,7 @@ foreach ($profile in $candidates) {
 
 $deleted = 0
 
-if ($Mode -eq "Delete" -and $candidates.Count -gt 0) {
+if ($Mode -eq "Delete" -and $Apply -and $candidates.Count -gt 0) {
     Write-Warning "Modo Delete ativo: perfis candidatos serão removidos. Valide em PC piloto e mantenha backup dos dados necessários."
 
     foreach ($candidate in $candidates) {
@@ -801,6 +840,10 @@ if ($Mode -eq "Delete" -and $candidates.Count -gt 0) {
             Write-Host ("Removido: {0}" -f $candidate.LocalPath) -ForegroundColor Green
         }
     }
+}
+elseif ($Mode -eq "Delete" -and -not $Apply) {
+    Write-Host "Modo Delete configurado, mas este foi apenas um PREVIEW. Nenhum perfil foi removido." -ForegroundColor Cyan
+    Write-Host "Para permitir exclusões, rode novamente com -Apply." -ForegroundColor Yellow
 }
 elseif ($Mode -eq "ReportOnly") {
     Write-Host "Modo relatório: nenhum perfil foi removido." -ForegroundColor Cyan
