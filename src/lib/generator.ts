@@ -1128,6 +1128,39 @@ Write-Check "Conta restrita" ($null -ne $student -or ${psBool(config.createAccou
 Write-Check "Conta administrativa" ($null -ne $admin -or ${psBool(config.createAccounts)}) $(if ($admin) { "existe: $Admin" } else { "será criada pelo setup: $Admin" })
 
 Write-Host ""
+Write-Host "=== Safety & Recovery ===" -ForegroundColor Cyan
+
+$winLabRoot = "C:\\ProgramData\\WinLab"
+$statePath = Join-Path $winLabRoot "state.json"
+
+if (Test-Path $statePath) {
+    try {
+        $state = Get-Content -Path $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Check "state.json" $true ("status: {0}; aplicações: {1}" -f $state.status, $state.applyCount)
+
+        $appLockerBaselineOk = $state.baselineAppLockerBackup -and (Test-Path ([string]$state.baselineAppLockerBackup))
+        Write-Check "Baseline AppLocker" ([bool]$appLockerBaselineOk) $(if ($appLockerBaselineOk) { [string]$state.baselineAppLockerBackup } else { "ausente ou inválido" })
+
+        $registryBaselineOk = $state.registryBaselineDir -and (Test-Path ([string]$state.registryBaselineDir))
+        Write-Check "Baseline de registro" ([bool]$registryBaselineOk) $(if ($registryBaselineOk) { [string]$state.registryBaselineDir } else { "ausente ou inválido" })
+
+        $task = Get-ScheduledTask -TaskName "WinLab-Apply-UserPolicies" -ErrorAction SilentlyContinue
+        if ($state.userPoliciesDeferred) {
+            Write-Check "Primeiro login" ($null -ne $task) $(if ($task) { "políticas HKCU pendentes; tarefa agendada" } else { "estado indica pendência, mas a tarefa não foi encontrada" })
+        }
+        else {
+            Write-Check "Primeiro login" ($null -eq $task) $(if ($task) { "tarefa ainda existe apesar de não haver pendência" } else { "sem pendência" })
+        }
+    }
+    catch {
+        Write-Check "state.json" $false $_.Exception.Message
+    }
+}
+else {
+    Write-Check "state.json" $true "nenhuma aplicação WinLab registrada ainda"
+}
+
+Write-Host ""
 Write-Host "=== Aplicativos conhecidos ===" -ForegroundColor Cyan
 
 foreach ($app in $KnownApps) {
@@ -1312,7 +1345,8 @@ setup.ps1
   Aplica contas, políticas por usuário, Chrome/Edge, USB, personalização e AppLocker.
 
 rollback.ps1
-  Remove as políticas WinLab e preserva as contas.
+  Restaura o baseline AppLocker e as políticas por usuário anteriores.
+  Exige state.json e backups válidos. As contas locais são preservadas.
 
 audit.ps1
   Mostra eventos recentes do AppLocker para validar o que seria bloqueado.
@@ -1354,6 +1388,23 @@ SEGURANÇA DE EXECUÇÃO
 ---------------------
 setup.ps1, rollback.ps1 e liberar-wallpaper.ps1 não alteram o Windows sem -Apply.
 maintenance.ps1 pode gerar relatório sem -Apply; exclusões no modo Delete exigem -Apply.
+
+SAFETY & RECOVERY
+-----------------
+Antes de aplicar, setup.ps1 executa um preflight e interrompe se a máquina não estiver pronta.
+
+Na primeira aplicação, o WinLab preserva:
+- AppLocker local em C:\\ProgramData\\WinLab\\Backups\\AppLocker-Baseline-*.xml
+- políticas HKCU existentes em C:\\ProgramData\\WinLab\\Backups\\Registry-Baseline-*
+- estado em C:\\ProgramData\\WinLab\\state.json
+
+Reaplicações preservam o baseline original.
+
+Se o perfil do usuário restrito ainda não existir, as políticas por usuário ficam pendentes
+e são concluídas no primeiro logon por uma tarefa temporária.
+
+rollback.ps1 -Apply só executa se state.json e o baseline AppLocker forem válidos.
+Ele restaura os baselines anteriores e arquiva o estado em C:\\ProgramData\\WinLab\\History.
 
 CONTAS LOCAIS
 -------------
