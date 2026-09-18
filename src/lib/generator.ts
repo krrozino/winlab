@@ -213,6 +213,16 @@ function Test-WinLabPreflight {
         if ($state.adminUser -and -not [string]::Equals([string]$state.adminUser, $Admin, [StringComparison]::OrdinalIgnoreCase)) {
             $errors.Add("Já existe estado WinLab para o administrador '$($state.adminUser)'. Execute o rollback antes de mudar a conta administrativa.")
         }
+
+        $currentStudent = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
+        if ($state.studentSid -and $currentStudent -and ([string]$state.studentSid -ne $currentStudent.SID.Value)) {
+            $errors.Add("A conta '$Aluno' foi recriada com outro SID. Faça recuperação/rollback antes de reaplicar.")
+        }
+
+        $currentAdmin = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
+        if ($state.adminSid -and $currentAdmin -and ([string]$state.adminSid -ne $currentAdmin.SID.Value)) {
+            $errors.Add("A conta '$Admin' foi recriada com outro SID. Faça recuperação/rollback antes de reaplicar.")
+        }
     }
 
     if ($errors.Count -gt 0) {
@@ -420,7 +430,8 @@ function Queue-StudentPoliciesForFirstLogon {
 
     $actionArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $deferredScript + '" -Apply -UserPoliciesOnly'
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $actionArgs
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $Aluno
+    $triggerUser = "$env:COMPUTERNAME\$Aluno"
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $triggerUser
     $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
     Register-ScheduledTask -TaskName $DeferredTaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
@@ -557,12 +568,17 @@ function Save-WinLabAppliedState {
         $applyCount++
     }
 
+    $studentObject = Get-LocalUser -Name $Aluno -ErrorAction Stop
+    $adminObject = Get-LocalUser -Name $Admin -ErrorAction Stop
+
     $state = [ordered]@{
         schemaVersion = 2
         status = $Status
         profileName = $ProfileName
         studentUser = $Aluno
+        studentSid = $studentObject.SID.Value
         adminUser = $Admin
+        adminSid = $adminObject.SID.Value
         enforcementMode = $EnforcementMode
         baselineAppLockerBackup = $BaselineAppLockerBackup
         registryBaselineDir = $RegistryBaselineDir
@@ -718,6 +734,8 @@ function Install-WinLabProfile {
 
     if (Test-StudentProfileReady) {
         Apply-StudentPolicies
+        Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
         Write-Host "Políticas por usuário aplicadas imediatamente." -ForegroundColor Green
     }
     else {
