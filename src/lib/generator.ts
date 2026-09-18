@@ -67,15 +67,13 @@ function Invoke-WithUserHive {
         $profile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'" -ErrorAction SilentlyContinue
 
         if (-not $profile.LocalPath) {
-            Write-Warning "O perfil de '$UserName' ainda não existe. Entre uma vez na conta e execute novamente."
-            return
+            throw "O perfil de '$UserName' ainda não existe; as políticas por usuário não podem ser aplicadas imediatamente."
         }
 
         $ntUser = Join-Path $profile.LocalPath "NTUSER.DAT"
 
         if (-not (Test-Path $ntUser)) {
-            Write-Warning "NTUSER.DAT de '$UserName' não encontrado."
-            return
+            throw "NTUSER.DAT de '$UserName' não encontrado."
         }
 
         reg.exe load "HKU\\$sid" "$ntUser" | Out-Null
@@ -137,7 +135,7 @@ $EnforcementMode = "${enforcement}"
 
 $WinLabRoot = "C:\\ProgramData\\WinLab"
 $StatePath = Join-Path $WinLabRoot "state.json"
-$DeferredTaskName = "WinLab-Apply-UserPolicies-$Aluno"
+$DeferredTaskName = "WinLab-Apply-UserPolicies"
 
 function Get-WinLabState {
     if (-not (Test-Path $StatePath)) { return $null }
