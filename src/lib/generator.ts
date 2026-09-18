@@ -700,6 +700,50 @@ else {
 
 export function generateRollbackScript(config: Config): string {
   return `${commonHeader(config, "ROLLBACK", `[CmdletBinding()]\nparam([switch]$Apply)`)}
+$WinLabRoot = "C:\\ProgramData\\WinLab"
+$StatePath = Join-Path $WinLabRoot "state.json"
+$DeferredTaskName = "WinLab-Apply-UserPolicies"
+
+function Get-WinLabRollbackState {
+    if (-not (Test-Path $StatePath)) {
+        throw "state.json do WinLab não foi encontrado. O rollback seguro foi interrompido para não apagar políticas anteriores."
+    }
+
+    try {
+        $state = Get-Content -Path $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw "state.json está corrompido ou ilegível. O rollback seguro foi interrompido."
+    }
+
+    if (-not $state.baselineAppLockerBackup) {
+        throw "O estado WinLab não contém um baseline AppLocker. O rollback seguro foi interrompido."
+    }
+
+    if (-not (Test-Path ([string]$state.baselineAppLockerBackup))) {
+        throw "O backup AppLocker original não existe mais: $($state.baselineAppLockerBackup)"
+    }
+
+    if ($state.studentUser -and -not [string]::Equals([string]$state.studentUser, $Aluno, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "O estado pertence ao usuário '$($state.studentUser)', mas este rollback foi gerado para '$Aluno'."
+    }
+
+    if ($state.adminUser -and -not [string]::Equals([string]$state.adminUser, $Admin, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "O estado pertence ao administrador '$($state.adminUser)', mas este rollback foi gerado para '$Admin'."
+    }
+
+    return $state
+}
+
+function Test-StudentProfileExists {
+    $user = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
+    if (-not $user) { return $false }
+
+    $sid = $user.SID.Value
+    $profile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'" -ErrorAction SilentlyContinue
+    return [bool]($profile -and $profile.LocalPath -and (Test-Path (Join-Path $profile.LocalPath "NTUSER.DAT")))
+}
+
 function Remove-StudentPolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
@@ -728,37 +772,73 @@ function Remove-StudentPolicies {
     }
 }
 
-function Remove-AppLockerPolicy {
-    $empty = @"
-<AppLockerPolicy Version="1">
-  <RuleCollection Type="Exe" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Msi" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Script" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Appx" EnforcementMode="NotConfigured" />
-  <RuleCollection Type="Dll" EnforcementMode="NotConfigured" />
-</AppLockerPolicy>
-"@
+function Restore-AppLockerBaseline {
+    param([Parameter(Mandatory=$true)]$State)
 
-    $temp = Join-Path $env:TEMP "WinLab-AppLocker-Empty.xml"
-    $empty | Set-Content -Path $temp -Encoding UTF8
-    Set-AppLockerPolicy -XmlPolicy $temp
+    $baseline = [string]$State.baselineAppLockerBackup
+    Set-AppLockerPolicy -XmlPolicy $baseline
+    Write-Host "Baseline AppLocker restaurado: $baseline" -ForegroundColor Green
+}
+
+function Archive-WinLabState {
+    param([Parameter(Mandatory=$true)]$State)
+
+    $historyDir = Join-Path $WinLabRoot "History"
+    New-Item -Path $historyDir -ItemType Directory -Force | Out-Null
+
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $historyPath = Join-Path $historyDir "state-rollback-$stamp.json"
+    $State | ConvertTo-Json -Depth 8 | Set-Content -Path $historyPath -Encoding UTF8
+
+    Remove-Item -Path $StatePath -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+    Write-Host "Estado anterior arquivado em $historyPath" -ForegroundColor DarkGray
 }
 
 if ($Apply) {
     Assert-Administrator
-    Remove-StudentPolicies
-    Remove-AppLockerPolicy
-    gpupdate /force | Out-Null
+    $state = Get-WinLabRollbackState
 
-    Write-Host "Políticas WinLab removidas. As contas locais foram preservadas." -ForegroundColor Green
+    Restore-AppLockerBaseline -State $state
+
+    if (Test-StudentProfileExists) {
+        Remove-StudentPolicies
+    }
+    else {
+        Write-Host "Perfil do usuário '$Aluno' não existe; não há hive de usuário para limpar." -ForegroundColor DarkGray
+    }
+
+    Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
+
+    gpupdate /force | Out-Null
+    Archive-WinLabState -State $state
+
+    Write-Host "Rollback WinLab concluído. As contas locais foram preservadas." -ForegroundColor Green
     Write-Host "Reinicie o computador." -ForegroundColor Yellow
 }
 else {
     Write-Host "=== WinLab - PREVIEW do rollback ===" -ForegroundColor Cyan
-    Write-Host "Serão removidas as políticas gerenciadas pelo WinLab e a política AppLocker local gerada pelo pacote." -ForegroundColor Yellow
-    Write-Host "As contas locais serão preservadas."
+
+    if (Test-Path $StatePath) {
+        try {
+            $state = Get-WinLabRollbackState
+            Write-Host "Baseline AppLocker que seria restaurado: $($state.baselineAppLockerBackup)" -ForegroundColor Cyan
+        }
+        catch {
+            Write-Warning $_.Exception.Message
+        }
+    }
+    else {
+        Write-Warning "Nenhum state.json encontrado; o modo -Apply recusará executar para proteger políticas anteriores."
+    }
+
+    Write-Host "As políticas por usuário gerenciadas pelo WinLab seriam removidas."
+    Write-Host "As contas locais seriam preservadas."
     Write-Host "Nenhuma alteração foi aplicada." -ForegroundColor Green
-    Write-Host "Para executar o rollback, rode novamente com -Apply." -ForegroundColor Yellow
+    Write-Host "Para executar o rollback seguro, rode novamente com -Apply." -ForegroundColor Yellow
 }
 `;
 }
