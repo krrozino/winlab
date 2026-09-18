@@ -339,7 +339,8 @@ test("setup includes fail-fast preflight and first-logon recovery path", () => {
 
   assert.ok(setup.includes("function Test-WinLabPreflight"));
   assert.ok(setup.includes("Preflight WinLab falhou"));
-  assert.ok(setup.includes("New-ScheduledTaskTrigger -AtLogOn -User $Aluno"));
+  assert.ok(setup.includes('$triggerUser = "$env:COMPUTERNAME\\$Aluno"'));
+  assert.ok(setup.includes("New-ScheduledTaskTrigger -AtLogOn -User $triggerUser"));
   assert.ok(setup.includes("-Apply -UserPoliciesOnly"));
   assert.ok(setup.includes("Complete-DeferredUserPolicies"));
 });
