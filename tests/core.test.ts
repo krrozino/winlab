@@ -278,3 +278,21 @@ test("inventory parser accepts optional disk storage data", () => {
   assert.equal(inventory.storage?.systemDrive, "C:");
   assert.equal(inventory.storage?.freePercent, 21.5);
 });
+
+
+test("generated Windows paths keep exact removable-storage and browser registry syntax", () => {
+  const script = generateSetupScript(defaultConfig);
+
+  assert.ok(
+    script.includes(
+      String.raw`Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Edge`
+    )
+  );
+  assert.ok(
+    script.includes(
+      String.raw`RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}`
+    )
+  );
+  assert.ok(script.includes(String.raw`%HOT%\*`));
+  assert.ok(script.includes(String.raw`%REMOVABLE%\*`));
+});
