@@ -20,6 +20,7 @@ import { createZip } from "@/lib/zip";
 import {
   generateAuditScript,
   generateConfigJson,
+  generateMaintenanceScript,
   generateReadme,
   generateRollbackScript,
   generateSetupScript,
@@ -134,6 +135,7 @@ export default function Home() {
       { name: "liberar-wallpaper.ps1", content: generateUnlockWallpaperScript(config) },
       { name: "verify.ps1", content: generateVerifyScript(config) },
       { name: "scan-pc.ps1", content: generateInventoryScannerScript() },
+      { name: "maintenance.ps1", content: generateMaintenanceScript(config) },
       { name: "config.json", content: generateConfigJson(config) },
       { name: "README.txt", content: generateReadme(config) }
     ]);
@@ -152,7 +154,7 @@ export default function Home() {
     <main>
       <header className="hero">
         <div>
-          <p className="eyebrow">WinLab Configurator · MVP 0.4</p>
+          <p className="eyebrow">WinLab Configurator · MVP 0.5</p>
           <h1>Configure o Windows sem configurar máquina por máquina.</h1>
           <p className="subtitle">
             Escolha um preset, ajuste as políticas e gere um pacote portátil com
@@ -250,6 +252,19 @@ export default function Home() {
               <div>
                 <span>Programas registrados</span>
                 <strong>{inventory.installedApps.length}</strong>
+              </div>
+              <div>
+                <span>Armazenamento</span>
+                <strong>
+                  {inventory.storage
+                    ? `${inventory.storage.freeGB} GB livres`
+                    : "Não informado"}
+                </strong>
+                {inventory.storage && (
+                  <small>
+                    {inventory.storage.freePercent}% de {inventory.storage.sizeGB} GB
+                  </small>
+                )}
               </div>
             </div>
 
@@ -524,6 +539,164 @@ export default function Home() {
         </section>
 
         <section className="panel">
+          <h2>Sites · Chrome e Edge</h2>
+
+          <label>
+            Regra de navegação
+            <select
+              value={config.browserUrlMode}
+              onChange={(event) =>
+                set(
+                  "browserUrlMode",
+                  event.target.value as Config["browserUrlMode"]
+                )
+              }
+            >
+              <option value="Unrestricted">Sem restrição por URL</option>
+              <option value="BlockList">Bloquear sites específicos</option>
+              <option value="AllowListOnly">Permitir somente sites da lista</option>
+            </select>
+          </label>
+
+          {config.browserUrlMode === "BlockList" && (
+            <label className="textAreaField">
+              Sites bloqueados · um por linha
+              <textarea
+                rows={5}
+                placeholder={"youtube.com\nroblox.com\n*.exemplo.com"}
+                value={config.blockedUrls.join("\n")}
+                onChange={(event) =>
+                  set(
+                    "blockedUrls",
+                    event.target.value
+                      .split("\n")
+                      .map((value) => value.trim())
+                      .filter(Boolean)
+                  )
+                }
+              />
+            </label>
+          )}
+
+          {config.browserUrlMode !== "Unrestricted" && (
+            <label className="textAreaField">
+              {config.browserUrlMode === "AllowListOnly"
+                ? "Sites permitidos · um por linha"
+                : "Exceções permitidas · um por linha"}
+              <textarea
+                rows={5}
+                placeholder={"microlins.com.br\noffice.com\ngoogle.com"}
+                value={config.allowedUrls.join("\n")}
+                onChange={(event) =>
+                  set(
+                    "allowedUrls",
+                    event.target.value
+                      .split("\n")
+                      .map((value) => value.trim())
+                      .filter(Boolean)
+                  )
+                }
+              />
+            </label>
+          )}
+
+          <p className="muted">
+            As regras são aplicadas somente ao usuário restrito e usam as políticas
+            URLBlocklist/URLAllowlist dos navegadores.
+          </p>
+        </section>
+
+        <section className="panel">
+          <h2>USB / armazenamento removível</h2>
+          <Toggle
+            label="Bloquear leitura de pendrive"
+            value={config.blockUsbRead}
+            onChange={(value) => set("blockUsbRead", value)}
+          />
+          <Toggle
+            label="Bloquear gravação em pendrive"
+            value={config.blockUsbWrite}
+            onChange={(value) => set("blockUsbWrite", value)}
+          />
+          <Toggle
+            label="Bloquear execução de programas pelo USB"
+            value={config.blockUsbExecute}
+            onChange={(value) => set("blockUsbExecute", value)}
+          />
+          <p className="muted">
+            Leitura e gravação são políticas por usuário. Execução usa AppLocker;
+            em AuditOnly ela é registrada, mas ainda não bloqueada.
+          </p>
+        </section>
+
+        <section className="panel important">
+          <h2>Manutenção de perfis e armazenamento</h2>
+
+          <label>
+            Perfis antigos
+            <select
+              value={config.profileCleanupMode}
+              onChange={(event) =>
+                set(
+                  "profileCleanupMode",
+                  event.target.value as Config["profileCleanupMode"]
+                )
+              }
+            >
+              <option value="Off">Desativado</option>
+              <option value="ReportOnly">Somente relatório</option>
+              <option value="Delete">Excluir quando maintenance.ps1 for executado</option>
+            </select>
+          </label>
+
+          <div className="two">
+            <label className="numberField">
+              Considerar inativo após
+              <div>
+                <input
+                  type="number"
+                  min={1}
+                  max={3650}
+                  value={config.profileCleanupDays}
+                  onChange={(event) =>
+                    set(
+                      "profileCleanupDays",
+                      Math.max(1, Math.min(3650, Number(event.target.value) || 30))
+                    )
+                  }
+                />
+                <span>dias</span>
+              </div>
+            </label>
+
+            <label className="numberField">
+              Alertar disco abaixo de
+              <div>
+                <input
+                  type="number"
+                  min={1}
+                  max={99}
+                  value={config.storageWarningFreePercent}
+                  onChange={(event) =>
+                    set(
+                      "storageWarningFreePercent",
+                      Math.max(1, Math.min(99, Number(event.target.value) || 20))
+                    )
+                  }
+                />
+                <span>% livre</span>
+              </div>
+            </label>
+          </div>
+
+          <p className={config.profileCleanupMode === "Delete" ? "warningBox" : "notice"}>
+            {config.profileCleanupMode === "Delete"
+              ? "Modo destrutivo: maintenance.ps1 poderá remover perfis inativos. As contas configuradas como Aluno e Admin são protegidas, assim como perfis carregados e especiais."
+              : "O padrão é relatório: você enxerga candidatos à limpeza e o estado do disco sem apagar dados."}
+          </p>
+        </section>
+
+        <section className="panel">
           <h2>Personalização</h2>
           <Toggle
             label="Bloquear wallpaper"
@@ -589,6 +762,7 @@ export default function Home() {
             <File name="liberar-wallpaper.ps1" description="Libera o wallpaper e agenda o rebloqueio." />
             <File name="verify.ps1" description="Verifica Windows, AppLocker, contas e caminhos dos aplicativos." />
             <File name="scan-pc.ps1" description="Gera inventário JSON para importar novamente no WinLab." />
+            <File name="maintenance.ps1" description="Relata espaço em disco e perfis antigos; pode removê-los quando explicitamente configurado." />
             <File name="config.json" description="Permite reproduzir a mesma configuração." />
             <File name="README.txt" description="Instruções para o técnico." />
           </div>

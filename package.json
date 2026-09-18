@@ -1,6 +1,6 @@
 {
   "name": "winlab-configurator",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "build": "next build",
     "start": "next start",
-    "check": "npm test && npm run typecheck && npm run build"
+    "check": "npm test && npm run typecheck && npm run build",
+    "fixtures": "tsx scripts/generate-ci-fixtures.ts"
   },
   "dependencies": {
     "next": "16.3.3",

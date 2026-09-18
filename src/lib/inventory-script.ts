@@ -109,6 +109,21 @@ function Get-WinLabKnownApps {
 $os = Get-CimInstance Win32_OperatingSystem
 $appLockerAvailable = $null -ne (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyContinue)
 $appIdService = Get-Service AppIDSvc -ErrorAction SilentlyContinue
+$systemDisk = Get-CimInstance Win32_LogicalDisk |
+    Where-Object { $_.DeviceID -eq $env:SystemDrive } |
+    Select-Object -First 1
+
+$storage = if ($systemDisk -and $systemDisk.Size -gt 0) {
+    [ordered]@{
+        systemDrive = [string]$systemDisk.DeviceID
+        sizeGB = [math]::Round($systemDisk.Size / 1GB, 1)
+        freeGB = [math]::Round($systemDisk.FreeSpace / 1GB, 1)
+        freePercent = [math]::Round(($systemDisk.FreeSpace / $systemDisk.Size) * 100, 1)
+    }
+}
+else {
+    $null
+}
 
 $inventory = [ordered]@{
     schemaVersion = 1
@@ -124,6 +139,7 @@ $inventory = [ordered]@{
         available = [bool]$appLockerAvailable
         applicationIdentityStatus = if ($appIdService) { [string]$appIdService.Status } else { $null }
     }
+    storage = $storage
     localUsers = @(Get-WinLabLocalUsers)
     knownApps = @(Get-WinLabKnownApps)
     installedApps = @(Get-WinLabInstalledApps)

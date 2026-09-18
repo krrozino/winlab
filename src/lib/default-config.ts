@@ -21,6 +21,18 @@ export const defaultConfig: Config = {
   blockChromeIncognito: true,
   blockChromePasswordManager: true,
 
+  browserUrlMode: "Unrestricted",
+  blockedUrls: [],
+  allowedUrls: [],
+
+  blockUsbRead: false,
+  blockUsbWrite: false,
+  blockUsbExecute: true,
+
+  profileCleanupMode: "ReportOnly",
+  profileCleanupDays: 30,
+  storageWarningFreePercent: 20,
+
   blockWallpaper: true,
   blockMousePointers: true,
   blockSoundScheme: true,

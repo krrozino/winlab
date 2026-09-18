@@ -24,7 +24,9 @@ function getAllowedPaths(config: Config) {
   ];
 }
 
-function commonHeader(config: Config, title: string) {
+function commonHeader(config: Config, title: string, parameterBlock = "") {
+  const renderedParameters = parameterBlock ? `${parameterBlock}\n\n` : "";
+
   return `#requires -version 5.1
 <#
 ${title}
@@ -34,8 +36,7 @@ Perfil: ${config.profileName}
 Teste primeiro em uma máquina piloto.
 Nenhuma senha é armazenada neste arquivo.
 #>
-
-$ErrorActionPreference = "Stop"
+${renderedParameters}$ErrorActionPreference = "Stop"
 $Aluno = ${psString(config.studentUser)}
 $Admin = ${psString(config.adminUser)}
 
@@ -103,7 +104,7 @@ export function generateSetupScript(config: Config): string {
   const allowedPaths = getAllowedPaths(config);
   const enforcement = config.enforcementMode;
 
-  return `${commonHeader(config, "SETUP")}
+  return `${commonHeader(config, "SETUP", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 $CreateAccounts = ${psBool(config.createAccounts)}
 $BlockInstallers = ${psBool(config.blockInstallers)}
 $BlockStoreApps = ${psBool(config.blockStoreApps)}
@@ -117,6 +118,14 @@ $BlockChromeGuest = ${psBool(config.blockChromeGuest)}
 $BlockChromeNewProfiles = ${psBool(config.blockChromeNewProfiles)}
 $BlockChromeIncognito = ${psBool(config.blockChromeIncognito)}
 $BlockChromePasswordManager = ${psBool(config.blockChromePasswordManager)}
+
+$BrowserUrlMode = "${config.browserUrlMode}"
+$BlockedUrls = ${psArray(config.blockedUrls)}
+$AllowedUrls = ${psArray(config.allowedUrls)}
+
+$BlockUsbRead = ${psBool(config.blockUsbRead)}
+$BlockUsbWrite = ${psBool(config.blockUsbWrite)}
+$BlockUsbExecute = ${psBool(config.blockUsbExecute)}
 
 $BlockWallpaper = ${psBool(config.blockWallpaper)}
 $BlockMousePointers = ${psBool(config.blockMousePointers)}
@@ -142,6 +151,25 @@ function Ensure-Accounts {
 
     Remove-LocalGroupMember -Group (Get-AdminsGroup) -Member $Aluno -ErrorAction SilentlyContinue
     Add-LocalGroupMember -Group (Get-UsersGroup) -Member $Aluno -ErrorAction SilentlyContinue
+}
+
+function Set-PolicyStringList {
+    param(
+        [Parameter(Mandatory=$true)][string]$BasePath,
+        [Parameter(Mandatory=$true)][string]$Name,
+        [string[]]$Values
+    )
+
+    $target = Join-Path $BasePath $Name
+    Remove-Item -Path $target -Recurse -Force -ErrorAction SilentlyContinue
+
+    if (-not $Values -or $Values.Count -eq 0) { return }
+
+    New-Item -Path $target -Force | Out-Null
+
+    for ($index = 0; $index -lt $Values.Count; $index++) {
+        New-ItemProperty -Path $target -Name ([string]($index + 1)) -PropertyType String -Value $Values[$index] -Force | Out-Null
+    }
 }
 
 function Set-StudentChromePolicies {
@@ -170,6 +198,64 @@ function Set-StudentChromePolicies {
             $extensions = Join-Path $base "ExtensionInstallBlocklist"
             New-Item -Path $extensions -Force | Out-Null
             New-ItemProperty -Path $extensions -Name "1" -PropertyType String -Value "*" -Force | Out-Null
+        }
+
+        if ($BrowserUrlMode -eq "Unrestricted") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @()
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values @()
+        }
+        elseif ($BrowserUrlMode -eq "BlockList") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $BlockedUrls
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+        }
+        elseif ($BrowserUrlMode -eq "AllowListOnly") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @("*")
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+        }
+    }
+}
+
+function Set-StudentEdgePolicies {
+    Invoke-WithUserHive -UserName $Aluno -Action {
+        param($sid)
+
+        $base = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
+        New-Item -Path $base -Force | Out-Null
+
+        if ($BrowserUrlMode -eq "Unrestricted") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @()
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values @()
+        }
+        elseif ($BrowserUrlMode -eq "BlockList") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $BlockedUrls
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+        }
+        elseif ($BrowserUrlMode -eq "AllowListOnly") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @("*")
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+        }
+    }
+}
+
+function Set-StudentUsbPolicies {
+    Invoke-WithUserHive -UserName $Aluno -Action {
+        param($sid)
+
+        $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+        New-Item -Path $usb -Force | Out-Null
+
+        if ($BlockUsbRead) {
+            New-ItemProperty -Path $usb -Name Deny_Read -PropertyType DWord -Value 1 -Force | Out-Null
+        }
+        else {
+            Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
+        }
+
+        if ($BlockUsbWrite) {
+            New-ItemProperty -Path $usb -Name Deny_Write -PropertyType DWord -Value 1 -Force | Out-Null
+        }
+        else {
+            Remove-ItemProperty -Path $usb -Name Deny_Write -ErrorAction SilentlyContinue
         }
     }
 }
@@ -264,6 +350,19 @@ function New-WinLabAppLockerXml {
 "@
     }
 
+    if ($BlockUsbExecute) {
+        $denyRules += @"
+    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear execução em USB" Description="" UserOrGroupSid="$studentSid" Action="Deny">
+      <Conditions><FilePathCondition Path="%HOT%\\*" /></Conditions>
+    </FilePathRule>
+"@
+        $denyRules += @"
+    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear execução em mídia removível" Description="" UserOrGroupSid="$studentSid" Action="Deny">
+      <Conditions><FilePathCondition Path="%REMOVABLE%\\*" /></Conditions>
+    </FilePathRule>
+"@
+    }
+
     if ($BlockRegedit) {
         $denyRules += @"
     <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear Regedit" Description="" UserOrGroupSid="$studentSid" Action="Deny">
@@ -317,9 +416,28 @@ $denyRules
 "@
 }
 
+function Show-WinLabPlan {
+    Write-Host "=== WinLab - PREVIEW do setup ===" -ForegroundColor Cyan
+    Write-Host ("Perfil: ${config.profileName}")
+    Write-Host ("Usuário restrito: {0}" -f $Aluno)
+    Write-Host ("Administrador: {0}" -f $Admin)
+    Write-Host ("AppLocker: {0}" -f $EnforcementMode)
+    Write-Host ("Criar/ajustar contas: {0}" -f $CreateAccounts)
+    Write-Host ("Sites: {0}" -f $BrowserUrlMode)
+    Write-Host ("USB leitura bloqueada: {0}" -f $BlockUsbRead)
+    Write-Host ("USB gravação bloqueada: {0}" -f $BlockUsbWrite)
+    Write-Host ("USB execução bloqueada: {0}" -f $BlockUsbExecute)
+    Write-Host ("Aplicativos/caminhos permitidos: {0}" -f $AllowedExecutables.Count)
+    Write-Host ""
+    Write-Host "Nenhuma alteração foi aplicada." -ForegroundColor Green
+    Write-Host "Para aplicar de verdade, execute novamente com -Apply." -ForegroundColor Yellow
+}
+
 function Install-WinLabProfile {
     Ensure-Accounts
     Set-StudentChromePolicies
+    Set-StudentEdgePolicies
+    Set-StudentUsbPolicies
     Set-StudentAccountPolicies
     Set-StudentPersonalizationPolicies
 
@@ -347,18 +465,39 @@ function Install-WinLabProfile {
     Write-Host "Reinicie o computador." -ForegroundColor Yellow
 }
 
-Assert-Administrator
-Install-WinLabProfile
+if ($Apply) {
+    Assert-Administrator
+    Install-WinLabProfile
+}
+else {
+    Show-WinLabPlan
+}
 `;
 }
 
 export function generateRollbackScript(config: Config): string {
-  return `${commonHeader(config, "ROLLBACK")}
+  return `${commonHeader(config, "ROLLBACK", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 function Remove-StudentPolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
 
-        Remove-Item "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome" -Recurse -Force -ErrorAction SilentlyContinue
+        $chrome = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"
+        Remove-ItemProperty -Path $chrome -Name BrowserGuestModeEnabled -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $chrome -Name BrowserAddPersonEnabled -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $chrome -Name IncognitoModeAvailability -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $chrome -Name PasswordManagerEnabled -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $chrome "ExtensionInstallBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $chrome "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $chrome "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
+
+        $edge = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
+        Remove-Item -Path (Join-Path $edge "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $edge "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
+
+        $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+        Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $usb -Name Deny_Write -ErrorAction SilentlyContinue
+
         Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization" -Name NoChangingMousePointers -ErrorAction SilentlyContinue
         Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization" -Name NoChangingSoundScheme -ErrorAction SilentlyContinue
         Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\ActiveDesktop" -Name NoChangingWallPaper -ErrorAction SilentlyContinue
@@ -382,20 +521,29 @@ function Remove-AppLockerPolicy {
     Set-AppLockerPolicy -XmlPolicy $temp
 }
 
-Assert-Administrator
-Remove-StudentPolicies
-Remove-AppLockerPolicy
-gpupdate /force | Out-Null
+if ($Apply) {
+    Assert-Administrator
+    Remove-StudentPolicies
+    Remove-AppLockerPolicy
+    gpupdate /force | Out-Null
 
-Write-Host "Políticas WinLab removidas. As contas locais foram preservadas." -ForegroundColor Green
-Write-Host "Reinicie o computador." -ForegroundColor Yellow
+    Write-Host "Políticas WinLab removidas. As contas locais foram preservadas." -ForegroundColor Green
+    Write-Host "Reinicie o computador." -ForegroundColor Yellow
+}
+else {
+    Write-Host "=== WinLab - PREVIEW do rollback ===" -ForegroundColor Cyan
+    Write-Host "Serão removidas as políticas gerenciadas pelo WinLab e a política AppLocker local gerada pelo pacote." -ForegroundColor Yellow
+    Write-Host "As contas locais serão preservadas."
+    Write-Host "Nenhuma alteração foi aplicada." -ForegroundColor Green
+    Write-Host "Para executar o rollback, rode novamente com -Apply." -ForegroundColor Yellow
+}
 `;
 }
 
 export function generateUnlockWallpaperScript(config: Config): string {
   const minutes = Math.max(5, Math.min(480, Math.round(config.wallpaperUnlockMinutes || 90)));
 
-  return `${commonHeader(config, "LIBERAÇÃO TEMPORÁRIA DE WALLPAPER")}
+  return `${commonHeader(config, "LIBERAÇÃO TEMPORÁRIA DE WALLPAPER", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 $Minutos = ${minutes}
 
 function Set-WallpaperLock {
@@ -408,6 +556,14 @@ function Set-WallpaperLock {
         New-Item -Path $desktop -Force | Out-Null
         New-ItemProperty -Path $desktop -Name NoChangingWallPaper -PropertyType DWord -Value $Value -Force | Out-Null
     }
+}
+
+if (-not $Apply) {
+    Write-Host "=== WinLab - PREVIEW da liberação de wallpaper ===" -ForegroundColor Cyan
+    Write-Host "Wallpaper seria liberado por $Minutos minutos para '$Aluno'."
+    Write-Host "Nenhuma alteração foi aplicada." -ForegroundColor Green
+    Write-Host "Para liberar, rode novamente com -Apply." -ForegroundColor Yellow
+    return
 }
 
 Assert-Administrator
@@ -586,6 +742,140 @@ Write-Host "Use este relatório antes de ativar o AppLocker em modo Enabled." -F
 `;
 }
 
+export function generateMaintenanceScript(config: Config): string {
+  return `${commonHeader(config, "MANUTENÇÃO E LIMPEZA DE PERFIS", `[CmdletBinding()]\nparam([switch]$Apply)`)}
+
+Assert-Administrator
+
+$Mode = "${config.profileCleanupMode}"
+$Days = ${config.profileCleanupDays}
+$StorageWarningFreePercent = ${config.storageWarningFreePercent}
+
+function Get-WinLabLastUseTime {
+    param($Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value }
+
+    try {
+        return [Management.ManagementDateTimeConverter]::ToDateTime([string]$Value)
+    }
+    catch {
+        return $null
+    }
+}
+
+$disk = Get-CimInstance Win32_LogicalDisk |
+    Where-Object { $_.DeviceID -eq $env:SystemDrive } |
+    Select-Object -First 1
+
+$freePercent = if ($disk -and $disk.Size -gt 0) {
+    [math]::Round(($disk.FreeSpace / $disk.Size) * 100, 1)
+}
+else {
+    $null
+}
+
+Write-Host "=== WinLab - Manutenção ===" -ForegroundColor Cyan
+Write-Host ("Modo: {0}" -f $Mode)
+Write-Host ("Perfis inativos: {0} dias" -f $Days)
+
+if ($disk) {
+    $freeGb = [math]::Round($disk.FreeSpace / 1GB, 1)
+    $totalGb = [math]::Round($disk.Size / 1GB, 1)
+    Write-Host ("Disco {0}: {1} GB livres de {2} GB ({3}%)" -f $disk.DeviceID, $freeGb, $totalGb, $freePercent)
+
+    if ($freePercent -lt $StorageWarningFreePercent) {
+        Write-Warning ("Espaço livre abaixo do limite configurado de {0}%." -f $StorageWarningFreePercent)
+    }
+}
+
+$protectedSids = @()
+
+foreach ($name in @($Aluno, $Admin)) {
+    $user = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
+    if ($user) {
+        $protectedSids += $user.SID.Value
+    }
+}
+
+$cutoff = (Get-Date).AddDays(-$Days)
+$candidates = @()
+
+foreach ($profile in Get-CimInstance Win32_UserProfile) {
+    if ($profile.Special -or $profile.Loaded) { continue }
+    if (-not $profile.LocalPath -or -not $profile.SID) { continue }
+    if ($protectedSids -contains $profile.SID) { continue }
+    if ($profile.LocalPath -match "\\(Default|Public|defaultuser0)$") { continue }
+
+    $lastUse = Get-WinLabLastUseTime $profile.LastUseTime
+    if ($null -eq $lastUse -or $lastUse -ge $cutoff) { continue }
+
+    $candidates += [PSCustomObject]@{
+        SID = [string]$profile.SID
+        LocalPath = [string]$profile.LocalPath
+        LastUseTime = $lastUse
+    }
+}
+
+Write-Host ""
+Write-Host ("Perfis candidatos: {0}" -f $candidates.Count) -ForegroundColor Yellow
+
+foreach ($profile in $candidates) {
+    Write-Host ("- {0} | último uso: {1}" -f $profile.LocalPath, $profile.LastUseTime)
+}
+
+$deleted = 0
+
+if ($Mode -eq "Delete" -and $Apply -and $candidates.Count -gt 0) {
+    Write-Warning "Modo Delete ativo: perfis candidatos serão removidos. Valide em PC piloto e mantenha backup dos dados necessários."
+
+    foreach ($candidate in $candidates) {
+        $profile = Get-CimInstance Win32_UserProfile |
+            Where-Object { $_.SID -eq $candidate.SID } |
+            Select-Object -First 1
+
+        if ($profile -and -not $profile.Loaded -and -not $profile.Special) {
+            Remove-CimInstance -InputObject $profile
+            $deleted++
+            Write-Host ("Removido: {0}" -f $candidate.LocalPath) -ForegroundColor Green
+        }
+    }
+}
+elseif ($Mode -eq "Delete" -and -not $Apply) {
+    Write-Host "Modo Delete configurado, mas este foi apenas um PREVIEW. Nenhum perfil foi removido." -ForegroundColor Cyan
+    Write-Host "Para permitir exclusões, rode novamente com -Apply." -ForegroundColor Yellow
+}
+elseif ($Mode -eq "ReportOnly") {
+    Write-Host "Modo relatório: nenhum perfil foi removido." -ForegroundColor Cyan
+}
+else {
+    Write-Host "Limpeza de perfis desativada." -ForegroundColor DarkGray
+}
+
+$folder = "C:\\ProgramData\\WinLab"
+New-Item -Path $folder -ItemType Directory -Force | Out-Null
+
+$report = [ordered]@{
+    generatedAt = (Get-Date).ToString("o")
+    computerName = $env:COMPUTERNAME
+    mode = $Mode
+    inactiveDays = $Days
+    storageWarningFreePercent = $StorageWarningFreePercent
+    freePercent = $freePercent
+    candidates = @($candidates)
+    deleted = $deleted
+}
+
+$reportPath = Join-Path $folder "maintenance-latest.json"
+$report | ConvertTo-Json -Depth 5 | Set-Content -Path $reportPath -Encoding UTF8
+
+Write-Host ""
+Write-Host ("Relatório salvo em {0}" -f $reportPath) -ForegroundColor Cyan
+`;
+}
+
+
 export function generateConfigJson(config: Config): string {
   return serializeConfig(config);
 }
@@ -602,7 +892,7 @@ AppLocker: ${config.enforcementMode === "AuditOnly" ? "AUDITORIA" : "BLOQUEIO AT
 ARQUIVOS
 --------
 setup.ps1
-  Aplica contas, políticas por usuário, Chrome, personalização e AppLocker.
+  Aplica contas, políticas por usuário, Chrome/Edge, USB, personalização e AppLocker.
 
 rollback.ps1
   Remove as políticas WinLab e preserva as contas.
@@ -619,8 +909,12 @@ verify.ps1
 
 scan-pc.ps1
   Gera um inventário JSON local com informações do Windows, contas locais,
-  AppLocker e programas instalados para importar no WinLab.
+  AppLocker, armazenamento e programas instalados para importar no WinLab.
   Não coleta senhas, documentos ou histórico do navegador.
+
+maintenance.ps1
+  Mostra espaço livre e perfis inativos. No modo Delete pode remover perfis
+  não carregados e antigos, preservando as contas Aluno/Admin configuradas.
 
 config.json
   Configuração versionada usada para gerar este pacote.
@@ -630,17 +924,41 @@ FLUXO RECOMENDADO
 -----------------
 1. Execute verify.ps1 como administrador e confira a máquina.
 2. Gere inicialmente em modo AUDITORIA.
-3. Execute setup.ps1 como administrador.
-4. Reinicie.
-5. Use normalmente a conta ${config.studentUser}.
-6. Execute audit.ps1 e confira os eventos.
-7. Ajuste a allowlist no WinLab.
-8. Gere novamente em modo BLOQUEIO ATIVO.
-9. Execute o novo setup.ps1.
+3. Execute setup.ps1 SEM -Apply para revisar o plano.
+4. Quando estiver de acordo, execute setup.ps1 -Apply como administrador.
+5. Reinicie.
+6. Use normalmente a conta ${config.studentUser}.
+7. Execute audit.ps1 e confira os eventos.
+8. Ajuste a allowlist no WinLab.
+9. Gere novamente em modo BLOQUEIO ATIVO.
+10. Revise o preview e só então execute o novo setup.ps1 -Apply.
+
+SEGURANÇA DE EXECUÇÃO
+---------------------
+setup.ps1, rollback.ps1 e liberar-wallpaper.ps1 não alteram o Windows sem -Apply.
+maintenance.ps1 pode gerar relatório sem -Apply; exclusões no modo Delete exigem -Apply.
 
 CONTAS LOCAIS
 -------------
 ${config.allowLocalAccountManagement ? "A página Contas > Outros usuários fica disponível para a conta restrita. Criar ou remover contas continua exigindo credencial administrativa." : "A página Contas > Outros usuários fica oculta para a conta restrita."}
+
+WEB
+---
+Modo: ${config.browserUrlMode}
+Bloqueados: ${config.blockedUrls.join(", ") || "nenhum"}
+Permitidos/exceções: ${config.allowedUrls.join(", ") || "nenhum"}
+
+USB
+---
+Leitura: ${config.blockUsbRead ? "bloqueada" : "permitida"}
+Gravação: ${config.blockUsbWrite ? "bloqueada" : "permitida"}
+Execução: ${config.blockUsbExecute ? "bloqueada via AppLocker" : "permitida pela regra WinLab"}
+
+MANUTENÇÃO
+----------
+Modo: ${config.profileCleanupMode}
+Perfis inativos após: ${config.profileCleanupDays} dias
+Alerta de armazenamento: abaixo de ${config.storageWarningFreePercent}% livre
 
 Nenhuma senha é armazenada nos arquivos.
 `;

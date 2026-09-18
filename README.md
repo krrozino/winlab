@@ -1,65 +1,80 @@
 # WinLab Configurator
 
-Gerador de configurações PowerShell para preparar computadores Windows usados em escolas, laboratórios, totens e pequenas empresas.
+Gerador local-first de configurações PowerShell para Windows compartilhados em escolas, laboratórios, totens e pequenas empresas.
 
-O WinLab gera os scripts no próprio navegador. Senhas não são armazenadas pelo projeto.
+O WinLab gera os scripts no navegador. Senhas não são armazenadas pelo projeto.
 
-## MVP 0.4
+## MVP 0.5
 
-O WinLab agora possui um fluxo de **inventário da máquina**.
+### Navegação controlada
 
-1. Baixe `scan-pc.ps1` pelo WinLab.
-2. Execute o scanner no computador Windows.
-3. Ele cria `winlab-inventory-NOMEDOPC.json`.
-4. Importe o JSON no WinLab.
-5. O app mostra a máquina e sugere aplicativos detectados para a allowlist.
+Chrome e Microsoft Edge podem operar em três modos:
 
-### O inventário coleta
+- sem restrição de URL;
+- bloquear apenas sites definidos;
+- permitir somente sites definidos.
 
-- nome do computador;
-- edição, versão, build e arquitetura do Windows;
-- disponibilidade do AppLocker;
-- estado do serviço Application Identity;
-- nomes e estado das contas locais;
-- quais contas locais são administradoras;
-- aplicativos conhecidos encontrados em caminhos padrão;
-- lista de programas registrados no Windows.
+O WinLab usa as políticas nativas `URLBlocklist` e `URLAllowlist` somente para o usuário restrito.
 
-### O inventário não coleta
+### USB granular
 
-- senhas;
-- documentos;
-- fotos;
-- conteúdo de arquivos;
-- histórico do navegador;
-- cookies;
-- mensagens;
-- credenciais.
+O usuário restrito pode ter separadamente:
 
-O JSON só é processado localmente pela interface do WinLab.
+- leitura de pendrive bloqueada;
+- gravação bloqueada;
+- execução de programas pelo USB bloqueada.
+
+Leitura/gravação usam políticas de Removable Storage por usuário. A execução usa AppLocker com os caminhos nativos `%HOT%` e `%REMOVABLE%`.
+
+O preset padrão continua permitindo documentos em pendrive, mas bloqueia execução de programas pelo USB.
+
+### Manutenção
+
+O pacote agora inclui `maintenance.ps1`.
+
+Ele:
+
+- mostra espaço livre do disco do sistema;
+- alerta abaixo de um limite configurável;
+- identifica perfis sem uso há X dias;
+- protege os perfis do usuário restrito e administrador configurados;
+- ignora perfis especiais e carregados;
+- em `ReportOnly`, apenas relata;
+- em `Delete`, remove os candidatos e grava relatório em `C:\ProgramData\WinLab\maintenance-latest.json`.
+
+O padrão é **ReportOnly**.
+
+### Inventário
+
+`scan-pc.ps1` também passou a registrar:
+
+- tamanho do disco do sistema;
+- espaço livre;
+- percentual livre.
 
 ## Funcionalidades acumuladas
 
-- Presets Microlins, Escola, Empresa e Totem
-- Importação de `config.json`
-- Formato versionado com `schemaVersion`
-- Revisão de riscos antes da geração
-- Catálogo de aplicativos conhecidos
-- AppLocker em `AuditOnly` ou `Enabled`
-- Conta administrativa fora das políticas por usuário
-- Políticas do Chrome somente para o usuário restrito
-- Bloqueio opcional de MSI, Store/Appx, CMD, PowerShell e Regedit
-- Controle da página de Contas > Outros usuários para a conta restrita
-- Wallpaper, ponteiro e sons controláveis
-- Liberação temporária de wallpaper
-- `verify.ps1`
-- `audit.ps1`
-- `scan-pc.ps1`
-- Scanner + importação de inventário
-- Sugestões de allowlist a partir da máquina
-- Busca nos programas instalados
-- ZIP criado localmente no navegador
-- Testes automatizados + CI
+- presets Microlins, Escola, Empresa e Totem;
+- importação de `config.json`;
+- inventário da máquina;
+- detecção de apps conhecidos;
+- sugestões de allowlist;
+- AppLocker AuditOnly/Enabled;
+- políticas por usuário;
+- admin fora das políticas do aluno;
+- Chrome/Edge URL blocklist e allowlist;
+- USB leitura/gravação/execução;
+- conta local: acesso à página Outros usuários;
+- Chrome: extensões, convidado, perfis, incógnito e senhas;
+- wallpaper, ponteiro e sons;
+- liberação temporária de wallpaper;
+- manutenção de perfis;
+- alerta de armazenamento;
+- rollback;
+- auditoria;
+- testes automatizados e CI;
+- validação dos scripts gerados em runner Windows com PowerShell 5.1 e PowerShell 7;
+- montagem e validação automática do XML AppLocker em CI.
 
 ## Pacote gerado
 
@@ -69,6 +84,7 @@ rollback.ps1
 audit.ps1
 verify.ps1
 scan-pc.ps1
+maintenance.ps1
 liberar-wallpaper.ps1
 config.json
 README.txt
@@ -77,17 +93,13 @@ README.txt
 ## Fluxo recomendado
 
 ```text
-PC piloto
-   ↓
 scan-pc.ps1
    ↓
-winlab-inventory.json
+Importar inventário
    ↓
-Importar no WinLab
+Configurar WinLab
    ↓
-Revisar apps / allowlist
-   ↓
-Gerar em AuditOnly
+Gerar AuditOnly
    ↓
 verify.ps1
    ↓
@@ -97,12 +109,45 @@ Uso real
    ↓
 audit.ps1
    ↓
+maintenance.ps1
+   ↓
 Ajustes
    ↓
 Enabled
-   ↓
-Replicar
 ```
+
+## Segurança
+
+### Preview por padrão
+
+Os scripts que alteram o Windows exigem confirmação explícita:
+
+```powershell
+.\setup.ps1
+# apenas mostra o plano
+
+.\setup.ps1 -Apply
+# aplica a configuração
+
+.\rollback.ps1
+# apenas mostra o que seria removido
+
+.\rollback.ps1 -Apply
+# executa o rollback
+
+.\maintenance.ps1
+# relatório/previsão
+
+.\maintenance.ps1 -Apply
+# só é necessário para permitir exclusões quando o modo Delete estiver configurado
+```
+
+- teste em PC piloto;
+- mantenha uma conta administrativa funcional;
+- use AuditOnly antes de Enabled;
+- limpeza de perfis nasce em ReportOnly;
+- o rollback não remove mais toda a árvore de políticas do Chrome: remove apenas valores/subchaves gerenciados pelo WinLab;
+- URLs e USB são configurados para o usuário restrito sempre que a política do Windows suporta escopo por usuário.
 
 ## Desenvolvimento
 
@@ -114,39 +159,9 @@ npm run build
 npm run dev
 ```
 
-A CI executa testes, typecheck e build em todo pull request para `main`.
+A CI executa testes, typecheck e build em pull requests para `main`.
 
-## Estrutura
+## Pesquisa e roadmap
 
-```text
-src/
-├── app/
-│   ├── globals.css
-│   ├── layout.tsx
-│   └── page.tsx
-└── lib/
-    ├── apps.ts
-    ├── config-io.ts
-    ├── default-config.ts
-    ├── generator.ts
-    ├── inventory-script.ts
-    ├── inventory-types.ts
-    ├── inventory.ts
-    ├── presets.ts
-    ├── review.ts
-    ├── security.ts
-    ├── types.ts
-    └── zip.ts
-
-tests/
-└── core.test.ts
-```
-
-## Próximos passos
-
-- permitir transformar um programa detectado fora do catálogo em regra customizada;
-- importar e interpretar automaticamente os logs do AppLocker;
-- sugerir regras por publisher/assinatura;
-- presets personalizados salvos localmente;
-- companion app opcional para fluxo de inventário ainda mais simples;
-- testes em matriz real Windows 10/11.
+- `docs/market-research-2026-09.md`
+- Issue #4: roadmap pós-pesquisa
