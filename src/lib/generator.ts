@@ -835,6 +835,44 @@ function Remove-StudentPolicies {
     }
 }
 
+function Restore-RegistryBaseline {
+    param([Parameter(Mandatory=$true)]$State)
+
+    if (-not $State.registryBaselineDir) {
+        Write-Warning "Estado WinLab sem baseline de registro; nada será importado."
+        return
+    }
+
+    $baselineDir = [string]$State.registryBaselineDir
+    if (-not (Test-Path $baselineDir)) {
+        throw "Baseline de registro não encontrado: $baselineDir"
+    }
+
+    $files = @(Get-ChildItem -Path $baselineDir -Filter *.reg -File -ErrorAction SilentlyContinue)
+    if ($files.Count -eq 0) {
+        Write-Host "Baseline de registro não continha chaves anteriores para restaurar." -ForegroundColor DarkGray
+        return
+    }
+
+    if (-not (Test-StudentProfileExists)) {
+        throw "Há backups de registro para '$Aluno', mas o perfil local não existe mais. Restauração manual necessária."
+    }
+
+    Invoke-WithUserHive -UserName $Aluno -Action {
+        param($sid)
+
+        foreach ($file in $files) {
+            reg.exe import $file.FullName | Out-Null
+
+            if ($LASTEXITCODE -ne 0) {
+                throw "Falha ao restaurar baseline de registro: $($file.FullName)"
+            }
+        }
+    }
+
+    Write-Host "Baseline de registro restaurado a partir de $baselineDir" -ForegroundColor Green
+}
+
 function Restore-AppLockerBaseline {
     param([Parameter(Mandatory=$true)]$State)
 
@@ -868,9 +906,11 @@ if ($Apply) {
 
     if (Test-StudentProfileExists) {
         Remove-StudentPolicies
+        Restore-RegistryBaseline -State $state
     }
     else {
         Write-Host "Perfil do usuário '$Aluno' não existe; não há hive de usuário para limpar." -ForegroundColor DarkGray
+        Restore-RegistryBaseline -State $state
     }
 
     Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
