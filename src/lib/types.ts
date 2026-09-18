@@ -18,6 +18,7 @@ export type Config = {
   blockCmd: boolean;
   blockPowerShell: boolean;
   blockRegedit: boolean;
+  allowLocalAccountManagement: boolean;
 
   blockChromeExtensions: boolean;
   blockChromeGuest: boolean;
