@@ -296,3 +296,37 @@ test("generated Windows paths keep exact removable-storage and browser registry 
   assert.ok(script.includes(String.raw`%HOT%\*`));
   assert.ok(script.includes(String.raw`%REMOVABLE%\*`));
 });
+
+
+test("generated setup and rollback require explicit Apply", () => {
+  const setup = generateSetupScript(defaultConfig);
+  const rollback = generateRollbackScript(defaultConfig);
+
+  assert.ok(setup.includes("param([switch]$Apply)"));
+  assert.ok(setup.includes("if ($Apply)"));
+  assert.ok(setup.includes("Nenhuma alteração foi aplicada"));
+
+  assert.ok(rollback.includes("param([switch]$Apply)"));
+  assert.ok(rollback.includes("if ($Apply)"));
+  assert.ok(rollback.includes("PREVIEW do rollback"));
+});
+
+test("profile deletion requires explicit Apply", () => {
+  const maintenance = generateMaintenanceScript({
+    ...defaultConfig,
+    profileCleanupMode: "Delete"
+  });
+
+  assert.ok(maintenance.includes('param([switch]$Apply)'));
+  assert.ok(maintenance.includes('$Mode -eq "Delete" -and $Apply'));
+  assert.ok(maintenance.includes("apenas um PREVIEW"));
+});
+
+test("PowerShell parameters are emitted before executable statements", () => {
+  const setup = generateSetupScript(defaultConfig);
+  const paramIndex = setup.indexOf("param([switch]$Apply)");
+  const errorPreferenceIndex = setup.indexOf('$ErrorActionPreference = "Stop"');
+
+  assert.ok(paramIndex > 0);
+  assert.ok(errorPreferenceIndex > paramIndex);
+});
