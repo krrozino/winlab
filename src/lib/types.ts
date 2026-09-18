@@ -1,9 +1,6 @@
-export type AllowedAppId =
-  | "chrome"
-  | "word"
-  | "excel"
-  | "powerpoint"
-  | "powerbi";
+import type { AllowedAppId } from "./apps";
+
+export type { AllowedAppId } from "./apps";
 
 export type EnforcementMode = "AuditOnly" | "Enabled";
 export type PresetId = "microlins" | "school" | "company" | "kiosk";
@@ -35,4 +32,8 @@ export type Config = {
 
   allowedApps: AllowedAppId[];
   customAllowedPaths: string[];
+};
+
+export type ConfigFile = Config & {
+  schemaVersion: 1;
 };

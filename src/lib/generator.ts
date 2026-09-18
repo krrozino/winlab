@@ -1,27 +1,6 @@
-import { AllowedAppId, Config } from "./types";
-
-const APP_PATHS: Record<AllowedAppId, string[]> = {
-  chrome: [
-    "%PROGRAMFILES%\\Google\\Chrome\\Application\\chrome.exe",
-    "%PROGRAMFILES(X86)%\\Google\\Chrome\\Application\\chrome.exe"
-  ],
-  word: [
-    "%PROGRAMFILES%\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
-    "%PROGRAMFILES(X86)%\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
-  ],
-  excel: [
-    "%PROGRAMFILES%\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
-    "%PROGRAMFILES(X86)%\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
-  ],
-  powerpoint: [
-    "%PROGRAMFILES%\\Microsoft Office\\root\\Office16\\POWERPNT.EXE",
-    "%PROGRAMFILES(X86)%\\Microsoft Office\\root\\Office16\\POWERPNT.EXE"
-  ],
-  powerbi: [
-    "%PROGRAMFILES%\\Microsoft Power BI Desktop\\bin\\PBIDesktop.exe",
-    "%PROGRAMFILES(X86)%\\Microsoft Power BI Desktop\\bin\\PBIDesktop.exe"
-  ]
-};
+import { APP_CATALOG } from "./apps";
+import { serializeConfig } from "./config-io";
+import { Config } from "./types";
 
 function psBool(value: boolean) {
   return value ? "$true" : "$false";
@@ -40,7 +19,7 @@ ${values.map((value) => `    ${psString(value)}`).join(",\n")}
 
 function getAllowedPaths(config: Config) {
   return [
-    ...config.allowedApps.flatMap((app) => APP_PATHS[app]),
+    ...config.allowedApps.flatMap((app) => APP_CATALOG[app].paths),
     ...config.customAllowedPaths.map((path) => path.trim()).filter(Boolean)
   ];
 }
@@ -497,8 +476,99 @@ foreach ($log in $logs) {
 `;
 }
 
+
+export function generateVerifyScript(config: Config): string {
+  const knownApps = config.allowedApps.map((id) => ({
+    label: APP_CATALOG[id].label,
+    paths: APP_CATALOG[id].paths
+  }));
+  const appBlocks = knownApps
+    .map(
+      (app) => `    @{
+        Name = ${psString(app.label)}
+        Paths = ${psArray([...app.paths])}
+    }`
+    )
+    .join(",\n");
+
+  return `${commonHeader(config, "VERIFICAÇÃO DO PC")}
+
+Assert-Administrator
+
+$KnownApps = @(
+${appBlocks}
+)
+$CustomAllowedPaths = ${psArray(config.customAllowedPaths)}
+
+function Write-Check {
+    param(
+        [string]$Name,
+        [bool]$Ok,
+        [string]$Details
+    )
+
+    $status = if ($Ok) { "OK" } else { "ATENÇÃO" }
+    $color = if ($Ok) { "Green" } else { "Yellow" }
+    Write-Host ("[{0}] {1} - {2}" -f $status, $Name, $Details) -ForegroundColor $color
+}
+
+Write-Host "=== WinLab - Verificação da máquina ===" -ForegroundColor Cyan
+Write-Host "Perfil: ${config.profileName}"
+Write-Host ""
+
+$os = Get-CimInstance Win32_OperatingSystem
+Write-Host ("Computador: {0}" -f $env:COMPUTERNAME)
+Write-Host ("Windows: {0}" -f $os.Caption)
+Write-Host ("Versão: {0}" -f $os.Version)
+Write-Host ("Build: {0}" -f $os.BuildNumber)
+Write-Host ("Arquitetura: {0}" -f $os.OSArchitecture)
+Write-Host ""
+
+$hasAppLocker = $null -ne (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyContinue)
+Write-Check "AppLocker" $hasAppLocker $(if ($hasAppLocker) { "cmdlets disponíveis" } else { "cmdlets não encontrados" })
+
+$service = Get-Service AppIDSvc -ErrorAction SilentlyContinue
+Write-Check "Application Identity" ($null -ne $service) $(if ($service) { "serviço encontrado: $($service.Status)" } else { "serviço não encontrado" })
+
+$student = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
+$admin = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
+Write-Check "Conta restrita" ($null -ne $student -or ${psBool(config.createAccounts)}) $(if ($student) { "existe: $Aluno" } else { "será criada pelo setup: $Aluno" })
+Write-Check "Conta administrativa" ($null -ne $admin -or ${psBool(config.createAccounts)}) $(if ($admin) { "existe: $Admin" } else { "será criada pelo setup: $Admin" })
+
+Write-Host ""
+Write-Host "=== Aplicativos conhecidos ===" -ForegroundColor Cyan
+
+foreach ($app in $KnownApps) {
+    $found = $null
+
+    foreach ($rawPath in $app.Paths) {
+        $expanded = [Environment]::ExpandEnvironmentVariables($rawPath)
+        if (Test-Path $expanded) {
+            $found = $expanded
+            break
+        }
+    }
+
+    Write-Check $app.Name ($null -ne $found) $(if ($found) { "encontrado: $found" } else { "nenhum caminho conhecido encontrado" })
+}
+
+if ($CustomAllowedPaths.Count -gt 0) {
+    Write-Host ""
+    Write-Host "=== Caminhos personalizados ===" -ForegroundColor Cyan
+
+    foreach ($rawPath in $CustomAllowedPaths) {
+        $expanded = [Environment]::ExpandEnvironmentVariables($rawPath)
+        Write-Check $rawPath (Test-Path $expanded) $(if (Test-Path $expanded) { "encontrado" } else { "não encontrado" })
+    }
+}
+
+Write-Host ""
+Write-Host "Use este relatório antes de ativar o AppLocker em modo Enabled." -ForegroundColor Yellow
+`;
+}
+
 export function generateConfigJson(config: Config): string {
-  return JSON.stringify(config, null, 2);
+  return serializeConfig(config);
 }
 
 export function generateReadme(config: Config): string {
@@ -525,19 +595,24 @@ liberar-wallpaper.ps1
   Libera somente a troca de wallpaper por ${config.wallpaperUnlockMinutes} minutos.
   O bloqueio volta automaticamente.
 
+verify.ps1
+  Verifica Windows, AppLocker, contas e caminhos conhecidos dos aplicativos antes do setup.
+
 config.json
-  Configuração usada para gerar este pacote.
+  Configuração versionada usada para gerar este pacote.
+  Pode ser importada novamente no WinLab.
 
 FLUXO RECOMENDADO
 -----------------
-1. Gere inicialmente em modo AUDITORIA.
-2. Execute setup.ps1 como administrador.
-3. Reinicie.
-4. Use normalmente a conta ${config.studentUser}.
-5. Execute audit.ps1 e confira os eventos.
-6. Ajuste a allowlist no WinLab.
-7. Gere novamente em modo BLOQUEIO ATIVO.
-8. Execute o novo setup.ps1.
+1. Execute verify.ps1 como administrador e confira a máquina.
+2. Gere inicialmente em modo AUDITORIA.
+3. Execute setup.ps1 como administrador.
+4. Reinicie.
+5. Use normalmente a conta ${config.studentUser}.
+6. Execute audit.ps1 e confira os eventos.
+7. Ajuste a allowlist no WinLab.
+8. Gere novamente em modo BLOQUEIO ATIVO.
+9. Execute o novo setup.ps1.
 
 Nenhuma senha é armazenada nos arquivos.
 `;
