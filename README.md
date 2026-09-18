@@ -231,3 +231,14 @@ npm run dev
 - `docs/market-research-2026-09.md`
 - Issue #4 — roadmap pós-pesquisa
 - Issue #6 — Safety & Recovery
+
+
+## Política de deploy
+
+Para preservar os limites da Vercel:
+
+- somente a branch `main` possui deploy automático;
+- branches de feature e pull requests usam GitHub Actions, sem preview automático;
+- preview Vercel de feature branch deve ser criado manualmente apenas quando houver necessidade real de revisão visual;
+- desenvolvimento normal deve ser validado por testes, typecheck, build e runner Windows;
+- merge em `main` pode gerar o deployment de produção.
