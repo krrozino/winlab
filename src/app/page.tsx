@@ -1,6 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { APP_CATALOG } from "@/lib/apps";
+import { parseConfigJson } from "@/lib/config-io";
+import { getConfigReview } from "@/lib/review";
 import { defaultConfig } from "@/lib/default-config";
 import { getPreset, presets } from "@/lib/presets";
 import { Config, AllowedAppId, PresetId } from "@/lib/types";
@@ -12,16 +15,9 @@ import {
   generateReadme,
   generateRollbackScript,
   generateSetupScript,
-  generateUnlockWallpaperScript
+  generateUnlockWallpaperScript,
+  generateVerifyScript
 } from "@/lib/generator";
-
-const APP_LABELS: Record<AllowedAppId, string> = {
-  chrome: "Google Chrome",
-  word: "Microsoft Word",
-  excel: "Microsoft Excel",
-  powerpoint: "Microsoft PowerPoint",
-  powerbi: "Power BI Desktop"
-};
 
 function downloadBlob(name: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
@@ -40,8 +36,10 @@ export default function Home() {
   const [config, setConfig] = useState<Config>(defaultConfig);
   const [activePreset, setActivePreset] = useState<PresetId>("microlins");
   const [newPath, setNewPath] = useState("");
+  const [importStatus, setImportStatus] = useState<string | null>(null);
 
   const setupScript = useMemo(() => generateSetupScript(config), [config]);
+  const reviewItems = useMemo(() => getConfigReview(config), [config]);
   const riskyCustomPaths = config.customAllowedPaths
     .map((path) => ({ path, warning: pathRisk(path) }))
     .filter((item) => item.warning);
@@ -75,12 +73,28 @@ export default function Home() {
     setNewPath("");
   }
 
+  async function importConfig(file: File | undefined) {
+    if (!file) return;
+
+    try {
+      const parsed = parseConfigJson(await file.text());
+      setConfig(parsed);
+      setActivePreset("microlins");
+      setImportStatus(`Configuração importada: ${file.name}`);
+    } catch (error) {
+      setImportStatus(
+        error instanceof Error ? error.message : "Não foi possível importar o arquivo."
+      );
+    }
+  }
+
   function exportPackage() {
     const blob = createZip([
       { name: "setup.ps1", content: generateSetupScript(config) },
       { name: "rollback.ps1", content: generateRollbackScript(config) },
       { name: "audit.ps1", content: generateAuditScript(config) },
       { name: "liberar-wallpaper.ps1", content: generateUnlockWallpaperScript(config) },
+      { name: "verify.ps1", content: generateVerifyScript(config) },
       { name: "config.json", content: generateConfigJson(config) },
       { name: "README.txt", content: generateReadme(config) }
     ]);
@@ -99,7 +113,7 @@ export default function Home() {
     <main>
       <header className="hero">
         <div>
-          <p className="eyebrow">WinLab Configurator · MVP 0.2</p>
+          <p className="eyebrow">WinLab Configurator · MVP 0.3</p>
           <h1>Configure o Windows sem configurar máquina por máquina.</h1>
           <p className="subtitle">
             Escolha um preset, ajuste as políticas e gere um pacote portátil com
@@ -123,6 +137,22 @@ export default function Home() {
             <span>{preset.description}</span>
           </button>
         ))}
+      </section>
+
+      <section className="importBar">
+        <div>
+          <strong>Reutilizar configuração</strong>
+          <span>Importe um config.json gerado anteriormente e continue de onde parou.</span>
+        </div>
+        <label className="importButton">
+          Importar config.json
+          <input
+            type="file"
+            accept=".json,application/json"
+            onChange={(event) => importConfig(event.target.files?.[0])}
+          />
+        </label>
+        {importStatus && <p className="importStatus">{importStatus}</p>}
       </section>
 
       <div className="grid">
@@ -196,14 +226,14 @@ export default function Home() {
           </p>
 
           <div className="apps">
-            {(Object.keys(APP_LABELS) as AllowedAppId[]).map((app) => (
+            {(Object.keys(APP_CATALOG) as AllowedAppId[]).map((app) => (
               <button
                 key={app}
                 className={config.allowedApps.includes(app) ? "app active" : "app"}
                 onClick={() => toggleApp(app)}
               >
                 <span>{config.allowedApps.includes(app) ? "✓" : "+"}</span>
-                {APP_LABELS[app]}
+                {APP_CATALOG[app].label}
               </button>
             ))}
           </div>
@@ -343,6 +373,24 @@ export default function Home() {
           </label>
         </section>
 
+        <section className="panel reviewPanel">
+          <h2>Revisão antes de gerar</h2>
+          <p className="muted">
+            Confira o que merece atenção antes de levar o pacote para um PC.
+          </p>
+          <div className="reviewList">
+            {reviewItems.map((item, index) => (
+              <div
+                key={`${item.level}-${index}`}
+                className={item.level === "warning" ? "review warning" : "review info"}
+              >
+                <strong>{item.level === "warning" ? "Atenção" : "Info"}</strong>
+                <span>{item.text}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
         <section className="panel packagePanel">
           <h2>Pacote gerado</h2>
 
@@ -351,6 +399,7 @@ export default function Home() {
             <File name="rollback.ps1" description="Remove as políticas sem apagar as contas." />
             <File name="audit.ps1" description="Lê os eventos do AppLocker dos últimos 7 dias." />
             <File name="liberar-wallpaper.ps1" description="Libera o wallpaper e agenda o rebloqueio." />
+            <File name="verify.ps1" description="Verifica Windows, AppLocker, contas e caminhos dos aplicativos." />
             <File name="config.json" description="Permite reproduzir a mesma configuração." />
             <File name="README.txt" description="Instruções para o técnico." />
           </div>
