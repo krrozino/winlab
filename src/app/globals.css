@@ -85,7 +85,7 @@ h1 {
 
 .presetBar {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
   margin-bottom: 18px;
 }
@@ -773,4 +773,25 @@ pre {
   .sectionHeading {
     flex-direction: column;
   }
+}
+
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  outline: none;
+  line-height: 1.5;
+}
+
+textarea:focus {
+  border-color: var(--accent);
+}
+
+.textAreaField {
+  margin-top: 14px;
 }
