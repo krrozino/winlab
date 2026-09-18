@@ -17,6 +17,7 @@ import { getPreset, presets } from "@/lib/presets";
 import { Config, AllowedAppId, PresetId } from "@/lib/types";
 import { pathRisk } from "@/lib/security";
 import { createZip } from "@/lib/zip";
+import { getConfigErrors } from "@/lib/validation";
 import {
   generateAuditScript,
   generateConfigJson,
@@ -52,6 +53,7 @@ export default function Home() {
 
   const setupScript = useMemo(() => generateSetupScript(config), [config]);
   const reviewItems = useMemo(() => getConfigReview(config), [config]);
+  const configErrors = useMemo(() => getConfigErrors(config), [config]);
   const inventoryDetectedApps = inventory ? detectedKnownApps(inventory) : [];
   const inventorySuggestions = inventory ? suggestedAllowedApps(inventory, config) : [];
   const inventoryInstalledApps = inventory
@@ -128,6 +130,8 @@ export default function Home() {
   }
 
   function exportPackage() {
+    if (configErrors.length > 0) return;
+
     const blob = createZip([
       { name: "setup.ps1", content: generateSetupScript(config) },
       { name: "rollback.ps1", content: generateRollbackScript(config) },
@@ -162,7 +166,16 @@ export default function Home() {
           </p>
         </div>
 
-        <button className="primary" onClick={exportPackage}>
+        <button
+          className="primary"
+          onClick={exportPackage}
+          disabled={configErrors.length > 0}
+          title={
+            configErrors.length
+              ? "Corrija os erros de configuração antes de gerar o pacote."
+              : undefined
+          }
+        >
           Gerar pacote .zip
         </button>
       </header>
@@ -388,6 +401,15 @@ export default function Home() {
             value={config.createAccounts}
             onChange={(value) => set("createAccounts", value)}
           />
+
+          {configErrors.length > 0 && (
+            <div className="validationErrors" role="alert">
+              <strong>Corrija antes de gerar</strong>
+              {configErrors.map((error, index) => (
+                <span key={`${error.field}-${index}`}>{error.message}</span>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="panel important">
@@ -821,7 +843,14 @@ export default function Home() {
               </p>
             </div>
 
-            <button onClick={() => downloadText("setup.ps1", setupScript)}>
+            <button
+              disabled={configErrors.length > 0}
+              onClick={() => {
+                if (!configErrors.length) {
+                  downloadText("setup.ps1", setupScript);
+                }
+              }}
+            >
               Baixar só setup.ps1
             </button>
           </div>
