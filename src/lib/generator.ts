@@ -218,7 +218,7 @@ function Set-StudentEdgePolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
 
-        $base = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Edge"
+        $base = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
         New-Item -Path $base -Force | Out-Null
 
         if ($BrowserUrlMode -eq "Unrestricted") {
@@ -240,7 +240,7 @@ function Set-StudentUsbPolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
 
-        $usb = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\RemovableStorageDevices{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+        $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
         New-Item -Path $usb -Force | Out-Null
 
         if ($BlockUsbRead) {
@@ -352,12 +352,12 @@ function New-WinLabAppLockerXml {
     if ($BlockUsbExecute) {
         $denyRules += @"
     <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear execução em USB" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%HOT%\*" /></Conditions>
+      <Conditions><FilePathCondition Path="%HOT%\\*" /></Conditions>
     </FilePathRule>
 "@
         $denyRules += @"
     <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear execução em mídia removível" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%REMOVABLE%\*" /></Conditions>
+      <Conditions><FilePathCondition Path="%REMOVABLE%\\*" /></Conditions>
     </FilePathRule>
 "@
     }
