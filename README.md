@@ -1,80 +1,157 @@
 # WinLab Configurator
 
-Gerador local-first de configurações PowerShell para Windows compartilhados em escolas, laboratórios, totens e pequenas empresas.
+Gerador local-first de configurações PowerShell para computadores Windows compartilhados em escolas, laboratórios, totens e pequenas empresas.
 
 O WinLab gera os scripts no navegador. Senhas não são armazenadas pelo projeto.
 
-## MVP 0.5
+## MVP 0.6 — Safety & Recovery
 
-### Navegação controlada
+Esta versão prioriza robustez antes do primeiro teste físico.
 
-Chrome e Microsoft Edge podem operar em três modos:
+### Preview por padrão
 
-- sem restrição de URL;
-- bloquear apenas sites definidos;
-- permitir somente sites definidos.
+Scripts que alteram o computador exigem confirmação explícita:
 
-O WinLab usa as políticas nativas `URLBlocklist` e `URLAllowlist` somente para o usuário restrito.
+```powershell
+.\setup.ps1
+# mostra o plano; não altera o Windows
 
-### USB granular
+.\setup.ps1 -Apply
+# aplica depois do preflight
 
-O usuário restrito pode ter separadamente:
+.\rollback.ps1
+# mostra o que seria restaurado
 
-- leitura de pendrive bloqueada;
-- gravação bloqueada;
-- execução de programas pelo USB bloqueada.
+.\rollback.ps1 -Apply
+# restaura o baseline preservado
 
-Leitura/gravação usam políticas de Removable Storage por usuário. A execução usa AppLocker com os caminhos nativos `%HOT%` e `%REMOVABLE%`.
+.\maintenance.ps1
+# relatório / preview
 
-O preset padrão continua permitindo documentos em pendrive, mas bloqueia execução de programas pelo USB.
+.\maintenance.ps1 -Apply
+# necessário para exclusões quando Delete estiver configurado
+```
 
-### Manutenção
+### Preflight
 
-O pacote agora inclui `maintenance.ps1`.
+Antes de `setup.ps1 -Apply`, o pacote valida:
 
-Ele:
+- nomes diferentes para usuário restrito e administrador;
+- presença dos cmdlets de contas locais;
+- presença dos cmdlets do AppLocker;
+- presença dos cmdlets de Scheduled Tasks;
+- serviço Application Identity;
+- existência das contas quando criação automática estiver desativada;
+- compatibilidade com um estado WinLab já existente.
 
-- mostra espaço livre do disco do sistema;
-- alerta abaixo de um limite configurável;
-- identifica perfis sem uso há X dias;
-- protege os perfis do usuário restrito e administrador configurados;
-- ignora perfis especiais e carregados;
-- em `ReportOnly`, apenas relata;
-- em `Delete`, remove os candidatos e grava relatório em `C:\ProgramData\WinLab\maintenance-latest.json`.
+Se o preflight falhar, a aplicação é interrompida antes das políticas.
 
-O padrão é **ReportOnly**.
+### Estado persistente
 
-### Inventário
+A primeira aplicação cria:
 
-`scan-pc.ps1` também passou a registrar:
+```text
+C:\ProgramData\WinLab\state.json
+```
 
-- tamanho do disco do sistema;
-- espaço livre;
-- percentual livre.
+O estado registra:
 
-## Funcionalidades acumuladas
+- perfil WinLab;
+- usuário restrito;
+- administrador;
+- modo AppLocker;
+- baseline AppLocker;
+- baseline de registro;
+- status Applying/Applied;
+- número de aplicações;
+- políticas por usuário aplicadas ou pendentes;
+- timestamps de criação e aplicação.
+
+O status `Applying` é gravado antes das mudanças principais para ajudar na recuperação após uma falha parcial.
+
+### Baseline AppLocker
+
+Na primeira aplicação, o WinLab salva a política AppLocker local existente:
+
+```text
+C:\ProgramData\WinLab\Backups\AppLocker-Baseline-*.xml
+```
+
+Reaplicações reutilizam o mesmo baseline original. Elas não substituem o backup pela política WinLab atual.
+
+Se o estado apontar para um baseline que desapareceu, o setup se recusa a sobrescrevê-lo.
+
+### Baseline de registro
+
+Quando o perfil do usuário já existe, a primeira aplicação exporta as famílias de políticas que o WinLab poderá modificar:
+
+- Chrome;
+- Microsoft Edge;
+- Personalization;
+- ActiveDesktop;
+- Explorer;
+- RemovableStorageDevices.
+
+Os snapshots ficam em:
+
+```text
+C:\ProgramData\WinLab\Backups\Registry-Baseline-*
+```
+
+No rollback, primeiro são retiradas as políticas gerenciadas pelo WinLab e depois as chaves anteriores são importadas novamente.
+
+### Primeiro login da conta restrita
+
+Uma conta local recém-criada ainda pode não possuir `NTUSER.DAT`.
+
+Nesse caso, o WinLab não trata o setup como sucesso silencioso:
+
+1. aplica as políticas que não dependem do hive do usuário;
+2. copia temporariamente o setup para `C:\ProgramData\WinLab\setup-deferred.ps1`;
+3. agenda uma tarefa para o primeiro login da conta restrita;
+4. a tarefa roda como SYSTEM com `-Apply -UserPoliciesOnly`;
+5. após aplicar as políticas HKCU, atualiza `state.json`;
+6. remove a própria tarefa.
+
+### Rollback seguro
+
+O rollback não zera mais o AppLocker.
+
+`rollback.ps1 -Apply` exige:
+
+- `state.json` válido;
+- usuário/admin compatíveis com o pacote;
+- baseline AppLocker existente.
+
+Quando as condições são atendidas:
+
+1. restaura o AppLocker anterior;
+2. remove as políticas por usuário criadas pelo WinLab;
+3. restaura as chaves de registro anteriores;
+4. remove a tarefa de primeiro login, se existir;
+5. arquiva o estado em `C:\ProgramData\WinLab\History`;
+6. preserva as contas locais.
+
+Sem estado ou baseline válido, o rollback se recusa a executar.
+
+## Controles de laboratório
+
+O WinLab também inclui:
 
 - presets Microlins, Escola, Empresa e Totem;
 - importação de `config.json`;
-- inventário da máquina;
-- detecção de apps conhecidos;
-- sugestões de allowlist;
+- inventário do computador;
+- detecção e sugestão de aplicativos;
 - AppLocker AuditOnly/Enabled;
-- políticas por usuário;
-- admin fora das políticas do aluno;
-- Chrome/Edge URL blocklist e allowlist;
-- USB leitura/gravação/execução;
-- conta local: acesso à página Outros usuários;
-- Chrome: extensões, convidado, perfis, incógnito e senhas;
-- wallpaper, ponteiro e sons;
+- Chrome: extensões, convidado, novos perfis, incógnito e gerenciador de senhas;
+- Chrome/Edge: URL blocklist e allowlist;
+- USB: leitura, gravação e execução separadas;
+- acesso à página de contas locais;
+- wallpaper, ponteiro e esquema de sons;
 - liberação temporária de wallpaper;
 - manutenção de perfis;
-- alerta de armazenamento;
-- rollback;
-- auditoria;
-- testes automatizados e CI;
-- validação dos scripts gerados em runner Windows com PowerShell 5.1 e PowerShell 7;
-- montagem e validação automática do XML AppLocker em CI.
+- alertas de armazenamento;
+- auditoria e verificação.
 
 ## Pacote gerado
 
@@ -90,64 +167,53 @@ config.json
 README.txt
 ```
 
-## Fluxo recomendado
+## Validação automatizada
+
+Toda alteração precisa passar por dois grupos de checks.
+
+### Aplicação web
+
+Runner Linux:
+
+- testes;
+- TypeScript;
+- build Next.js.
+
+### Scripts Windows
+
+Runner Windows descartável:
+
+- gera scripts para todos os presets;
+- gera configurações de estresse;
+- parser do Windows PowerShell 5.1;
+- parser do PowerShell 7;
+- executa os scripts mutáveis sem `-Apply` para confirmar comportamento de preview;
+- constrói o XML AppLocker com um usuário simulado;
+- valida o XML gerado.
+
+Isso reduz a necessidade de usar computadores reais durante o desenvolvimento, mas não elimina a necessidade de uma homologação física final.
+
+## Fluxo planejado antes do primeiro PC real
 
 ```text
-scan-pc.ps1
-   ↓
-Importar inventário
-   ↓
-Configurar WinLab
-   ↓
-Gerar AuditOnly
-   ↓
-verify.ps1
-   ↓
-setup.ps1
-   ↓
-Uso real
-   ↓
-audit.ps1
-   ↓
-maintenance.ps1
-   ↓
-Ajustes
-   ↓
-Enabled
+Testes TypeScript
+      ↓
+Build Next.js
+      ↓
+Fixtures de vários perfis
+      ↓
+Windows PowerShell 5.1
+      ↓
+PowerShell 7
+      ↓
+Validação AppLocker XML
+      ↓
+Preview Vercel
+      ↓
+Safety & Recovery verde
+      ↓
+UM PC piloto real
 ```
-
-## Segurança
-
-### Preview por padrão
-
-Os scripts que alteram o Windows exigem confirmação explícita:
-
-```powershell
-.\setup.ps1
-# apenas mostra o plano
-
-.\setup.ps1 -Apply
-# aplica a configuração
-
-.\rollback.ps1
-# apenas mostra o que seria removido
-
-.\rollback.ps1 -Apply
-# executa o rollback
-
-.\maintenance.ps1
-# relatório/previsão
-
-.\maintenance.ps1 -Apply
-# só é necessário para permitir exclusões quando o modo Delete estiver configurado
-```
-
-- teste em PC piloto;
-- mantenha uma conta administrativa funcional;
-- use AuditOnly antes de Enabled;
-- limpeza de perfis nasce em ReportOnly;
-- o rollback não remove mais toda a árvore de políticas do Chrome: remove apenas valores/subchaves gerenciados pelo WinLab;
-- URLs e USB são configurados para o usuário restrito sempre que a política do Windows suporta escopo por usuário.
 
 ## Desenvolvimento
 
@@ -156,12 +222,12 @@ npm install
 npm test
 npm run typecheck
 npm run build
+npm run fixtures
 npm run dev
 ```
-
-A CI executa testes, typecheck e build em pull requests para `main`.
 
 ## Pesquisa e roadmap
 
 - `docs/market-research-2026-09.md`
-- Issue #4: roadmap pós-pesquisa
+- Issue #4 — roadmap pós-pesquisa
+- Issue #6 — Safety & Recovery
