@@ -1,6 +1,12 @@
 import { ALLOWED_APP_IDS } from "./apps";
 import { defaultConfig } from "./default-config";
-import type { Config, ConfigFile, EnforcementMode } from "./types";
+import type {
+  BrowserUrlMode,
+  Config,
+  ConfigFile,
+  EnforcementMode,
+  ProfileCleanupMode
+} from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -16,6 +22,41 @@ function text(value: unknown, fallback: string) {
 
 function enforcement(value: unknown, fallback: EnforcementMode): EnforcementMode {
   return value === "AuditOnly" || value === "Enabled" ? value : fallback;
+}
+
+function browserUrlMode(value: unknown, fallback: BrowserUrlMode): BrowserUrlMode {
+  return value === "Unrestricted" || value === "BlockList" || value === "AllowListOnly"
+    ? value
+    : fallback;
+}
+
+function profileCleanupMode(
+  value: unknown,
+  fallback: ProfileCleanupMode
+): ProfileCleanupMode {
+  return value === "Off" || value === "ReportOnly" || value === "Delete"
+    ? value
+    : fallback;
+}
+
+function stringArray(value: unknown, fallback: string[]) {
+  return Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : fallback;
+}
+
+function boundedNumber(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number
+) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(min, Math.min(max, Math.round(value)))
+    : fallback;
 }
 
 export function parseConfigJson(raw: string): Config {
@@ -88,6 +129,34 @@ export function parseConfigJson(raw: string): Config {
     blockChromePasswordManager: bool(
       parsed.blockChromePasswordManager,
       defaultConfig.blockChromePasswordManager
+    ),
+
+    browserUrlMode: browserUrlMode(
+      parsed.browserUrlMode,
+      defaultConfig.browserUrlMode
+    ),
+    blockedUrls: stringArray(parsed.blockedUrls, defaultConfig.blockedUrls),
+    allowedUrls: stringArray(parsed.allowedUrls, defaultConfig.allowedUrls),
+
+    blockUsbRead: bool(parsed.blockUsbRead, defaultConfig.blockUsbRead),
+    blockUsbWrite: bool(parsed.blockUsbWrite, defaultConfig.blockUsbWrite),
+    blockUsbExecute: bool(parsed.blockUsbExecute, defaultConfig.blockUsbExecute),
+
+    profileCleanupMode: profileCleanupMode(
+      parsed.profileCleanupMode,
+      defaultConfig.profileCleanupMode
+    ),
+    profileCleanupDays: boundedNumber(
+      parsed.profileCleanupDays,
+      defaultConfig.profileCleanupDays,
+      1,
+      3650
+    ),
+    storageWarningFreePercent: boundedNumber(
+      parsed.storageWarningFreePercent,
+      defaultConfig.storageWarningFreePercent,
+      1,
+      99
     ),
 
     blockWallpaper: bool(parsed.blockWallpaper, defaultConfig.blockWallpaper),
