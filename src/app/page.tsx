@@ -2,11 +2,17 @@
 
 import { useMemo, useState } from "react";
 import { defaultConfig } from "@/lib/default-config";
-import { Config, AllowedAppId } from "@/lib/types";
+import { getPreset, presets } from "@/lib/presets";
+import { Config, AllowedAppId, PresetId } from "@/lib/types";
+import { pathRisk } from "@/lib/security";
+import { createZip } from "@/lib/zip";
 import {
+  generateAuditScript,
   generateConfigJson,
   generateReadme,
-  generateSetupScript
+  generateRollbackScript,
+  generateSetupScript,
+  generateUnlockWallpaperScript
 } from "@/lib/generator";
 
 const APP_LABELS: Record<AllowedAppId, string> = {
@@ -17,8 +23,7 @@ const APP_LABELS: Record<AllowedAppId, string> = {
   powerbi: "Power BI Desktop"
 };
 
-function downloadFile(name: string, content: string, type = "text/plain") {
-  const blob = new Blob([content], { type });
+function downloadBlob(name: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -27,14 +32,27 @@ function downloadFile(name: string, content: string, type = "text/plain") {
   URL.revokeObjectURL(url);
 }
 
+function downloadText(name: string, content: string, type = "text/plain") {
+  downloadBlob(name, new Blob([content], { type }));
+}
+
 export default function Home() {
   const [config, setConfig] = useState<Config>(defaultConfig);
+  const [activePreset, setActivePreset] = useState<PresetId>("microlins");
   const [newPath, setNewPath] = useState("");
 
-  const script = useMemo(() => generateSetupScript(config), [config]);
+  const setupScript = useMemo(() => generateSetupScript(config), [config]);
+  const riskyCustomPaths = config.customAllowedPaths
+    .map((path) => ({ path, warning: pathRisk(path) }))
+    .filter((item) => item.warning);
 
   function set<K extends keyof Config>(key: K, value: Config[K]) {
     setConfig((current) => ({ ...current, [key]: value }));
+  }
+
+  function applyPreset(id: PresetId) {
+    setActivePreset(id);
+    setConfig(getPreset(id));
   }
 
   function toggleApp(app: AllowedAppId) {
@@ -49,33 +67,63 @@ export default function Home() {
   function addCustomPath() {
     const path = newPath.trim();
     if (!path) return;
+
     if (!config.customAllowedPaths.includes(path)) {
       set("customAllowedPaths", [...config.customAllowedPaths, path]);
     }
+
     setNewPath("");
   }
 
-  function exportFiles() {
-    downloadFile("setup.ps1", script);
-    downloadFile("config.json", generateConfigJson(config), "application/json");
-    downloadFile("README.txt", generateReadme(config));
+  function exportPackage() {
+    const blob = createZip([
+      { name: "setup.ps1", content: generateSetupScript(config) },
+      { name: "rollback.ps1", content: generateRollbackScript(config) },
+      { name: "audit.ps1", content: generateAuditScript(config) },
+      { name: "liberar-wallpaper.ps1", content: generateUnlockWallpaperScript(config) },
+      { name: "config.json", content: generateConfigJson(config) },
+      { name: "README.txt", content: generateReadme(config) }
+    ]);
+    const slug =
+      config.profileName
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "") || "winlab";
+
+    downloadBlob(`winlab-${slug}.zip`, blob);
   }
 
   return (
     <main>
       <header className="hero">
         <div>
-          <p className="eyebrow">WinLab Configurator · MVP 0.1</p>
-          <h1>Monte a política do PC e gere o PowerShell.</h1>
+          <p className="eyebrow">WinLab Configurator · MVP 0.2</p>
+          <h1>Configure o Windows sem configurar máquina por máquina.</h1>
           <p className="subtitle">
-            Escolha contas, bloqueios, navegador e aplicativos permitidos.
-            O gerador cria um script reproduzível para Windows 10/11 Pro.
+            Escolha um preset, ajuste as políticas e gere um pacote portátil com
+            setup, rollback, auditoria e configuração reutilizável.
           </p>
         </div>
-        <button className="primary" onClick={exportFiles}>
-          Gerar arquivos
+
+        <button className="primary" onClick={exportPackage}>
+          Gerar pacote .zip
         </button>
       </header>
+
+      <section className="presetBar" aria-label="Presets">
+        {presets.map((preset) => (
+          <button
+            key={preset.id}
+            className={activePreset === preset.id ? "preset active" : "preset"}
+            onClick={() => applyPreset(preset.id)}
+          >
+            <strong>{preset.name}</strong>
+            <span>{preset.description}</span>
+          </button>
+        ))}
+      </section>
 
       <div className="grid">
         <section className="panel">
@@ -91,12 +139,13 @@ export default function Home() {
 
           <div className="two">
             <label>
-              Usuário de aluno
+              Usuário restrito
               <input
                 value={config.studentUser}
                 onChange={(e) => set("studentUser", e.target.value)}
               />
             </label>
+
             <label>
               Administrador
               <input
@@ -109,14 +158,41 @@ export default function Home() {
           <Toggle
             label="Criar/ajustar as contas automaticamente"
             value={config.createAccounts}
-            onChange={(v) => set("createAccounts", v)}
+            onChange={(value) => set("createAccounts", value)}
           />
+        </section>
+
+        <section className="panel important">
+          <h2>Modo de implantação</h2>
+
+          <label>
+            AppLocker
+            <select
+              value={config.enforcementMode}
+              onChange={(e) =>
+                set(
+                  "enforcementMode",
+                  e.target.value as Config["enforcementMode"]
+                )
+              }
+            >
+              <option value="AuditOnly">Auditoria — não bloqueia ainda</option>
+              <option value="Enabled">Bloqueio ativo</option>
+            </select>
+          </label>
+
+          <p className="notice">
+            {config.enforcementMode === "AuditOnly"
+              ? "Recomendado no primeiro teste: o Windows registra o que seria bloqueado sem interromper a aula."
+              : "Bloqueio real ativado. Use somente depois de validar a allowlist em um PC piloto."}
+          </p>
         </section>
 
         <section className="panel">
           <h2>Aplicativos permitidos</h2>
           <p className="muted">
-            O aluno receberá uma allowlist. Programas fora dela não deverão executar.
+            O usuário restrito recebe uma allowlist. O administrador continua
+            irrestrito.
           </p>
 
           <div className="apps">
@@ -134,7 +210,7 @@ export default function Home() {
 
           <div className="custom">
             <input
-              placeholder="C:\Program Files\Aplicativo\app.exe"
+              placeholder={"C:\\Program Files\\Aplicativo\\app.exe"}
               value={newPath}
               onChange={(e) => setNewPath(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addCustomPath()}
@@ -144,64 +220,185 @@ export default function Home() {
 
           {config.customAllowedPaths.length > 0 && (
             <ul className="paths">
-              {config.customAllowedPaths.map((path) => (
-                <li key={path}>
-                  <code>{path}</code>
-                  <button
-                    onClick={() =>
-                      set(
-                        "customAllowedPaths",
-                        config.customAllowedPaths.filter((p) => p !== path)
-                      )
-                    }
-                  >
-                    remover
-                  </button>
-                </li>
-              ))}
+              {config.customAllowedPaths.map((path) => {
+                const warning = pathRisk(path);
+
+                return (
+                  <li key={path} className={warning ? "path risky" : "path"}>
+                    <div>
+                      <code>{path}</code>
+                      {warning && <small>{warning}</small>}
+                    </div>
+
+                    <button
+                      onClick={() =>
+                        set(
+                          "customAllowedPaths",
+                          config.customAllowedPaths.filter((item) => item !== path)
+                        )
+                      }
+                    >
+                      remover
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
 
         <section className="panel">
           <h2>Windows</h2>
-          <Toggle label="Bloquear instaladores MSI" value={config.blockInstallers} onChange={(v) => set("blockInstallers", v)} />
-          <Toggle label="Bloquear aplicativos da Microsoft Store" value={config.blockStoreApps} onChange={(v) => set("blockStoreApps", v)} />
-          <Toggle label="Bloquear CMD" value={config.blockCmd} onChange={(v) => set("blockCmd", v)} />
-          <Toggle label="Bloquear PowerShell" value={config.blockPowerShell} onChange={(v) => set("blockPowerShell", v)} />
-          <Toggle label="Bloquear Regedit" value={config.blockRegedit} onChange={(v) => set("blockRegedit", v)} />
+          <Toggle
+            label="Bloquear instaladores MSI"
+            value={config.blockInstallers}
+            onChange={(value) => set("blockInstallers", value)}
+          />
+          <Toggle
+            label="Bloquear apps empacotados / Microsoft Store"
+            value={config.blockStoreApps}
+            onChange={(value) => set("blockStoreApps", value)}
+          />
+          <Toggle
+            label="Bloquear CMD"
+            value={config.blockCmd}
+            onChange={(value) => set("blockCmd", value)}
+          />
+          <Toggle
+            label="Bloquear PowerShell"
+            value={config.blockPowerShell}
+            onChange={(value) => set("blockPowerShell", value)}
+          />
+          <Toggle
+            label="Bloquear Regedit"
+            value={config.blockRegedit}
+            onChange={(value) => set("blockRegedit", value)}
+          />
         </section>
 
         <section className="panel">
-          <h2>Google Chrome</h2>
-          <Toggle label="Bloquear extensões" value={config.blockChromeExtensions} onChange={(v) => set("blockChromeExtensions", v)} />
-          <Toggle label="Bloquear modo convidado" value={config.blockChromeGuest} onChange={(v) => set("blockChromeGuest", v)} />
-          <Toggle label="Bloquear criação de novos perfis" value={config.blockChromeNewProfiles} onChange={(v) => set("blockChromeNewProfiles", v)} />
-          <Toggle label="Bloquear modo anônimo" value={config.blockChromeIncognito} onChange={(v) => set("blockChromeIncognito", v)} />
-          <Toggle label="Bloquear salvamento de novas senhas" value={config.blockChromePasswordManager} onChange={(v) => set("blockChromePasswordManager", v)} />
+          <h2>Google Chrome · somente usuário restrito</h2>
+          <Toggle
+            label="Bloquear extensões"
+            value={config.blockChromeExtensions}
+            onChange={(value) => set("blockChromeExtensions", value)}
+          />
+          <Toggle
+            label="Bloquear modo convidado"
+            value={config.blockChromeGuest}
+            onChange={(value) => set("blockChromeGuest", value)}
+          />
+          <Toggle
+            label="Bloquear novos perfis"
+            value={config.blockChromeNewProfiles}
+            onChange={(value) => set("blockChromeNewProfiles", value)}
+          />
+          <Toggle
+            label="Bloquear modo anônimo"
+            value={config.blockChromeIncognito}
+            onChange={(value) => set("blockChromeIncognito", value)}
+          />
+          <Toggle
+            label="Bloquear novas senhas"
+            value={config.blockChromePasswordManager}
+            onChange={(value) => set("blockChromePasswordManager", value)}
+          />
         </section>
 
         <section className="panel">
           <h2>Personalização</h2>
-          <Toggle label="Bloquear troca de wallpaper" value={config.blockWallpaper} onChange={(v) => set("blockWallpaper", v)} />
-          <Toggle label="Bloquear ponteiro do mouse" value={config.blockMousePointers} onChange={(v) => set("blockMousePointers", v)} />
-          <Toggle label="Bloquear esquema de sons" value={config.blockSoundScheme} onChange={(v) => set("blockSoundScheme", v)} />
+          <Toggle
+            label="Bloquear wallpaper"
+            value={config.blockWallpaper}
+            onChange={(value) => set("blockWallpaper", value)}
+          />
+          <Toggle
+            label="Bloquear ponteiro do mouse"
+            value={config.blockMousePointers}
+            onChange={(value) => set("blockMousePointers", value)}
+          />
+          <Toggle
+            label="Bloquear esquema de sons"
+            value={config.blockSoundScheme}
+            onChange={(value) => set("blockSoundScheme", value)}
+          />
+
+          <label className="numberField">
+            Liberação temporária do wallpaper
+            <div>
+              <input
+                type="number"
+                min={5}
+                max={480}
+                value={config.wallpaperUnlockMinutes}
+                onChange={(e) =>
+                  set(
+                    "wallpaperUnlockMinutes",
+                    Math.max(5, Math.min(480, Number(e.target.value) || 90))
+                  )
+                }
+              />
+              <span>minutos</span>
+            </div>
+          </label>
+        </section>
+
+        <section className="panel packagePanel">
+          <h2>Pacote gerado</h2>
+
+          <div className="fileList">
+            <File name="setup.ps1" description="Aplica a configuração." />
+            <File name="rollback.ps1" description="Remove as políticas sem apagar as contas." />
+            <File name="audit.ps1" description="Lê os eventos do AppLocker dos últimos 7 dias." />
+            <File name="liberar-wallpaper.ps1" description="Libera o wallpaper e agenda o rebloqueio." />
+            <File name="config.json" description="Permite reproduzir a mesma configuração." />
+            <File name="README.txt" description="Instruções para o técnico." />
+          </div>
+
+          {riskyCustomPaths.length > 0 && (
+            <p className="warningBox">
+              Existem {riskyCustomPaths.length} caminho(s) personalizado(s) com
+              alerta de segurança. Revise-os antes de usar o modo de bloqueio.
+            </p>
+          )}
         </section>
 
         <section className="panel preview">
           <div className="previewHeader">
             <div>
-              <h2>Prévia do script</h2>
-              <p className="muted">{script.split("\n").length} linhas geradas</p>
+              <h2>Prévia do setup.ps1</h2>
+              <p className="muted">
+                {setupScript.split("\n").length} linhas ·{" "}
+                {config.enforcementMode === "AuditOnly"
+                  ? "auditoria"
+                  : "bloqueio ativo"}
+              </p>
             </div>
-            <button onClick={() => downloadFile("setup.ps1", script)}>
-              Baixar .ps1
+
+            <button onClick={() => downloadText("setup.ps1", setupScript)}>
+              Baixar só setup.ps1
             </button>
           </div>
-          <pre>{script.slice(0, 8000)}</pre>
+
+          <pre>{setupScript.slice(0, 12000)}</pre>
         </section>
       </div>
     </main>
+  );
+}
+
+function File({
+  name,
+  description
+}: {
+  name: string;
+  description: string;
+}) {
+  return (
+    <div className="file">
+      <code>{name}</code>
+      <span>{description}</span>
+    </div>
   );
 }
 
