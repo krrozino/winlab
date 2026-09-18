@@ -55,7 +55,8 @@ function Get-UsersGroup { Get-LocalGroup -SID "S-1-5-32-545" }
 function Invoke-WithUserHive {
     param(
         [Parameter(Mandatory=$true)][string]$UserName,
-        [Parameter(Mandatory=$true)][scriptblock]$Action
+        [Parameter(Mandatory=$true)][scriptblock]$Action,
+        $Context = $null
     )
 
     $user = Get-LocalUser -Name $UserName -ErrorAction Stop
@@ -85,7 +86,7 @@ function Invoke-WithUserHive {
     }
 
     try {
-        & $Action $sid
+        & $Action $sid $Context
     }
     finally {
         if ($mountedByUs) {
@@ -468,8 +469,10 @@ function Ensure-RegistryBaseline {
     $profileReady = Test-StudentProfileReady
 
     if ($profileReady) {
-        Invoke-WithUserHive -UserName $Aluno -Action {
-            param($sid)
+        Invoke-WithUserHive -UserName $Aluno -Context $baselineDir -Action {
+            param($sid, $context)
+
+            $baselineDir = [string]$context
 
             $targets = @(
                 @{ Name = "Chrome"; Native = "HKU\$sid\Software\Policies\Google\Chrome"; Provider = "Registry::HKEY_USERS\$sid\Software\Policies\Google\Chrome" },
@@ -564,6 +567,12 @@ function Save-WinLabAppliedState {
         baselineAppLockerBackup = $BaselineAppLockerBackup
         registryBaselineDir = $RegistryBaselineDir
         userPoliciesDeferred = $UserPoliciesDeferred
+        userPoliciesAppliedAt = if ($UserPoliciesDeferred) {
+            if ($previous) { $previous.userPoliciesAppliedAt } else { $null }
+        }
+        else {
+            (Get-Date).ToString("o")
+        }
         createdAt = $createdAt
         lastAttemptAt = (Get-Date).ToString("o")
         lastAppliedAt = if ($Status -eq "Applied") { (Get-Date).ToString("o") } elseif ($previous) { $previous.lastAppliedAt } else { $null }
@@ -858,8 +867,10 @@ function Restore-RegistryBaseline {
         throw "Há backups de registro para '$Aluno', mas o perfil local não existe mais. Restauração manual necessária."
     }
 
-    Invoke-WithUserHive -UserName $Aluno -Action {
-        param($sid)
+    Invoke-WithUserHive -UserName $Aluno -Context $files -Action {
+        param($sid, $context)
+
+        $files = @($context)
 
         foreach ($file in $files) {
             reg.exe import $file.FullName | Out-Null
