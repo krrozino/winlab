@@ -89,17 +89,24 @@ async function writeFixture(name: string, config: Config) {
   );
 }
 
-await rm(root, { recursive: true, force: true });
-await mkdir(root, { recursive: true });
+async function main() {
+  await rm(root, { recursive: true, force: true });
+  await mkdir(root, { recursive: true });
 
-for (const item of configs) {
-  await writeFixture(item.name, item.config);
+  for (const item of configs) {
+    await writeFixture(item.name, item.config);
+  }
+
+  await writeFile(
+    path.join(root, "scan-pc.ps1"),
+    generateInventoryScannerScript(),
+    "utf8"
+  );
+
+  console.log(`Generated ${configs.length} WinLab fixture sets in ${root}`);
 }
 
-await writeFile(
-  path.join(root, "scan-pc.ps1"),
-  generateInventoryScannerScript(),
-  "utf8"
-);
-
-console.log(`Generated ${configs.length} WinLab fixture sets in ${root}`);
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
