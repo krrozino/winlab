@@ -393,7 +393,7 @@ test("state records deferred policy completion fields", () => {
   assert.ok(setup.includes("userPoliciesDeferred"));
   assert.ok(setup.includes("userPoliciesAppliedAt"));
   assert.ok(setup.includes("status = $Status"));
-  assert.ok(setup.includes('ValidateSet("Applying", "Applied")'));
+  assert.ok(setup.includes('ValidateSet("Applying", "Applied", "RecoveredAfterFailure", "RecoveryFailed")'));
 });
 
 test("recovery paths preserve exact registry syntax in generated PowerShell", () => {
