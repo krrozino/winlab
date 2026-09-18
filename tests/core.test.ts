@@ -6,6 +6,7 @@ import { parseConfigJson, serializeConfig } from "../src/lib/config-io";
 import {
   generateConfigJson,
   generateMaintenanceScript,
+  generateRollbackScript,
   generateSetupScript,
   generateVerifyScript
 } from "../src/lib/generator";
