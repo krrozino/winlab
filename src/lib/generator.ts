@@ -848,7 +848,7 @@ AppLocker: ${config.enforcementMode === "AuditOnly" ? "AUDITORIA" : "BLOQUEIO AT
 ARQUIVOS
 --------
 setup.ps1
-  Aplica contas, políticas por usuário, Chrome, personalização e AppLocker.
+  Aplica contas, políticas por usuário, Chrome/Edge, USB, personalização e AppLocker.
 
 rollback.ps1
   Remove as políticas WinLab e preserva as contas.
@@ -865,8 +865,12 @@ verify.ps1
 
 scan-pc.ps1
   Gera um inventário JSON local com informações do Windows, contas locais,
-  AppLocker e programas instalados para importar no WinLab.
+  AppLocker, armazenamento e programas instalados para importar no WinLab.
   Não coleta senhas, documentos ou histórico do navegador.
+
+maintenance.ps1
+  Mostra espaço livre e perfis inativos. No modo Delete pode remover perfis
+  não carregados e antigos, preservando as contas Aluno/Admin configuradas.
 
 config.json
   Configuração versionada usada para gerar este pacote.
@@ -887,6 +891,24 @@ FLUXO RECOMENDADO
 CONTAS LOCAIS
 -------------
 ${config.allowLocalAccountManagement ? "A página Contas > Outros usuários fica disponível para a conta restrita. Criar ou remover contas continua exigindo credencial administrativa." : "A página Contas > Outros usuários fica oculta para a conta restrita."}
+
+WEB
+---
+Modo: ${config.browserUrlMode}
+Bloqueados: ${config.blockedUrls.join(", ") || "nenhum"}
+Permitidos/exceções: ${config.allowedUrls.join(", ") || "nenhum"}
+
+USB
+---
+Leitura: ${config.blockUsbRead ? "bloqueada" : "permitida"}
+Gravação: ${config.blockUsbWrite ? "bloqueada" : "permitida"}
+Execução: ${config.blockUsbExecute ? "bloqueada via AppLocker" : "permitida pela regra WinLab"}
+
+MANUTENÇÃO
+----------
+Modo: ${config.profileCleanupMode}
+Perfis inativos após: ${config.profileCleanupDays} dias
+Alerta de armazenamento: abaixo de ${config.storageWarningFreePercent}% livre
 
 Nenhuma senha é armazenada nos arquivos.
 `;
