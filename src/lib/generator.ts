@@ -118,6 +118,14 @@ $BlockChromeNewProfiles = ${psBool(config.blockChromeNewProfiles)}
 $BlockChromeIncognito = ${psBool(config.blockChromeIncognito)}
 $BlockChromePasswordManager = ${psBool(config.blockChromePasswordManager)}
 
+$BrowserUrlMode = "${config.browserUrlMode}"
+$BlockedUrls = ${psArray(config.blockedUrls)}
+$AllowedUrls = ${psArray(config.allowedUrls)}
+
+$BlockUsbRead = ${psBool(config.blockUsbRead)}
+$BlockUsbWrite = ${psBool(config.blockUsbWrite)}
+$BlockUsbExecute = ${psBool(config.blockUsbExecute)}
+
 $BlockWallpaper = ${psBool(config.blockWallpaper)}
 $BlockMousePointers = ${psBool(config.blockMousePointers)}
 $BlockSoundScheme = ${psBool(config.blockSoundScheme)}
@@ -142,6 +150,25 @@ function Ensure-Accounts {
 
     Remove-LocalGroupMember -Group (Get-AdminsGroup) -Member $Aluno -ErrorAction SilentlyContinue
     Add-LocalGroupMember -Group (Get-UsersGroup) -Member $Aluno -ErrorAction SilentlyContinue
+}
+
+function Set-PolicyStringList {
+    param(
+        [Parameter(Mandatory=$true)][string]$BasePath,
+        [Parameter(Mandatory=$true)][string]$Name,
+        [string[]]$Values
+    )
+
+    $target = Join-Path $BasePath $Name
+    Remove-Item -Path $target -Recurse -Force -ErrorAction SilentlyContinue
+
+    if (-not $Values -or $Values.Count -eq 0) { return }
+
+    New-Item -Path $target -Force | Out-Null
+
+    for ($index = 0; $index -lt $Values.Count; $index++) {
+        New-ItemProperty -Path $target -Name ([string]($index + 1)) -PropertyType String -Value $Values[$index] -Force | Out-Null
+    }
 }
 
 function Set-StudentChromePolicies {
@@ -170,6 +197,64 @@ function Set-StudentChromePolicies {
             $extensions = Join-Path $base "ExtensionInstallBlocklist"
             New-Item -Path $extensions -Force | Out-Null
             New-ItemProperty -Path $extensions -Name "1" -PropertyType String -Value "*" -Force | Out-Null
+        }
+
+        if ($BrowserUrlMode -eq "Unrestricted") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @()
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values @()
+        }
+        elseif ($BrowserUrlMode -eq "BlockList") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $BlockedUrls
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+        }
+        elseif ($BrowserUrlMode -eq "AllowListOnly") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @("*")
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+        }
+    }
+}
+
+function Set-StudentEdgePolicies {
+    Invoke-WithUserHive -UserName $Aluno -Action {
+        param($sid)
+
+        $base = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Edge"
+        New-Item -Path $base -Force | Out-Null
+
+        if ($BrowserUrlMode -eq "Unrestricted") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @()
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values @()
+        }
+        elseif ($BrowserUrlMode -eq "BlockList") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $BlockedUrls
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+        }
+        elseif ($BrowserUrlMode -eq "AllowListOnly") {
+            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @("*")
+            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+        }
+    }
+}
+
+function Set-StudentUsbPolicies {
+    Invoke-WithUserHive -UserName $Aluno -Action {
+        param($sid)
+
+        $usb = "Registry::HKEY_USERS\$sid\Software\Policies\Microsoft\Windows\RemovableStorageDevices{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+        New-Item -Path $usb -Force | Out-Null
+
+        if ($BlockUsbRead) {
+            New-ItemProperty -Path $usb -Name Deny_Read -PropertyType DWord -Value 1 -Force | Out-Null
+        }
+        else {
+            Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
+        }
+
+        if ($BlockUsbWrite) {
+            New-ItemProperty -Path $usb -Name Deny_Write -PropertyType DWord -Value 1 -Force | Out-Null
+        }
+        else {
+            Remove-ItemProperty -Path $usb -Name Deny_Write -ErrorAction SilentlyContinue
         }
     }
 }
@@ -264,6 +349,19 @@ function New-WinLabAppLockerXml {
 "@
     }
 
+    if ($BlockUsbExecute) {
+        $denyRules += @"
+    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear execução em USB" Description="" UserOrGroupSid="$studentSid" Action="Deny">
+      <Conditions><FilePathCondition Path="%HOT%\*" /></Conditions>
+    </FilePathRule>
+"@
+        $denyRules += @"
+    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear execução em mídia removível" Description="" UserOrGroupSid="$studentSid" Action="Deny">
+      <Conditions><FilePathCondition Path="%REMOVABLE%\*" /></Conditions>
+    </FilePathRule>
+"@
+    }
+
     if ($BlockRegedit) {
         $denyRules += @"
     <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear Regedit" Description="" UserOrGroupSid="$studentSid" Action="Deny">
@@ -320,6 +418,8 @@ $denyRules
 function Install-WinLabProfile {
     Ensure-Accounts
     Set-StudentChromePolicies
+    Set-StudentEdgePolicies
+    Set-StudentUsbPolicies
     Set-StudentAccountPolicies
     Set-StudentPersonalizationPolicies
 
