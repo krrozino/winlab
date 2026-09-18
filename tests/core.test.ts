@@ -303,7 +303,7 @@ test("generated setup and rollback require explicit Apply", () => {
   const setup = generateSetupScript(defaultConfig);
   const rollback = generateRollbackScript(defaultConfig);
 
-  assert.ok(setup.includes("param([switch]$Apply)"));
+  assert.ok(setup.includes("param([switch]$Apply, [switch]$UserPoliciesOnly)"));
   assert.ok(setup.includes("if ($Apply)"));
   assert.ok(setup.includes("Nenhuma alteração foi aplicada"));
 
@@ -325,9 +325,72 @@ test("profile deletion requires explicit Apply", () => {
 
 test("PowerShell parameters are emitted before executable statements", () => {
   const setup = generateSetupScript(defaultConfig);
-  const paramIndex = setup.indexOf("param([switch]$Apply)");
+  const paramIndex = setup.indexOf("param([switch]$Apply, [switch]$UserPoliciesOnly)");
   const errorPreferenceIndex = setup.indexOf('$ErrorActionPreference = "Stop"');
 
   assert.ok(paramIndex > 0);
   assert.ok(errorPreferenceIndex > paramIndex);
+});
+
+
+test("setup includes fail-fast preflight and first-logon recovery path", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("function Test-WinLabPreflight"));
+  assert.ok(setup.includes("Preflight WinLab falhou"));
+  assert.ok(setup.includes("New-ScheduledTaskTrigger -AtLogOn -User $Aluno"));
+  assert.ok(setup.includes("-Apply -UserPoliciesOnly"));
+  assert.ok(setup.includes("Complete-DeferredUserPolicies"));
+});
+
+test("setup preserves AppLocker and registry baselines across reapplies", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("AppLocker-Baseline-"));
+  assert.ok(setup.includes("baselineAppLockerBackup"));
+  assert.ok(setup.includes("Registry-Baseline-"));
+  assert.ok(setup.includes("registryBaselineDir"));
+  assert.ok(setup.includes("if ($state -and $state.baselineAppLockerBackup)"));
+  assert.ok(setup.includes("if ($state -and $state.registryBaselineDir)"));
+  assert.ok(setup.includes("schemaVersion = 2"));
+});
+
+test("rollback restores baseline instead of clearing AppLocker", () => {
+  const rollback = generateRollbackScript(defaultConfig);
+
+  assert.ok(rollback.includes("Get-WinLabRollbackState"));
+  assert.ok(rollback.includes("Restore-AppLockerBaseline"));
+  assert.ok(rollback.includes("Restore-RegistryBaseline"));
+  assert.ok(rollback.includes("Set-AppLockerPolicy -XmlPolicy $baseline"));
+  assert.ok(rollback.includes("state.json do WinLab não foi encontrado"));
+  assert.equal(rollback.includes("WinLab-AppLocker-Empty.xml"), false);
+  assert.equal(rollback.includes('EnforcementMode="NotConfigured"'), false);
+});
+
+test("registry baseline covers every user policy family WinLab changes", () => {
+  const setup = generateSetupScript(defaultConfig);
+  const names = [
+    "Chrome",
+    "Edge",
+    "Personalization",
+    "ActiveDesktop",
+    "Explorer",
+    "RemovableStorage"
+  ];
+
+  for (const name of names) {
+    assert.ok(setup.includes('Name = "' + name + '"'));
+  }
+
+  assert.ok(setup.includes("reg.exe export"));
+  assert.ok(generateRollbackScript(defaultConfig).includes("reg.exe import"));
+});
+
+test("state records deferred policy completion fields", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("userPoliciesDeferred"));
+  assert.ok(setup.includes("userPoliciesAppliedAt"));
+  assert.ok(setup.includes("status = $Status"));
+  assert.ok(setup.includes('ValidateSet("Applying", "Applied")'));
 });
