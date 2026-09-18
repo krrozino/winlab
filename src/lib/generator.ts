@@ -240,7 +240,7 @@ function Set-StudentUsbPolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
 
-        $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+        $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
         New-Item -Path $usb -Force | Out-Null
 
         if ($BlockUsbRead) {
@@ -471,7 +471,7 @@ function Remove-StudentPolicies {
         Remove-Item -Path (Join-Path $edge "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -Path (Join-Path $edge "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
 
-        $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
+        $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
         Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
         Remove-ItemProperty -Path $usb -Name Deny_Write -ErrorAction SilentlyContinue
 
