@@ -104,7 +104,7 @@ export function generateSetupScript(config: Config): string {
   const allowedPaths = getAllowedPaths(config);
   const enforcement = config.enforcementMode;
 
-  return `${commonHeader(config, "SETUP", `[CmdletBinding()]\nparam([switch]$Apply)`)}
+  return `${commonHeader(config, "SETUP", `[CmdletBinding()]\nparam([switch]$Apply, [switch]$UserPoliciesOnly)`)}
 $CreateAccounts = ${psBool(config.createAccounts)}
 $BlockInstallers = ${psBool(config.blockInstallers)}
 $BlockStoreApps = ${psBool(config.blockStoreApps)}
@@ -133,6 +133,10 @@ $BlockSoundScheme = ${psBool(config.blockSoundScheme)}
 
 $AllowedExecutables = ${psArray(allowedPaths)}
 $EnforcementMode = "${enforcement}"
+
+$WinLabRoot = "C:\\ProgramData\\WinLab"
+$StatePath = Join-Path $WinLabRoot "state.json"
+$DeferredTaskName = "WinLab-Apply-UserPolicies-$Aluno"
 
 function Ensure-Accounts {
     if (-not $CreateAccounts) { return }
