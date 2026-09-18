@@ -4,63 +4,70 @@ Gerador de configurações PowerShell para preparar computadores Windows usados 
 
 O WinLab não armazena senhas. A interface gera um pacote portátil que pode ser levado em um pendrive e executado localmente como administrador.
 
-## MVP 0.2
+## MVP 0.3
 
-- Presets:
-  - Microlins
-  - Escola
-  - Empresa
-  - Totem
-- Conta restrita + conta administrativa
-- Administrador fora das políticas por usuário
-- Políticas do Chrome aplicadas somente ao usuário restrito
-- Allowlist de Chrome, Word, Excel, PowerPoint e Power BI
+- Presets Microlins, Escola, Empresa e Totem
+- Importação de `config.json` do WinLab 0.2 e 0.3
+- `schemaVersion` para evolução segura do formato de configuração
+- Revisão de riscos antes de gerar o pacote
+- Catálogo ampliado de aplicativos:
+  - Chrome
+  - Edge
+  - Firefox
+  - Word
+  - Excel
+  - PowerPoint
+  - Power BI
+  - Adobe Acrobat / Reader
+  - Visual Studio Code
+  - VLC
 - Caminhos personalizados com alerta para diretórios graváveis pelo usuário
-- AppLocker em:
-  - `AuditOnly`
-  - `Enabled`
-- Bloqueio opcional de:
-  - MSI
-  - apps empacotados / Microsoft Store
-  - CMD
-  - PowerShell
-  - Regedit
-- Personalização:
-  - wallpaper
-  - ponteiro do mouse
-  - esquema de sons
-- Liberação temporária de wallpaper com rebloqueio agendado
-- Pacote ZIP gerado no navegador com:
-  - `setup.ps1`
-  - `rollback.ps1`
-  - `audit.ps1`
-  - `liberar-wallpaper.ps1`
-  - `config.json`
-  - `README.txt`
+- AppLocker em `AuditOnly` ou `Enabled`
+- Políticas do Chrome aplicadas somente ao usuário restrito
+- Conta administrativa fora das restrições por usuário
+- Bloqueio opcional de MSI, Store/Appx, CMD, PowerShell e Regedit
+- Controle de wallpaper, ponteiro e esquema de sons
+- Liberação temporária do wallpaper com rebloqueio automático
+- `verify.ps1` para validar o PC antes da implantação
+- `audit.ps1` para revisar eventos do AppLocker
+- Testes automatizados do importador e dos geradores
+- ZIP criado localmente no navegador, sem backend
 
-## Segurança de implantação
+## Pacote gerado
 
-A configuração padrão usa AppLocker em `AuditOnly`.
+```text
+setup.ps1
+rollback.ps1
+audit.ps1
+verify.ps1
+liberar-wallpaper.ps1
+config.json
+README.txt
+```
 
-Fluxo recomendado:
+## Fluxo recomendado
 
-1. Gere um pacote em modo de auditoria.
-2. Aplique em um único PC piloto.
-3. Use a conta restrita durante as atividades normais.
-4. Execute `audit.ps1`.
-5. Ajuste a allowlist conforme os eventos.
-6. Só então gere um pacote em `Enabled`.
+1. Configure o perfil no WinLab.
+2. Gere o ZIP em `AuditOnly`.
+3. Rode `verify.ps1` no PC piloto.
+4. Rode `setup.ps1`.
+5. Reinicie e use a conta restrita normalmente.
+6. Rode `audit.ps1`.
+7. Ajuste a allowlist se necessário.
+8. Gere novamente com `Enabled`.
+9. Só depois replique para as demais máquinas.
 
-O AppLocker ainda precisa ser validado com os softwares reais de cada curso antes de uma implantação ampla.
-
-## Executar o projeto
+## Desenvolvimento
 
 ```bash
 npm install
+npm test
+npm run typecheck
+npm run build
 npm run dev
 ```
 
-Abra `http://localhost:3000`.
+A CI executa testes, typecheck e build em todo pull request para `main`.
 
 ## Estrutura
 
@@ -71,32 +78,25 @@ src/
 │   ├── layout.tsx
 │   └── page.tsx
 └── lib/
+    ├── apps.ts
+    ├── config-io.ts
     ├── default-config.ts
     ├── generator.ts
     ├── presets.ts
+    ├── review.ts
     ├── security.ts
     ├── types.ts
     └── zip.ts
+
+tests/
+└── core.test.ts
 ```
 
-## Próximas etapas
+## Próximos passos
 
-### MVP 0.3
-- importar `config.json`
-- catálogo maior de aplicativos
-- relatório visual das políticas antes da geração
-- parser dos logs de auditoria
-- testes automatizados para o gerador
-
-### MVP 0.4
-- companion app para Windows
-- detectar softwares instalados
-- descobrir executáveis automaticamente
-- montar allowlist a partir da máquina analisada
-
-### 1.0
-- catálogo versionado de políticas
-- assinatura/verificação dos scripts
-- histórico de presets
-- testes em matriz Windows 10/11
-- publicação estável
+- importar relatórios do `verify.ps1`
+- interpretar automaticamente os logs do AppLocker
+- companion app para detectar softwares instalados
+- regras AppLocker por publisher/assinatura quando apropriado
+- presets personalizados salvos no navegador
+- testes em matriz real de Windows 10/11
