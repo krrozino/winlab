@@ -25,6 +25,8 @@ function getAllowedPaths(config: Config) {
 }
 
 function commonHeader(config: Config, title: string, parameterBlock = "") {
+  const renderedParameters = parameterBlock ? `${parameterBlock}\n\n` : "";
+
   return `#requires -version 5.1
 <#
 ${title}
@@ -34,8 +36,7 @@ Perfil: ${config.profileName}
 Teste primeiro em uma máquina piloto.
 Nenhuma senha é armazenada neste arquivo.
 #>
-
-$ErrorActionPreference = "Stop"
+${renderedParameters}$ErrorActionPreference = "Stop"
 $Aluno = ${psString(config.studentUser)}
 $Admin = ${psString(config.adminUser)}
 
