@@ -2,7 +2,7 @@ import "./globals.css";
 
 export const metadata = {
   title: "WinLab Configurator",
-  description: "Gerador de configuração de Windows para laboratórios e empresas"
+  description: "Gerador de configuração de Windows para laboratórios, escolas e empresas"
 };
 
 export default function RootLayout({
