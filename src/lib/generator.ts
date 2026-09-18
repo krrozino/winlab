@@ -598,6 +598,11 @@ liberar-wallpaper.ps1
 verify.ps1
   Verifica Windows, AppLocker, contas e caminhos conhecidos dos aplicativos antes do setup.
 
+scan-pc.ps1
+  Gera um inventário JSON local com informações do Windows, contas locais,
+  AppLocker e programas instalados para importar no WinLab.
+  Não coleta senhas, documentos ou histórico do navegador.
+
 config.json
   Configuração versionada usada para gerar este pacote.
   Pode ser importada novamente no WinLab.
