@@ -105,6 +105,7 @@ export function generateSetupScript(config: Config): string {
   const enforcement = config.enforcementMode;
 
   return `${commonHeader(config, "SETUP", `[CmdletBinding()]\nparam([switch]$Apply, [switch]$UserPoliciesOnly)`)}
+$ProfileName = ${psString(config.profileName)}
 $CreateAccounts = ${psBool(config.createAccounts)}
 $BlockInstallers = ${psBool(config.blockInstallers)}
 $BlockStoreApps = ${psBool(config.blockStoreApps)}
@@ -384,13 +385,64 @@ function Set-StudentPersonalizationPolicies {
     }
 }
 
-function Backup-AppLocker {
-    $backupDir = "C:\\ProgramData\\WinLab\\Backups"
+function Ensure-AppLockerBaseline {
+    $backupDir = Join-Path $WinLabRoot "Backups"
     New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
+
+    $state = Get-WinLabState
+    if ($state -and $state.baselineAppLockerBackup) {
+        $existing = [string]$state.baselineAppLockerBackup
+
+        if (Test-Path $existing) {
+            Write-Host "Baseline AppLocker preservado: $existing" -ForegroundColor DarkGray
+            return $existing
+        }
+
+        throw "O estado WinLab aponta para um baseline AppLocker inexistente: $existing. Não é seguro sobrescrever o baseline."
+    }
+
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $backup = Join-Path $backupDir "AppLocker-$stamp.xml"
+    $backup = Join-Path $backupDir "AppLocker-Baseline-$stamp.xml"
     Get-AppLockerPolicy -Local -Xml | Set-Content -Path $backup -Encoding UTF8
-    Write-Host "Backup AppLocker: $backup" -ForegroundColor DarkGray
+
+    Write-Host "Baseline AppLocker criado: $backup" -ForegroundColor DarkGray
+    return $backup
+}
+
+function Save-WinLabAppliedState {
+    param(
+        [Parameter(Mandatory=$true)][string]$BaselineAppLockerBackup,
+        [Parameter(Mandatory=$true)][bool]$UserPoliciesDeferred
+    )
+
+    $previous = Get-WinLabState
+    $createdAt = if ($previous -and $previous.createdAt) {
+        [string]$previous.createdAt
+    }
+    else {
+        (Get-Date).ToString("o")
+    }
+
+    $applyCount = 1
+    if ($previous -and $previous.applyCount) {
+        $applyCount = [int]$previous.applyCount + 1
+    }
+
+    $state = [ordered]@{
+        schemaVersion = 2
+        profileName = $ProfileName
+        studentUser = $Aluno
+        adminUser = $Admin
+        enforcementMode = $EnforcementMode
+        baselineAppLockerBackup = $BaselineAppLockerBackup
+        userPoliciesDeferred = $UserPoliciesDeferred
+        createdAt = $createdAt
+        lastAppliedAt = (Get-Date).ToString("o")
+        applyCount = $applyCount
+    }
+
+    Save-WinLabState -State $state
+    Write-Host "Estado WinLab salvo em $StatePath" -ForegroundColor DarkGray
 }
 
 function New-WinLabAppLockerXml {
