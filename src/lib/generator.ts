@@ -480,7 +480,7 @@ foreach ($log in $logs) {
 export function generateVerifyScript(config: Config): string {
   const allowedPaths = getAllowedPaths(config);
 
-  return \`${commonHeader(config, "VERIFICAÇÃO DO PC")}
+  return `${commonHeader(config, "VERIFICAÇÃO DO PC")}
 
 Assert-Administrator
 
@@ -534,7 +534,7 @@ foreach ($rawPath in $AllowedExecutables) {
 Write-Host ""
 Write-Host "A ausência de um caminho não significa necessariamente erro: alguns programas usam outro caminho/edição." -ForegroundColor DarkGray
 Write-Host "Use este relatório antes de ativar o AppLocker em modo Enabled." -ForegroundColor Yellow
-\`;
+`;
 }
 
 export function generateConfigJson(config: Config): string {
