@@ -34,6 +34,12 @@ export type PcInventory = {
     available: boolean;
     applicationIdentityStatus: string | null;
   };
+  storage: {
+    systemDrive: string;
+    sizeGB: number;
+    freeGB: number;
+    freePercent: number;
+  } | null;
   localUsers: InventoryUser[];
   knownApps: InventoryKnownApp[];
   installedApps: InventoryInstalledApp[];
