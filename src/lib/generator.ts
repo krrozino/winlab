@@ -161,7 +161,28 @@ function Test-WinLabUserName {
 
     if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
     if ($Value.Length -gt 20) { return $false }
-    if ($Value -match '^[.\\s]+
+    if ($Value -match '^[.\\s]+$') { return $false }
+
+    $invalid = @('"', '/', '\\', '[', ']', ':', ';', '|', '=', ',', '+', '*', '?', '<', '>', '@')
+    foreach ($character in $invalid) {
+        if ($Value.Contains($character)) { return $false }
+    }
+
+    return $true
+}
+
+function Test-WinLabPreflight {
+    $errors = New-Object System.Collections.Generic.List[string]
+
+    if (-not (Test-WinLabUserName -Value $Aluno)) {
+        $errors.Add("Nome inválido para a conta restrita '$Aluno'. Use até 20 caracteres e evite caracteres reservados do Windows.")
+    }
+
+    if (-not (Test-WinLabUserName -Value $Admin)) {
+        $errors.Add("Nome inválido para a conta administrativa '$Admin'. Use até 20 caracteres e evite caracteres reservados do Windows.")
+    }
+
+    if ([string]::Equals($Aluno, $Admin, [StringComparison]::OrdinalIgnoreCase)) {
         $errors.Add("A conta restrita e a conta administrativa usam o mesmo nome.")
     }
 
