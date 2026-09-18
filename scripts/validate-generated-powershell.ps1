@@ -62,6 +62,81 @@ foreach ($file in Get-ChildItem -Path $resolved -Filter liberar-wallpaper.ps1 -R
 
 Write-Host "Preview smoke tests: OK" -ForegroundColor Green
 
+# Run the actual preflight for presets that create their test accounts on apply.
+foreach ($file in Get-ChildItem -Path $resolved -Filter setup.ps1 -Recurse) {
+    if ($file.Directory.Name -eq "stress-open") {
+        continue
+    }
+
+    & {
+        param($Path)
+
+        . $Path
+
+        $tempRoot = Join-Path $env:RUNNER_TEMP ("winlab-preflight-" + [guid]::NewGuid().ToString("N"))
+        New-Item -Path $tempRoot -ItemType Directory -Force | Out-Null
+
+        try {
+            $WinLabRoot = $tempRoot
+            $StatePath = Join-Path $WinLabRoot "state.json"
+            Test-WinLabPreflight
+        }
+        finally {
+            Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } $file.FullName
+}
+
+Write-Host "Preflight smoke tests: OK" -ForegroundColor Green
+
+# Verify that the original AppLocker baseline is reused on reapply.
+$baselineFixture = Get-ChildItem -Path $resolved -Filter setup.ps1 -Recurse |
+    Where-Object { $_.Directory.Name -eq "preset-microlins" } |
+    Select-Object -First 1
+
+if (-not $baselineFixture) {
+    throw "Fixture preset-microlins não encontrado para teste de baseline."
+}
+
+& {
+    param($Path)
+
+    . $Path
+
+    $tempRoot = Join-Path $env:RUNNER_TEMP ("winlab-baseline-" + [guid]::NewGuid().ToString("N"))
+    $WinLabRoot = $tempRoot
+    $StatePath = Join-Path $WinLabRoot "state.json"
+    New-Item -Path $WinLabRoot -ItemType Directory -Force | Out-Null
+
+    function Get-AppLockerPolicy {
+        param([switch]$Local, [switch]$Xml)
+
+        '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="NotConfigured" /></AppLockerPolicy>'
+    }
+
+    try {
+        $first = Ensure-AppLockerBaseline
+        if (-not (Test-Path $first)) {
+            throw "Primeiro baseline AppLocker não foi criado."
+        }
+
+        $registry = Join-Path $WinLabRoot "registry-dummy"
+        New-Item -Path $registry -ItemType Directory -Force | Out-Null
+
+        Save-WinLabAppliedState -BaselineAppLockerBackup $first -RegistryBaselineDir $registry -UserPoliciesDeferred $false -Status "Applied"
+        $second = Ensure-AppLockerBaseline
+
+        if ($first -ne $second) {
+            throw "Reaplicação substituiu o baseline AppLocker original."
+        }
+    }
+    finally {
+        Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+} $baselineFixture.FullName
+
+Write-Host "Baseline idempotency: OK" -ForegroundColor Green
+
 # Build the AppLocker XML from every generated setup with a mocked local user.
 foreach ($file in Get-ChildItem -Path $resolved -Filter setup.ps1 -Recurse) {
     & {
