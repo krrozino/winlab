@@ -394,3 +394,32 @@ test("state records deferred policy completion fields", () => {
   assert.ok(setup.includes("status = $Status"));
   assert.ok(setup.includes('ValidateSet("Applying", "Applied")'));
 });
+
+test("recovery paths preserve exact registry syntax in generated PowerShell", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes('Native = "HKU\\$sid\\Software\\Policies\\Google\\Chrome"'));
+  assert.ok(setup.includes('Provider = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"'));
+  assert.ok(setup.includes('$triggerUser = "$env:COMPUTERNAME\\$Aluno"'));
+  assert.ok(setup.includes('Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}'));
+});
+
+test("failed setup has automatic recovery states", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("Recover-FromFailedSetup"));
+  assert.ok(setup.includes("RecoveredAfterFailure"));
+  assert.ok(setup.includes("RecoveryFailed"));
+  assert.ok(setup.includes("Restore-RegistryBaselineForRecovery"));
+  assert.ok(setup.includes("Set-AppLockerPolicy -XmlPolicy $BaselineAppLockerBackup"));
+});
+
+test("state and rollback are bound to account SIDs", () => {
+  const setup = generateSetupScript(defaultConfig);
+  const rollback = generateRollbackScript(defaultConfig);
+
+  assert.ok(setup.includes("studentSid = $studentObject.SID.Value"));
+  assert.ok(setup.includes("adminSid = $adminObject.SID.Value"));
+  assert.ok(setup.includes("foi recriada com outro SID"));
+  assert.ok(rollback.includes("SID diferente do registrado pelo WinLab"));
+});
