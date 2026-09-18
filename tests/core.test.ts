@@ -9,6 +9,12 @@ import {
   generateVerifyScript
 } from "../src/lib/generator";
 import { getConfigReview } from "../src/lib/review";
+import {
+  applyInventorySuggestions,
+  parseInventoryJson,
+  suggestedAllowedApps
+} from "../src/lib/inventory";
+import { generateInventoryScannerScript } from "../src/lib/inventory-script";
 
 test("imports legacy 0.2 config without schemaVersion", () => {
   const imported = parseConfigJson(
@@ -68,4 +74,95 @@ test("review warns about user-writable allowlist paths", () => {
 test("generated config json uses schemaVersion", () => {
   const parsed = JSON.parse(generateConfigJson(defaultConfig));
   assert.equal(parsed.schemaVersion, 1);
+});
+
+
+test("parses pc inventory and suggests detected catalog apps", () => {
+  const inventory = parseInventoryJson(
+    JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: "2026-09-18T00:00:00-03:00",
+      computerName: "LAB-01",
+      windows: {
+        caption: "Microsoft Windows 11 Pro",
+        version: "10.0.26100",
+        buildNumber: "26100",
+        architecture: "64 bits"
+      },
+      appLocker: {
+        available: true,
+        applicationIdentityStatus: "Running"
+      },
+      localUsers: [
+        { name: "Aluno", enabled: true, isAdministrator: false },
+        { name: "Admin", enabled: true, isAdministrator: true }
+      ],
+      knownApps: [
+        {
+          id: "chrome",
+          label: "Google Chrome",
+          found: true,
+          path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+        },
+        {
+          id: "vscode",
+          label: "Visual Studio Code",
+          found: true,
+          path: "C:\\Program Files\\Microsoft VS Code\\Code.exe"
+        }
+      ],
+      installedApps: [
+        {
+          name: "Google Chrome",
+          version: "140.0",
+          publisher: "Google LLC",
+          installLocation: "C:\\Program Files\\Google\\Chrome"
+        }
+      ]
+    })
+  );
+
+  assert.equal(inventory.computerName, "LAB-01");
+  assert.equal(inventory.appLocker.available, true);
+  assert.deepEqual(suggestedAllowedApps(inventory, defaultConfig), ["vscode"]);
+});
+
+test("applies inventory suggestions without removing existing allowlist apps", () => {
+  const inventory = parseInventoryJson(
+    JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: "",
+      computerName: "LAB-02",
+      windows: {
+        caption: "Windows 11 Pro",
+        version: "10.0",
+        buildNumber: "26100",
+        architecture: "64 bits"
+      },
+      appLocker: {
+        available: true,
+        applicationIdentityStatus: "Stopped"
+      },
+      localUsers: [],
+      knownApps: [
+        { id: "vlc", label: "VLC Media Player", found: true, path: "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe" }
+      ],
+      installedApps: []
+    })
+  );
+
+  const updated = applyInventorySuggestions(defaultConfig, inventory);
+  assert.ok(updated.allowedApps.includes("chrome"));
+  assert.ok(updated.allowedApps.includes("vlc"));
+});
+
+test("inventory scanner avoids personal content and writes portable json", () => {
+  const script = generateInventoryScannerScript();
+
+  assert.match(script, /winlab-inventory-/);
+  assert.match(script, /CurrentVersion\\Uninstall/);
+  assert.match(script, /Get-LocalUser/);
+  assert.match(script, /ConvertTo-Json/);
+  assert.doesNotMatch(script, /Get-Content .*Documents/i);
+  assert.doesNotMatch(script, /password/i);
 });
