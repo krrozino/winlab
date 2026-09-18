@@ -166,3 +166,23 @@ test("inventory scanner avoids personal content and writes portable json", () =>
   assert.doesNotMatch(script, /Get-Content .*Documents/i);
   assert.doesNotMatch(script, /password/i);
 });
+
+
+test("local account management is blocked by default for restricted user", () => {
+  const script = generateSetupScript(defaultConfig);
+
+  assert.equal(defaultConfig.allowLocalAccountManagement, false);
+  assert.match(script, /SettingsPageVisibility/);
+  assert.match(script, /hide:otherusers/);
+});
+
+test("local account management permission survives config import", () => {
+  const imported = parseConfigJson(
+    JSON.stringify({
+      ...defaultConfig,
+      allowLocalAccountManagement: true
+    })
+  );
+
+  assert.equal(imported.allowLocalAccountManagement, true);
+});
