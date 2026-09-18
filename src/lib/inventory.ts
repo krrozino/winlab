@@ -24,6 +24,10 @@ function booleanValue(value: unknown) {
   return value === true;
 }
 
+function numberValue(value: unknown, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
 function parseUser(value: unknown): InventoryUser | null {
   if (!record(value)) return null;
   const name = stringValue(value.name).trim();
@@ -105,6 +109,14 @@ export function parseInventoryJson(raw: string): PcInventory {
         parsed.appLocker.applicationIdentityStatus
       )
     },
+    storage: record(parsed.storage)
+      ? {
+          systemDrive: stringValue(parsed.storage.systemDrive),
+          sizeGB: numberValue(parsed.storage.sizeGB),
+          freeGB: numberValue(parsed.storage.freeGB),
+          freePercent: numberValue(parsed.storage.freePercent)
+        }
+      : null,
     localUsers: Array.isArray(parsed.localUsers)
       ? parsed.localUsers.map(parseUser).filter((item): item is InventoryUser => !!item)
       : [],
