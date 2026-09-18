@@ -33,8 +33,8 @@ function downloadText(name: string, content: string, type = "text/plain") {
 }
 
 export default function Home() {
-  const [config, setConfig] = useState<Config>(defaultConfig);
-  const [activePreset, setActivePreset] = useState<PresetId>("microlins");
+  const [config, setConfig] = useState<Config>(() => getPreset("microlins"));
+  const [activePreset, setActivePreset] = useState<PresetId | null>("microlins");
   const [newPath, setNewPath] = useState("");
   const [importStatus, setImportStatus] = useState<string | null>(null);
 
@@ -45,6 +45,7 @@ export default function Home() {
     .filter((item) => item.warning);
 
   function set<K extends keyof Config>(key: K, value: Config[K]) {
+    setActivePreset(null);
     setConfig((current) => ({ ...current, [key]: value }));
   }
 
@@ -79,7 +80,7 @@ export default function Home() {
     try {
       const parsed = parseConfigJson(await file.text());
       setConfig(parsed);
-      setActivePreset("microlins");
+      setActivePreset(null);
       setImportStatus(`Configuração importada: ${file.name}`);
     } catch (error) {
       setImportStatus(
