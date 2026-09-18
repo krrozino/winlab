@@ -487,6 +487,11 @@ export default function Home() {
             value={config.blockRegedit}
             onChange={(value) => set("blockRegedit", value)}
           />
+          <Toggle
+            label="Permitir adicionar contas locais (continua exigindo credencial de administrador)"
+            value={config.allowLocalAccountManagement}
+            onChange={(value) => set("allowLocalAccountManagement", value)}
+          />
         </section>
 
         <section className="panel">
