@@ -822,6 +822,16 @@ function Get-WinLabRollbackState {
         throw "O estado pertence ao administrador '$($state.adminUser)', mas este rollback foi gerado para '$Admin'."
     }
 
+    $currentStudent = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
+    if ($state.studentSid -and $currentStudent -and ([string]$state.studentSid -ne $currentStudent.SID.Value)) {
+        throw "A conta '$Aluno' possui SID diferente do registrado pelo WinLab. O rollback automático foi interrompido para não restaurar registro no usuário errado."
+    }
+
+    $currentAdmin = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
+    if ($state.adminSid -and $currentAdmin -and ([string]$state.adminSid -ne $currentAdmin.SID.Value)) {
+        throw "A conta '$Admin' possui SID diferente do registrado pelo WinLab. O rollback automático foi interrompido."
+    }
+
     return $state
 }
 
