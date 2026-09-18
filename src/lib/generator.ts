@@ -110,6 +110,7 @@ $BlockStoreApps = ${psBool(config.blockStoreApps)}
 $BlockCmd = ${psBool(config.blockCmd)}
 $BlockPowerShell = ${psBool(config.blockPowerShell)}
 $BlockRegedit = ${psBool(config.blockRegedit)}
+$AllowLocalAccountManagement = ${psBool(config.allowLocalAccountManagement)}
 
 $BlockChromeExtensions = ${psBool(config.blockChromeExtensions)}
 $BlockChromeGuest = ${psBool(config.blockChromeGuest)}
@@ -169,6 +170,22 @@ function Set-StudentChromePolicies {
             $extensions = Join-Path $base "ExtensionInstallBlocklist"
             New-Item -Path $extensions -Force | Out-Null
             New-ItemProperty -Path $extensions -Name "1" -PropertyType String -Value "*" -Force | Out-Null
+        }
+    }
+}
+
+function Set-StudentAccountPolicies {
+    Invoke-WithUserHive -UserName $Aluno -Action {
+        param($sid)
+
+        $explorer = "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+        New-Item -Path $explorer -Force | Out-Null
+
+        if ($AllowLocalAccountManagement) {
+            Remove-ItemProperty -Path $explorer -Name SettingsPageVisibility -ErrorAction SilentlyContinue
+        }
+        else {
+            New-ItemProperty -Path $explorer -Name SettingsPageVisibility -PropertyType String -Value "hide:otherusers" -Force | Out-Null
         }
     }
 }
@@ -303,6 +320,7 @@ $denyRules
 function Install-WinLabProfile {
     Ensure-Accounts
     Set-StudentChromePolicies
+    Set-StudentAccountPolicies
     Set-StudentPersonalizationPolicies
 
     Backup-AppLocker
@@ -344,6 +362,7 @@ function Remove-StudentPolicies {
         Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization" -Name NoChangingMousePointers -ErrorAction SilentlyContinue
         Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\Personalization" -Name NoChangingSoundScheme -ErrorAction SilentlyContinue
         Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\ActiveDesktop" -Name NoChangingWallPaper -ErrorAction SilentlyContinue
+        Remove-ItemProperty "Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer" -Name SettingsPageVisibility -ErrorAction SilentlyContinue
     }
 }
 
