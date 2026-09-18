@@ -138,5 +138,7 @@ export function createZip(entries: ZipEntry[]): Blob {
   set16(endView, 20, 0);
 
   const bytes = concat([...localChunks, ...centralChunks, end]);
-  return new Blob([bytes], { type: "application/zip" });
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return new Blob([buffer], { type: "application/zip" });
 }
