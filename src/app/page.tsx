@@ -154,7 +154,7 @@ export default function Home() {
     <main>
       <header className="hero">
         <div>
-          <p className="eyebrow">WinLab Configurator · MVP 0.5</p>
+          <p className="eyebrow">WinLab Configurator · MVP 0.6</p>
           <h1>Configure o Windows sem configurar máquina por máquina.</h1>
           <p className="subtitle">
             Escolha um preset, ajuste as políticas e gere um pacote portátil com
@@ -734,6 +734,40 @@ export default function Home() {
           </label>
         </section>
 
+        <section className="panel safetyPanel">
+          <h2>Safety &amp; Recovery</h2>
+          <p className="muted">
+            O pacote foi desenhado para falhar antes de alterar a máquina e manter um caminho de volta.
+          </p>
+
+          <div className="safetyGrid">
+            <div>
+              <strong>Preview por padrão</strong>
+              <span>setup e rollback só alteram o Windows com <code>-Apply</code>.</span>
+            </div>
+            <div>
+              <strong>Preflight</strong>
+              <span>Valida contas, AppLocker e comandos essenciais antes da aplicação.</span>
+            </div>
+            <div>
+              <strong>Baseline preservado</strong>
+              <span>AppLocker e políticas de usuário anteriores são snapshotados uma única vez.</span>
+            </div>
+            <div>
+              <strong>Rollback seguro</strong>
+              <span>Sem <code>state.json</code> e backups válidos, o rollback se recusa a executar.</span>
+            </div>
+            <div>
+              <strong>Primeiro login</strong>
+              <span>Se a conta ainda não tiver perfil, as políticas HKCU são aplicadas por tarefa temporária no primeiro logon.</span>
+            </div>
+            <div>
+              <strong>Reaplicação idempotente</strong>
+              <span>Novas aplicações preservam o baseline original em vez de sobrescrevê-lo.</span>
+            </div>
+          </div>
+        </section>
+
         <section className="panel reviewPanel">
           <h2>Revisão antes de gerar</h2>
           <p className="muted">
@@ -757,7 +791,7 @@ export default function Home() {
 
           <div className="fileList">
             <File name="setup.ps1" description="Aplica a configuração." />
-            <File name="rollback.ps1" description="Remove as políticas sem apagar as contas." />
+            <File name="rollback.ps1" description="Restaura o baseline anterior do AppLocker/registro sem apagar as contas." />
             <File name="audit.ps1" description="Lê os eventos do AppLocker dos últimos 7 dias." />
             <File name="liberar-wallpaper.ps1" description="Libera o wallpaper e agenda o rebloqueio." />
             <File name="verify.ps1" description="Verifica Windows, AppLocker, contas e caminhos dos aplicativos." />
