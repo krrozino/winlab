@@ -478,13 +478,27 @@ foreach ($log in $logs) {
 
 
 export function generateVerifyScript(config: Config): string {
-  const allowedPaths = getAllowedPaths(config);
+  const knownApps = config.allowedApps.map((id) => ({
+    label: APP_CATALOG[id].label,
+    paths: APP_CATALOG[id].paths
+  }));
+  const appBlocks = knownApps
+    .map(
+      (app) => `    @{
+        Name = ${psString(app.label)}
+        Paths = ${psArray([...app.paths])}
+    }`
+    )
+    .join(",\n");
 
   return `${commonHeader(config, "VERIFICAÇÃO DO PC")}
 
 Assert-Administrator
 
-$AllowedExecutables = ${psArray(allowedPaths)}
+$KnownApps = @(
+${appBlocks}
+)
+$CustomAllowedPaths = ${psArray(config.customAllowedPaths)}
 
 function Write-Check {
     param(
@@ -503,7 +517,6 @@ Write-Host "Perfil: ${config.profileName}"
 Write-Host ""
 
 $os = Get-CimInstance Win32_OperatingSystem
-
 Write-Host ("Computador: {0}" -f $env:COMPUTERNAME)
 Write-Host ("Windows: {0}" -f $os.Caption)
 Write-Host ("Versão: {0}" -f $os.Version)
@@ -519,20 +532,37 @@ Write-Check "Application Identity" ($null -ne $service) $(if ($service) { "servi
 
 $student = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
 $admin = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
-Write-Check "Conta restrita" ($null -ne $student) $(if ($student) { "existe: $Aluno" } else { "será criada pelo setup: $Aluno" })
-Write-Check "Conta administrativa" ($null -ne $admin) $(if ($admin) { "existe: $Admin" } else { "será criada pelo setup: $Admin" })
+Write-Check "Conta restrita" ($null -ne $student -or ${psBool(config.createAccounts)}) $(if ($student) { "existe: $Aluno" } else { "será criada pelo setup: $Aluno" })
+Write-Check "Conta administrativa" ($null -ne $admin -or ${psBool(config.createAccounts)}) $(if ($admin) { "existe: $Admin" } else { "será criada pelo setup: $Admin" })
 
 Write-Host ""
-Write-Host "=== Aplicativos permitidos ===" -ForegroundColor Cyan
+Write-Host "=== Aplicativos conhecidos ===" -ForegroundColor Cyan
 
-foreach ($rawPath in $AllowedExecutables) {
-    $expanded = [Environment]::ExpandEnvironmentVariables($rawPath)
-    $exists = Test-Path $expanded
-    Write-Check $rawPath $exists $(if ($exists) { "encontrado" } else { "não encontrado neste caminho" })
+foreach ($app in $KnownApps) {
+    $found = $null
+
+    foreach ($rawPath in $app.Paths) {
+        $expanded = [Environment]::ExpandEnvironmentVariables($rawPath)
+        if (Test-Path $expanded) {
+            $found = $expanded
+            break
+        }
+    }
+
+    Write-Check $app.Name ($null -ne $found) $(if ($found) { "encontrado: $found" } else { "nenhum caminho conhecido encontrado" })
+}
+
+if ($CustomAllowedPaths.Count -gt 0) {
+    Write-Host ""
+    Write-Host "=== Caminhos personalizados ===" -ForegroundColor Cyan
+
+    foreach ($rawPath in $CustomAllowedPaths) {
+        $expanded = [Environment]::ExpandEnvironmentVariables($rawPath)
+        Write-Check $rawPath (Test-Path $expanded) $(if (Test-Path $expanded) { "encontrado" } else { "não encontrado" })
+    }
 }
 
 Write-Host ""
-Write-Host "A ausência de um caminho não significa necessariamente erro: alguns programas usam outro caminho/edição." -ForegroundColor DarkGray
 Write-Host "Use este relatório antes de ativar o AppLocker em modo Enabled." -ForegroundColor Yellow
 `;
 }
