@@ -114,6 +114,22 @@ if (-not $baselineFixture) {
         '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="NotConfigured" /></AppLockerPolicy>'
     }
 
+    function Get-LocalUser {
+        param(
+            [string]$Name,
+            [string]$ErrorAction
+        )
+
+        $sidSuffix = if ($Name -eq $Aluno) { "1001" } else { "1002" }
+
+        [PSCustomObject]@{
+            Name = $Name
+            SID = [PSCustomObject]@{
+                Value = "S-1-5-21-1000000000-1000000000-1000000000-$sidSuffix"
+            }
+        }
+    }
+
     try {
         $first = Ensure-AppLockerBaseline
         if (-not (Test-Path $first)) {
