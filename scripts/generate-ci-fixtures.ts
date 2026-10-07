@@ -11,10 +11,12 @@ import {
   generateVerifyScript
 } from "../src/lib/generator";
 import { generateInventoryScannerScript } from "../src/lib/inventory-script";
+import { buildWinLabPackageFiles } from "../src/lib/package-integrity";
 import { presets } from "../src/lib/presets";
 import type { Config } from "../src/lib/types";
 
 const root = path.join(process.cwd(), "artifacts", "ci-scripts");
+const packageRoot = path.join(process.cwd(), "artifacts", "ci-packages");
 
 const stressConfigs: Array<{ name: string; config: Config }> = [
   {
@@ -89,12 +91,29 @@ async function writeFixture(name: string, config: Config) {
   );
 }
 
+async function writePackageFixture(name: string, config: Config) {
+  const dir = path.join(packageRoot, name);
+  await mkdir(dir, { recursive: true });
+
+  const files = await buildWinLabPackageFiles(config, {
+    packageId: `ci-${name}`,
+    generatedAt: "2026-10-06T00:00:00.000Z"
+  });
+
+  await Promise.all(
+    files.map((file) => writeFile(path.join(dir, file.name), file.content, "utf8"))
+  );
+}
+
 async function main() {
   await rm(root, { recursive: true, force: true });
+  await rm(packageRoot, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
+  await mkdir(packageRoot, { recursive: true });
 
   for (const item of configs) {
     await writeFixture(item.name, item.config);
+    await writePackageFixture(item.name, item.config);
   }
 
   await writeFile(
@@ -103,7 +122,8 @@ async function main() {
     "utf8"
   );
 
-  console.log(`Generated ${configs.length} WinLab fixture sets in ${root}`);
+  console.log(`Generated ${configs.length} WinLab script fixtures in ${root}`);
+  console.log(`Generated ${configs.length} WinLab package fixtures in ${packageRoot}`);
 }
 
 main().catch((error) => {
