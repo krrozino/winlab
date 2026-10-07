@@ -18,6 +18,8 @@ import {
 } from "../src/lib/inventory";
 import { generateInventoryScannerScript } from "../src/lib/inventory-script";
 import { getConfigErrors } from "../src/lib/validation";
+import { parsePreflightReportJson, isPreflightReady } from "../src/lib/preflight";
+import { generatePreflightScript } from "../src/lib/preflight-script";
 import {
   buildPackageManifest,
   buildWinLabPackageFiles,
@@ -490,7 +492,7 @@ test("package manifest hashes every generated file except itself", async () => {
   });
 
   assert.equal(manifest.packageId, "test-package");
-  assert.equal(manifest.packageVersion, "0.7.0");
+  assert.equal(manifest.packageVersion, "0.8.0");
   assert.equal(manifest.files.length, baseFiles.length);
   assert.equal(manifest.files.some((file) => file.name === "manifest.json"), false);
 
@@ -535,4 +537,94 @@ test("mutating scripts check package integrity before apply", () => {
   assert.ok(setup.includes("function Assert-WinLabPackageIntegrity"));
   assert.ok(setup.includes("Integridade do pacote: PASS"));
   assert.ok(rollback.includes("Assert-WinLabPackageIntegrity"));
+});
+
+
+test("preflight report parser preserves readiness summary", () => {
+  const report = parsePreflightReportJson(
+    JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: "2026-10-06T18:00:00-03:00",
+      computerName: "LAB-01",
+      profileName: "Microlins Lab",
+      windows: {
+        caption: "Windows 11 Pro",
+        version: "10.0.26100",
+        buildNumber: "26100",
+        architecture: "64 bits"
+      },
+      status: "WARN",
+      summary: {
+        score: 88,
+        pass: 8,
+        warn: 2,
+        block: 0
+      },
+      checks: [
+        {
+          id: "runtime.admin",
+          label: "Execução administrativa",
+          status: "PASS",
+          message: "OK"
+        },
+        {
+          id: "accounts.profile",
+          label: "Perfil",
+          status: "WARN",
+          message: "Primeiro login pendente"
+        }
+      ]
+    })
+  );
+
+  assert.equal(report.summary.score, 88);
+  assert.equal(report.status, "WARN");
+  assert.equal(isPreflightReady(report), true);
+});
+
+test("preflight readiness blocks any BLOCK result", () => {
+  const report = parsePreflightReportJson(
+    JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: "",
+      computerName: "LAB-BLOCK",
+      profileName: "Teste",
+      windows: {
+        caption: "Windows",
+        version: "10",
+        buildNumber: "1",
+        architecture: "64 bits"
+      },
+      status: "BLOCK",
+      summary: {
+        score: 40,
+        pass: 1,
+        warn: 0,
+        block: 1
+      },
+      checks: [
+        {
+          id: "runtime.applocker",
+          label: "AppLocker",
+          status: "BLOCK",
+          message: "Ausente"
+        }
+      ]
+    })
+  );
+
+  assert.equal(isPreflightReady(report), false);
+});
+
+test("standalone preflight is diagnostic-only", () => {
+  const script = generatePreflightScript(defaultConfig);
+
+  assert.match(script, /WINLAB PREFLIGHT/);
+  assert.match(script, /winlab-preflight-/);
+  assert.match(script, /Readiness/);
+  assert.match(script, /package\.integrity/);
+  assert.doesNotMatch(script, /New-LocalUser/);
+  assert.doesNotMatch(script, /Set-AppLockerPolicy\s+-/);
+  assert.doesNotMatch(script, /Register-ScheduledTask\s+-/);
+  assert.doesNotMatch(script, /Remove-CimInstance/);
 });

@@ -4,9 +4,33 @@ Gerador local-first de configurações PowerShell para computadores Windows comp
 
 O WinLab gera os scripts no navegador. Senhas não são armazenadas pelo projeto.
 
-## MVP 0.7 — Package Integrity & Provenance
+## MVP 0.8 — Diagnostics & Readiness
 
-A fundação Safety & Recovery do 0.6 continua ativa. O 0.7 adiciona rastreabilidade e integridade ao pacote antes do primeiro teste físico.
+As fundações Safety & Recovery (0.6) e Package Integrity (0.7) continuam ativas. O 0.8 adiciona diagnóstico objetivo da máquina antes do primeiro teste físico.
+
+### Preflight / readiness
+
+O pacote inclui `preflight.ps1`, que não altera contas nem políticas. Ele verifica a máquina e gera `winlab-preflight-NOMEDOPC.json`.
+
+O relatório contém:
+
+- status `PASS`, `WARN` ou `BLOCK`;
+- readiness score de 0–100;
+- execução administrativa;
+- cmdlets de contas locais;
+- AppLocker;
+- Scheduled Tasks;
+- Application Identity;
+- contas configuradas;
+- perfil/NTUSER.DAT;
+- armazenamento;
+- apps permitidos encontrados ou ausentes;
+- caminhos customizados;
+- AppLocker AuditOnly/Enabled;
+- estado/baselines WinLab anteriores;
+- integridade do pacote.
+
+O JSON pode ser importado de volta no configurador para exibir os checks e bloqueios.
 
 ### Integridade do pacote
 
@@ -170,6 +194,7 @@ setup.ps1
 rollback.ps1
 audit.ps1
 verify.ps1
+preflight.ps1
 scan-pc.ps1
 maintenance.ps1
 liberar-wallpaper.ps1

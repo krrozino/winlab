@@ -215,6 +215,44 @@ foreach ($package in $packageDirs) {
 
 Write-Host "Package integrity intact fixtures: OK" -ForegroundColor Green
 
+# Execute one standalone preflight and validate its JSON contract.
+$preflightPackage = Join-Path $packageRoot "preset-microlins"
+$preflightScript = Join-Path $preflightPackage "preflight.ps1"
+$preflightReportPath = Join-Path $env:RUNNER_TEMP "winlab-preflight-ci.json"
+
+& $preflightScript -OutputPath $preflightReportPath
+
+if (-not (Test-Path $preflightReportPath)) {
+    throw "preflight.ps1 não gerou relatório JSON."
+}
+
+$preflight = Get-Content -Path $preflightReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+if ($preflight.schemaVersion -ne 1) {
+    throw "Schema de preflight inesperado: $($preflight.schemaVersion)"
+}
+
+if (@("PASS", "WARN", "BLOCK") -notcontains [string]$preflight.status) {
+    throw "Status de preflight inválido: $($preflight.status)"
+}
+
+$checks = @($preflight.checks)
+$passCount = @($checks | Where-Object { $_.status -eq "PASS" }).Count
+$warnCount = @($checks | Where-Object { $_.status -eq "WARN" }).Count
+$blockCount = @($checks | Where-Object { $_.status -eq "BLOCK" }).Count
+
+if ($passCount -ne [int]$preflight.summary.pass -or
+    $warnCount -ne [int]$preflight.summary.warn -or
+    $blockCount -ne [int]$preflight.summary.block) {
+    throw "Resumo de preflight não corresponde aos checks."
+}
+
+if ([int]$preflight.summary.score -lt 0 -or [int]$preflight.summary.score -gt 100) {
+    throw "Readiness score fora de 0-100."
+}
+
+Write-Host ("Preflight report contract: OK ({0}, score {1})" -f $preflight.status, $preflight.summary.score) -ForegroundColor Green
+
 # A deliberately modified package must fail verification.
 $tamperPackage = Join-Path $packageRoot "preset-microlins"
 $tamperFile = Join-Path $tamperPackage "README.txt"
