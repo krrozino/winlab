@@ -191,3 +191,49 @@ foreach ($file in Get-ChildItem -Path $resolved -Filter setup.ps1 -Recurse) {
 }
 
 Write-Host "AppLocker XML: OK" -ForegroundColor Green
+
+# Validate package manifests and SHA-256 integrity.
+$packageRoot = Join-Path (Get-Location) "artifacts\ci-packages"
+$packageDirs = @(Get-ChildItem -Path $packageRoot -Directory)
+
+if ($packageDirs.Count -eq 0) {
+    throw "Nenhum fixture de pacote encontrado em $packageRoot"
+}
+
+foreach ($package in $packageDirs) {
+    $verifyScript = Join-Path $package.FullName "verify-package.ps1"
+
+    if (-not (Test-Path $verifyScript)) {
+        throw "verify-package.ps1 ausente em $($package.FullName)"
+    }
+
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyScript -PackageRoot $package.FullName
+    if ($LASTEXITCODE -ne 0) {
+        throw "Verificação de integridade falhou para pacote intacto: $($package.Name)"
+    }
+}
+
+Write-Host "Package integrity intact fixtures: OK" -ForegroundColor Green
+
+# A deliberately modified package must fail verification.
+$tamperPackage = Join-Path $packageRoot "preset-microlins"
+$tamperFile = Join-Path $tamperPackage "README.txt"
+$original = Get-Content -Path $tamperFile -Raw -Encoding UTF8
+
+try {
+    Set-Content -Path $tamperFile -Value ($original + [Environment]::NewLine + "CI-TAMPER") -Encoding UTF8
+
+    $verifyScript = Join-Path $tamperPackage "verify-package.ps1"
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyScript -PackageRoot $tamperPackage
+
+    if ($LASTEXITCODE -eq 0) {
+        throw "Pacote adulterado foi aceito pela verificação de integridade."
+    }
+}
+finally {
+    Set-Content -Path $tamperFile -Value $original -Encoding UTF8
+}
+
+& cmd.exe /c "exit 0" | Out-Null
+
+Write-Host "Package tamper detection: OK" -ForegroundColor Green
