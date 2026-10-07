@@ -16,6 +16,7 @@ import { getConfigReview } from "@/lib/review";
 import { getPreset, presets } from "@/lib/presets";
 import { Config, AllowedAppId, PresetId } from "@/lib/types";
 import { pathRisk } from "@/lib/security";
+import { buildWinLabPackageFiles } from "@/lib/package-integrity";
 import { createZip } from "@/lib/zip";
 import { getConfigErrors } from "@/lib/validation";
 import {
@@ -129,20 +130,11 @@ export default function Home() {
     setConfig((current) => applyInventorySuggestions(current, inventory));
   }
 
-  function exportPackage() {
+  async function exportPackage() {
     if (configErrors.length > 0) return;
 
-    const blob = createZip([
-      { name: "setup.ps1", content: generateSetupScript(config) },
-      { name: "rollback.ps1", content: generateRollbackScript(config) },
-      { name: "audit.ps1", content: generateAuditScript(config) },
-      { name: "liberar-wallpaper.ps1", content: generateUnlockWallpaperScript(config) },
-      { name: "verify.ps1", content: generateVerifyScript(config) },
-      { name: "scan-pc.ps1", content: generateInventoryScannerScript() },
-      { name: "maintenance.ps1", content: generateMaintenanceScript(config) },
-      { name: "config.json", content: generateConfigJson(config) },
-      { name: "README.txt", content: generateReadme(config) }
-    ]);
+    const files = await buildWinLabPackageFiles(config);
+    const blob = createZip(files);
     const slug =
       config.profileName
         .toLowerCase()
@@ -158,7 +150,7 @@ export default function Home() {
     <main>
       <header className="hero">
         <div>
-          <p className="eyebrow">WinLab Configurator · MVP 0.6</p>
+          <p className="eyebrow">WinLab Configurator · MVP 0.7</p>
           <h1>Configure o Windows sem configurar máquina por máquina.</h1>
           <p className="subtitle">
             Escolha um preset, ajuste as políticas e gere um pacote portátil com
