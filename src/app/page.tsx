@@ -12,6 +12,9 @@ import {
 } from "@/lib/inventory";
 import type { PcInventory } from "@/lib/inventory-types";
 import { generateInventoryScannerScript } from "@/lib/inventory-script";
+import { parsePreflightReportJson, isPreflightReady } from "@/lib/preflight";
+import type { PreflightReport } from "@/lib/preflight-types";
+import { generatePreflightScript } from "@/lib/preflight-script";
 import { getConfigReview } from "@/lib/review";
 import { getPreset, presets } from "@/lib/presets";
 import { Config, AllowedAppId, PresetId } from "@/lib/types";
@@ -51,6 +54,8 @@ export default function Home() {
   const [inventory, setInventory] = useState<PcInventory | null>(null);
   const [inventoryStatus, setInventoryStatus] = useState<string | null>(null);
   const [inventorySearch, setInventorySearch] = useState("");
+  const [preflightReport, setPreflightReport] = useState<PreflightReport | null>(null);
+  const [preflightStatus, setPreflightStatus] = useState<string | null>(null);
 
   const setupScript = useMemo(() => generateSetupScript(config), [config]);
   const reviewItems = useMemo(() => getConfigReview(config), [config]);
@@ -124,6 +129,21 @@ export default function Home() {
     }
   }
 
+  async function importPreflight(file: File | undefined) {
+    if (!file) return;
+
+    try {
+      const parsed = parsePreflightReportJson(await file.text());
+      setPreflightReport(parsed);
+      setPreflightStatus(`Preflight carregado: ${parsed.computerName || file.name}`);
+    } catch (error) {
+      setPreflightReport(null);
+      setPreflightStatus(
+        error instanceof Error ? error.message : "Não foi possível importar o preflight."
+      );
+    }
+  }
+
   function applyDetectedApps() {
     if (!inventory) return;
     setActivePreset(null);
@@ -150,7 +170,7 @@ export default function Home() {
     <main>
       <header className="hero">
         <div>
-          <p className="eyebrow">WinLab Configurator · MVP 0.7</p>
+          <p className="eyebrow">WinLab Configurator · MVP 0.8</p>
           <h1>Configure o Windows sem configurar máquina por máquina.</h1>
           <p className="subtitle">
             Escolha um preset, ajuste as políticas e gere um pacote portátil com
@@ -353,6 +373,80 @@ export default function Home() {
                   </span>
                 ))}
               </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="readinessPanel">
+        <div className="readinessIntro">
+          <div>
+            <p className="eyebrow">Diagnostics &amp; Readiness</p>
+            <h2>Saiba se a máquina está pronta antes de aplicar.</h2>
+            <p>
+              Execute o preflight no Windows. Ele não altera contas nem políticas e gera
+              um relatório PASS / WARN / BLOCK para importar aqui.
+            </p>
+          </div>
+
+          <div className="inventoryActions">
+            <button
+              className="secondary"
+              onClick={() =>
+                downloadText("preflight.ps1", generatePreflightScript(config))
+              }
+            >
+              Baixar preflight.ps1
+            </button>
+
+            <label className="importButton">
+              Importar preflight
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={(event) => importPreflight(event.target.files?.[0])}
+              />
+            </label>
+          </div>
+        </div>
+
+        {preflightStatus && <p className="importStatus">{preflightStatus}</p>}
+
+        {preflightReport && (
+          <div className="readinessResults">
+            <div className="readinessScore">
+              <div className={`scoreCircle ${preflightReport.status.toLowerCase()}`}>
+                <strong>{preflightReport.summary.score}</strong>
+                <span>/100</span>
+              </div>
+              <div>
+                <span className={`readinessBadge ${preflightReport.status.toLowerCase()}`}>
+                  {preflightReport.status}
+                </span>
+                <h3>
+                  {isPreflightReady(preflightReport)
+                    ? "Máquina sem bloqueios críticos"
+                    : "Máquina ainda não está pronta"}
+                </h3>
+                <p>
+                  {preflightReport.summary.pass} PASS · {preflightReport.summary.warn} WARN ·{" "}
+                  {preflightReport.summary.block} BLOCK
+                </p>
+              </div>
+            </div>
+
+            <div className="readinessChecks">
+              {preflightReport.checks.map((check) => (
+                <div className="readinessCheck" key={check.id}>
+                  <span className={`checkStatus ${check.status.toLowerCase()}`}>
+                    {check.status}
+                  </span>
+                  <div>
+                    <strong>{check.label}</strong>
+                    <p>{check.message}</p>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -809,6 +903,7 @@ export default function Home() {
             <File name="audit.ps1" description="Lê os eventos do AppLocker dos últimos 7 dias." />
             <File name="liberar-wallpaper.ps1" description="Libera o wallpaper e agenda o rebloqueio." />
             <File name="verify.ps1" description="Verifica Windows, AppLocker, contas e caminhos dos aplicativos." />
+            <File name="preflight.ps1" description="Gera readiness PASS/WARN/BLOCK e relatório JSON antes do Apply." />
             <File name="scan-pc.ps1" description="Gera inventário JSON para importar novamente no WinLab." />
             <File name="maintenance.ps1" description="Relata espaço em disco e perfis antigos; pode removê-los quando explicitamente configurado." />
             <File name="config.json" description="Permite reproduzir a mesma configuração." />
