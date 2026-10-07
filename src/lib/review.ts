@@ -12,6 +12,18 @@ export function getConfigReview(config: Config): ReviewItem[] {
 
   items.push({
     level: "info",
+    text: "Safety & Recovery ativo: scripts mutáveis exigem -Apply; setup preserva baseline e rollback exige state.json válido."
+  });
+
+  if (config.createAccounts) {
+    items.push({
+      level: "info",
+      text: "Se a conta restrita ainda não tiver perfil, políticas por usuário serão concluídas automaticamente no primeiro logon."
+    });
+  }
+
+  items.push({
+    level: "info",
     text:
       config.enforcementMode === "AuditOnly"
         ? "AppLocker está em auditoria: registra eventos sem bloquear aplicativos."

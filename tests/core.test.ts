@@ -17,6 +17,7 @@ import {
   suggestedAllowedApps
 } from "../src/lib/inventory";
 import { generateInventoryScannerScript } from "../src/lib/inventory-script";
+import { getConfigErrors } from "../src/lib/validation";
 
 test("imports legacy 0.2 config without schemaVersion", () => {
   const imported = parseConfigJson(
@@ -303,7 +304,7 @@ test("generated setup and rollback require explicit Apply", () => {
   const setup = generateSetupScript(defaultConfig);
   const rollback = generateRollbackScript(defaultConfig);
 
-  assert.ok(setup.includes("param([switch]$Apply)"));
+  assert.ok(setup.includes("param([switch]$Apply, [switch]$UserPoliciesOnly)"));
   assert.ok(setup.includes("if ($Apply)"));
   assert.ok(setup.includes("Nenhuma alteração foi aplicada"));
 
@@ -325,9 +326,143 @@ test("profile deletion requires explicit Apply", () => {
 
 test("PowerShell parameters are emitted before executable statements", () => {
   const setup = generateSetupScript(defaultConfig);
-  const paramIndex = setup.indexOf("param([switch]$Apply)");
+  const paramIndex = setup.indexOf("param([switch]$Apply, [switch]$UserPoliciesOnly)");
   const errorPreferenceIndex = setup.indexOf('$ErrorActionPreference = "Stop"');
 
   assert.ok(paramIndex > 0);
   assert.ok(errorPreferenceIndex > paramIndex);
+});
+
+
+test("setup includes fail-fast preflight and first-logon recovery path", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("function Test-WinLabPreflight"));
+  assert.ok(setup.includes("Preflight WinLab falhou"));
+  assert.ok(setup.includes('$triggerUser = "$env:COMPUTERNAME\\$Aluno"'));
+  assert.ok(setup.includes("New-ScheduledTaskTrigger -AtLogOn -User $triggerUser"));
+  assert.ok(setup.includes("-Apply -UserPoliciesOnly"));
+  assert.ok(setup.includes("Complete-DeferredUserPolicies"));
+});
+
+test("setup preserves AppLocker and registry baselines across reapplies", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("AppLocker-Baseline-"));
+  assert.ok(setup.includes("baselineAppLockerBackup"));
+  assert.ok(setup.includes("Registry-Baseline-"));
+  assert.ok(setup.includes("registryBaselineDir"));
+  assert.ok(setup.includes("if ($state -and $state.baselineAppLockerBackup)"));
+  assert.ok(setup.includes("if ($state -and $state.registryBaselineDir)"));
+  assert.ok(setup.includes("schemaVersion = 2"));
+});
+
+test("rollback restores baseline instead of clearing AppLocker", () => {
+  const rollback = generateRollbackScript(defaultConfig);
+
+  assert.ok(rollback.includes("Get-WinLabRollbackState"));
+  assert.ok(rollback.includes("Restore-AppLockerBaseline"));
+  assert.ok(rollback.includes("Restore-RegistryBaseline"));
+  assert.ok(rollback.includes("Set-AppLockerPolicy -XmlPolicy $baseline"));
+  assert.ok(rollback.includes("state.json do WinLab não foi encontrado"));
+  assert.equal(rollback.includes("WinLab-AppLocker-Empty.xml"), false);
+  assert.equal(rollback.includes('EnforcementMode="NotConfigured"'), false);
+});
+
+test("registry baseline covers every user policy family WinLab changes", () => {
+  const setup = generateSetupScript(defaultConfig);
+  const names = [
+    "Chrome",
+    "Edge",
+    "Personalization",
+    "ActiveDesktop",
+    "Explorer",
+    "RemovableStorage"
+  ];
+
+  for (const name of names) {
+    assert.ok(setup.includes('Name = "' + name + '"'));
+  }
+
+  assert.ok(setup.includes("reg.exe export"));
+  assert.ok(generateRollbackScript(defaultConfig).includes("reg.exe import"));
+});
+
+test("state records deferred policy completion fields", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("userPoliciesDeferred"));
+  assert.ok(setup.includes("userPoliciesAppliedAt"));
+  assert.ok(setup.includes("status = $Status"));
+  assert.ok(setup.includes('ValidateSet("Applying", "Applied", "RecoveredAfterFailure", "RecoveryFailed")'));
+});
+
+test("recovery paths preserve exact registry syntax in generated PowerShell", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes('Native = "HKU\\$sid\\Software\\Policies\\Google\\Chrome"'));
+  assert.ok(setup.includes('Provider = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"'));
+  assert.ok(setup.includes('$triggerUser = "$env:COMPUTERNAME\\$Aluno"'));
+  assert.ok(setup.includes('Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}'));
+});
+
+test("failed setup has automatic recovery states", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("Recover-FromFailedSetup"));
+  assert.ok(setup.includes("RecoveredAfterFailure"));
+  assert.ok(setup.includes("RecoveryFailed"));
+  assert.ok(setup.includes("Restore-RegistryBaselineForRecovery"));
+  assert.ok(setup.includes("Set-AppLockerPolicy -XmlPolicy $BaselineAppLockerBackup"));
+});
+
+test("state and rollback are bound to account SIDs", () => {
+  const setup = generateSetupScript(defaultConfig);
+  const rollback = generateRollbackScript(defaultConfig);
+
+  assert.ok(setup.includes("studentSid = $studentObject.SID.Value"));
+  assert.ok(setup.includes("adminSid = $adminObject.SID.Value"));
+  assert.ok(setup.includes("foi recriada com outro SID"));
+  assert.ok(rollback.includes("SID diferente do registrado pelo WinLab"));
+});
+
+test("fatal validation follows Windows local-user naming rules", () => {
+  assert.equal(getConfigErrors(defaultConfig).length, 0);
+
+  assert.ok(
+    getConfigErrors({ ...defaultConfig, studentUser: "Aluno/Inválido" }).some(
+      (error) => error.field === "studentUser"
+    )
+  );
+
+  assert.ok(
+    getConfigErrors({ ...defaultConfig, adminUser: "123456789012345678901" }).some(
+      (error) => error.field === "adminUser"
+    )
+  );
+
+  assert.ok(
+    getConfigErrors({ ...defaultConfig, studentUser: "...." }).some(
+      (error) => error.field === "studentUser"
+    )
+  );
+});
+
+test("fatal validation rejects equal student and admin accounts", () => {
+  const errors = getConfigErrors({
+    ...defaultConfig,
+    studentUser: "MesmoUsuario",
+    adminUser: "mesmousuario"
+  });
+
+  assert.ok(errors.some((error) => error.message.includes("nomes diferentes")));
+});
+
+test("generated preflight independently validates local-user names", () => {
+  const setup = generateSetupScript(defaultConfig);
+
+  assert.ok(setup.includes("function Test-WinLabUserName"));
+  assert.ok(setup.includes("Nome inválido para a conta restrita"));
+  assert.ok(setup.includes("Value.Length -gt 20"));
+  assert.ok(setup.includes("^[.\\s]+$"));
 });
