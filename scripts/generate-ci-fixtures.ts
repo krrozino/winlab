@@ -11,6 +11,7 @@ import {
   generateVerifyScript
 } from "../src/lib/generator";
 import { generateInventoryScannerScript } from "../src/lib/inventory-script";
+import { generatePreflightScript } from "../src/lib/preflight-script";
 import { buildWinLabPackageFiles } from "../src/lib/package-integrity";
 import { presets } from "../src/lib/presets";
 import type { Config } from "../src/lib/types";
@@ -80,6 +81,7 @@ async function writeFixture(name: string, config: Config) {
     "rollback.ps1": generateRollbackScript(config),
     "audit.ps1": generateAuditScript(config),
     "verify.ps1": generateVerifyScript(config),
+    "preflight.ps1": generatePreflightScript(config),
     "maintenance.ps1": generateMaintenanceScript(config),
     "liberar-wallpaper.ps1": generateUnlockWallpaperScript(config)
   };
