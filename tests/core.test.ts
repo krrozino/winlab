@@ -21,6 +21,11 @@ import { getConfigErrors } from "../src/lib/validation";
 import { parsePreflightReportJson, isPreflightReady } from "../src/lib/preflight";
 import { generatePreflightScript } from "../src/lib/preflight-script";
 import {
+  buildPilotPackageFiles,
+  evaluatePilotReadiness,
+  getPilotConfig
+} from "../src/lib/pilot";
+import {
   buildPackageManifest,
   buildWinLabPackageFiles,
   getBasePackageFiles,
@@ -492,7 +497,7 @@ test("package manifest hashes every generated file except itself", async () => {
   });
 
   assert.equal(manifest.packageId, "test-package");
-  assert.equal(manifest.packageVersion, "0.8.0");
+  assert.equal(manifest.packageVersion, "0.9.0");
   assert.equal(manifest.files.length, baseFiles.length);
   assert.equal(manifest.files.some((file) => file.name === "manifest.json"), false);
 
@@ -627,4 +632,140 @@ test("standalone preflight is diagnostic-only", () => {
   assert.doesNotMatch(script, /Set-AppLockerPolicy\s+-/);
   assert.doesNotMatch(script, /Register-ScheduledTask\s+-/);
   assert.doesNotMatch(script, /Remove-CimInstance/);
+});
+
+
+function readyPreflight(overrides: Record<string, unknown> = {}) {
+  return parsePreflightReportJson(
+    JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      computerName: "LAB-PILOT",
+      profileName: defaultConfig.profileName,
+      windows: {
+        caption: "Windows 11 Pro",
+        version: "10.0.26100",
+        buildNumber: "26100",
+        architecture: "64 bits"
+      },
+      status: "PASS",
+      summary: {
+        score: 100,
+        pass: 10,
+        warn: 0,
+        block: 0
+      },
+      checks: [],
+      ...overrides
+    })
+  );
+}
+
+test("pilot readiness blocks generation without preflight", () => {
+  const readiness = evaluatePilotReadiness(defaultConfig, null);
+  assert.equal(readiness.status, "BLOCKED");
+  assert.ok(readiness.gates.some((gate) => gate.id === "preflight.required"));
+});
+
+test("pilot readiness blocks a machine with preflight BLOCK", () => {
+  const report = readyPreflight({
+    status: "BLOCK",
+    summary: {
+      score: 50,
+      pass: 5,
+      warn: 0,
+      block: 1
+    }
+  });
+
+  const readiness = evaluatePilotReadiness(defaultConfig, report);
+  assert.equal(readiness.status, "BLOCKED");
+});
+
+test("pilot config forces AuditOnly and ReportOnly", () => {
+  const effective = getPilotConfig({
+    ...defaultConfig,
+    enforcementMode: "Enabled",
+    profileCleanupMode: "Delete"
+  });
+
+  assert.equal(effective.enforcementMode, "AuditOnly");
+  assert.equal(effective.profileCleanupMode, "ReportOnly");
+});
+
+test("pilot package is target-bound and contains checklists", async () => {
+  const report = readyPreflight();
+  const files = await buildPilotPackageFiles(
+    {
+      ...defaultConfig,
+      enforcementMode: "Enabled",
+      profileCleanupMode: "Delete"
+    },
+    report
+  );
+
+  const manifestFile = files.find((file) => file.name === "manifest.json");
+  const configFile = files.find((file) => file.name === "config.json");
+
+  assert.ok(manifestFile);
+  assert.ok(configFile);
+  assert.ok(files.some((file) => file.name === "PILOT-DEPLOYMENT-CHECKLIST.txt"));
+  assert.ok(files.some((file) => file.name === "PILOT-ROLLBACK-CHECKLIST.txt"));
+  assert.ok(files.some((file) => file.name === "pilot-readiness.json"));
+  assert.ok(files.some((file) => file.name === "preflight-source.json"));
+
+  const manifest = JSON.parse(manifestFile!.content);
+  const effectiveConfig = JSON.parse(configFile!.content);
+
+  assert.equal(manifest.packageVersion, "0.9.0");
+  assert.equal(manifest.channel, "pilot");
+  assert.equal(manifest.targetComputerName, "LAB-PILOT");
+  assert.equal(effectiveConfig.enforcementMode, "AuditOnly");
+  assert.equal(effectiveConfig.profileCleanupMode, "ReportOnly");
+});
+
+test("pilot package refuses readiness BLOCK", async () => {
+  const report = readyPreflight({
+    status: "BLOCK",
+    summary: { score: 20, pass: 1, warn: 0, block: 2 }
+  });
+
+  await assert.rejects(
+    () => buildPilotPackageFiles(defaultConfig, report),
+    /gates BLOCK/
+  );
+});
+
+test("legacy 0.3-style config receives current safe defaults", () => {
+  const imported = parseConfigJson(
+    JSON.stringify({
+      profileName: "Legacy 0.3",
+      studentUser: "Aluno",
+      adminUser: "Admin",
+      createAccounts: true,
+      enforcementMode: "AuditOnly",
+      allowedApps: ["chrome", "word"],
+      customAllowedPaths: []
+    })
+  );
+
+  assert.equal(imported.blockUsbExecute, true);
+  assert.equal(imported.profileCleanupMode, "ReportOnly");
+  assert.equal(imported.browserUrlMode, "Unrestricted");
+});
+
+test("legacy 0.5-style config keeps available fields and fills newer ones", () => {
+  const imported = parseConfigJson(
+    JSON.stringify({
+      ...defaultConfig,
+      schemaVersion: undefined,
+      browserUrlMode: "BlockList",
+      blockedUrls: ["example.com"],
+      blockUsbWrite: true
+    })
+  );
+
+  assert.equal(imported.browserUrlMode, "BlockList");
+  assert.deepEqual(imported.blockedUrls, ["example.com"]);
+  assert.equal(imported.blockUsbWrite, true);
 });

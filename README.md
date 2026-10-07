@@ -4,9 +4,26 @@ Gerador local-first de configurações PowerShell para computadores Windows comp
 
 O WinLab gera os scripts no navegador. Senhas não são armazenadas pelo projeto.
 
-## MVP 0.8 — Diagnostics & Readiness
+## MVP 0.9 — Pilot Candidate
 
-As fundações Safety & Recovery (0.6) e Package Integrity (0.7) continuam ativas. O 0.8 adiciona diagnóstico objetivo da máquina antes do primeiro teste físico.
+A linha 0.6–0.8 continua ativa. O 0.9 congela um fluxo de **Pilot Candidate** para um único teste físico controlado antes do Policy Engine V2.
+
+### Gate de piloto
+
+O configurador só libera **Gerar pacote piloto** quando existe um preflight importado e não há nenhum `BLOCK`.
+
+O pacote piloto:
+
+- fica associado ao computador do preflight;
+- força AppLocker para `AuditOnly`;
+- força limpeza de perfis para `ReportOnly`;
+- inclui o preflight de origem;
+- inclui o resultado dos gates;
+- inclui checklist de implantação;
+- inclui checklist de rollback;
+- coloca todos esses arquivos sob o manifest SHA-256.
+
+`WARN` não impede a geração, mas deve ser revisado antes do Apply.
 
 ### Preflight / readiness
 
@@ -202,6 +219,12 @@ config.json
 README.txt
 verify-package.ps1
 manifest.json
+
+# extras do pacote piloto
+PILOT-DEPLOYMENT-CHECKLIST.txt
+PILOT-ROLLBACK-CHECKLIST.txt
+pilot-readiness.json
+preflight-source.json
 ```
 
 ## Validação automatizada
@@ -263,6 +286,19 @@ npm run fixtures
 npm run dev
 ```
 
+## Compatibilidade do piloto
+
+Consulte `docs/pilot-compatibility.md`.
+
+Resumo:
+
+- Windows 11 é o alvo preferencial;
+- Windows 10 22H2 pode ser tecnicamente validado, mas está fora do suporte regular desde 14/10/2025 e deve estar sob ESU quando aplicável;
+- capability detection do `preflight.ps1` é mais importante que o nome da edição;
+- CI Windows Server não substitui homologação física em Windows cliente.
+
+Release notes: `docs/releases/0.9.0.md`.
+
 ## Pesquisa e roadmap
 
 - `docs/market-research-2026-09.md`
@@ -274,8 +310,8 @@ npm run dev
 
 Para preservar os limites da Vercel:
 
-- somente a branch `main` possui deploy automático;
-- branches de feature e pull requests usam GitHub Actions, sem preview automático;
+- nenhum branch possui deploy automático na Vercel;
+- branches e pull requests usam GitHub Actions, sem preview automático;
 - preview Vercel de feature branch deve ser criado manualmente apenas quando houver necessidade real de revisão visual;
 - desenvolvimento normal deve ser validado por testes, typecheck, build e runner Windows;
 - Git não gera deployment automático nem em `main` nem em feature branches;

@@ -13,7 +13,7 @@ import { generatePreflightScript } from "./preflight-script";
 import type { Config } from "./types";
 
 export const PACKAGE_MANIFEST_SCHEMA_VERSION = 1;
-export const WINLAB_PACKAGE_VERSION = "0.8.0";
+export const WINLAB_PACKAGE_VERSION = "0.9.0";
 
 export type PackageFile = {
   name: string;
@@ -33,6 +33,8 @@ export type PackageManifest = {
   generatedAt: string;
   profileName: string;
   configSchemaVersion: 1;
+  channel: "standard" | "pilot";
+  targetComputerName: string | null;
   integrity: {
     algorithm: "SHA-256";
     manifestSelfHashed: false;
@@ -191,6 +193,8 @@ export async function buildPackageManifest(
   options?: {
     packageId?: string;
     generatedAt?: string;
+    channel?: "standard" | "pilot";
+    targetComputerName?: string | null;
   }
 ): Promise<PackageManifest> {
   const manifestFiles = await Promise.all(
@@ -208,6 +212,8 @@ export async function buildPackageManifest(
     generatedAt: options?.generatedAt ?? new Date().toISOString(),
     profileName: config.profileName,
     configSchemaVersion: 1,
+    channel: options?.channel ?? "standard",
+    targetComputerName: options?.targetComputerName ?? null,
     integrity: {
       algorithm: "SHA-256",
       manifestSelfHashed: false,
@@ -222,9 +228,15 @@ export async function buildWinLabPackageFiles(
   options?: {
     packageId?: string;
     generatedAt?: string;
+    channel?: "standard" | "pilot";
+    targetComputerName?: string | null;
+    extraFiles?: PackageFile[];
   }
 ): Promise<PackageFile[]> {
-  const files = getBasePackageFiles(config);
+  const files = [
+    ...getBasePackageFiles(config),
+    ...(options?.extraFiles ?? [])
+  ];
   const manifest = await buildPackageManifest(config, files, options);
 
   return [

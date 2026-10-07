@@ -13,11 +13,14 @@ import {
 import { generateInventoryScannerScript } from "../src/lib/inventory-script";
 import { generatePreflightScript } from "../src/lib/preflight-script";
 import { buildWinLabPackageFiles } from "../src/lib/package-integrity";
+import { buildPilotPackageFiles } from "../src/lib/pilot";
+import type { PreflightReport } from "../src/lib/preflight-types";
 import { presets } from "../src/lib/presets";
 import type { Config } from "../src/lib/types";
 
 const root = path.join(process.cwd(), "artifacts", "ci-scripts");
 const packageRoot = path.join(process.cwd(), "artifacts", "ci-packages");
+const pilotRoot = path.join(process.cwd(), "artifacts", "ci-pilot");
 
 const stressConfigs: Array<{ name: string; config: Config }> = [
   {
@@ -110,8 +113,10 @@ async function writePackageFixture(name: string, config: Config) {
 async function main() {
   await rm(root, { recursive: true, force: true });
   await rm(packageRoot, { recursive: true, force: true });
+  await rm(pilotRoot, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
   await mkdir(packageRoot, { recursive: true });
+  await mkdir(pilotRoot, { recursive: true });
 
   for (const item of configs) {
     await writeFixture(item.name, item.config);
@@ -124,8 +129,45 @@ async function main() {
     "utf8"
   );
 
+  const pilotReport: PreflightReport = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    computerName: "CI-PILOT",
+    profileName: defaultConfig.profileName,
+    windows: {
+      caption: "Windows 11 Pro",
+      version: "10.0.26100",
+      buildNumber: "26100",
+      architecture: "64 bits"
+    },
+    status: "PASS",
+    summary: {
+      score: 100,
+      pass: 10,
+      warn: 0,
+      block: 0
+    },
+    checks: []
+  };
+
+  const pilotFiles = await buildPilotPackageFiles(
+    {
+      ...defaultConfig,
+      enforcementMode: "Enabled",
+      profileCleanupMode: "Delete"
+    },
+    pilotReport
+  );
+
+  await Promise.all(
+    pilotFiles.map((file) =>
+      writeFile(path.join(pilotRoot, file.name), file.content, "utf8")
+    )
+  );
+
   console.log(`Generated ${configs.length} WinLab script fixtures in ${root}`);
   console.log(`Generated ${configs.length} WinLab package fixtures in ${packageRoot}`);
+  console.log(`Generated WinLab pilot fixture in ${pilotRoot}`);
 }
 
 main().catch((error) => {

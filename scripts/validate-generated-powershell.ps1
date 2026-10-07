@@ -275,3 +275,59 @@ finally {
 & cmd.exe /c "exit 0" | Out-Null
 
 Write-Host "Package tamper detection: OK" -ForegroundColor Green
+
+# Validate the 0.9 pilot candidate contract.
+$pilotRoot = Join-Path (Get-Location) "artifacts\ci-pilot"
+$pilotManifestPath = Join-Path $pilotRoot "manifest.json"
+$pilotConfigPath = Join-Path $pilotRoot "config.json"
+$pilotReadinessPath = Join-Path $pilotRoot "pilot-readiness.json"
+$pilotVerifyScript = Join-Path $pilotRoot "verify-package.ps1"
+
+foreach ($required in @(
+    $pilotManifestPath,
+    $pilotConfigPath,
+    $pilotReadinessPath,
+    $pilotVerifyScript,
+    (Join-Path $pilotRoot "PILOT-DEPLOYMENT-CHECKLIST.txt"),
+    (Join-Path $pilotRoot "PILOT-ROLLBACK-CHECKLIST.txt"),
+    (Join-Path $pilotRoot "preflight-source.json")
+)) {
+    if (-not (Test-Path $required)) {
+        throw "Arquivo obrigatório do pacote piloto ausente: $required"
+    }
+}
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $pilotVerifyScript -PackageRoot $pilotRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "Pacote piloto íntegro falhou na verificação SHA-256."
+}
+
+$pilotManifest = Get-Content -Path $pilotManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$pilotConfig = Get-Content -Path $pilotConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$pilotReadiness = Get-Content -Path $pilotReadinessPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+if ($pilotManifest.packageVersion -ne "0.9.0") {
+    throw "Versão inesperada no manifesto piloto: $($pilotManifest.packageVersion)"
+}
+
+if ($pilotManifest.channel -ne "pilot") {
+    throw "Manifesto piloto sem channel=pilot."
+}
+
+if ($pilotManifest.targetComputerName -ne "CI-PILOT") {
+    throw "Pacote piloto não está vinculado à máquina CI-PILOT."
+}
+
+if ($pilotConfig.enforcementMode -ne "AuditOnly") {
+    throw "Pacote piloto não forçou AppLocker AuditOnly."
+}
+
+if ($pilotConfig.profileCleanupMode -ne "ReportOnly") {
+    throw "Pacote piloto não forçou manutenção ReportOnly."
+}
+
+if ($pilotReadiness.status -eq "BLOCKED") {
+    throw "Fixture piloto foi gerada com readiness BLOCKED."
+}
+
+Write-Host "Pilot candidate contract: OK" -ForegroundColor Green
