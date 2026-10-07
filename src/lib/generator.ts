@@ -1577,6 +1577,10 @@ liberar-wallpaper.ps1
 verify.ps1
   Verifica Windows, AppLocker, contas e caminhos conhecidos dos aplicativos antes do setup.
 
+preflight.ps1
+  Diagnóstico somente leitura. Gera PASS/WARN/BLOCK, readiness score e relatório JSON
+  para importar novamente no WinLab antes de executar setup.ps1 -Apply.
+
 scan-pc.ps1
   Gera um inventário JSON local com informações do Windows, contas locais,
   AppLocker, armazenamento e programas instalados para importar no WinLab.
