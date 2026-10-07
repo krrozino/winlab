@@ -871,3 +871,152 @@ button:disabled {
   font-size: 12px;
   line-height: 1.45;
 }
+
+
+.readinessPanel {
+  margin-bottom: 18px;
+  padding: 22px;
+  border: 1px solid rgba(91, 157, 255, 0.34);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(91, 157, 255, 0.07), transparent 48%),
+    var(--panel);
+}
+
+.readinessIntro {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 24px;
+}
+
+.readinessIntro h2 {
+  margin: 6px 0 8px;
+  font-size: 24px;
+}
+
+.readinessIntro p:not(.eyebrow) {
+  max-width: 760px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.readinessResults {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.readinessScore {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.scoreCircle {
+  width: 92px;
+  height: 92px;
+  flex: 0 0 92px;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  padding-top: 27px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel-2);
+}
+
+.scoreCircle strong {
+  font-size: 30px;
+}
+
+.scoreCircle span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.scoreCircle.pass,
+.readinessBadge.pass,
+.checkStatus.pass {
+  border-color: rgba(83, 209, 138, 0.5);
+  color: var(--success);
+}
+
+.scoreCircle.warn,
+.readinessBadge.warn,
+.checkStatus.warn {
+  border-color: rgba(255, 204, 102, 0.5);
+  color: var(--warning);
+}
+
+.scoreCircle.block,
+.readinessBadge.block,
+.checkStatus.block {
+  border-color: rgba(255, 123, 123, 0.5);
+  color: var(--danger);
+}
+
+.readinessScore h3 {
+  margin: 8px 0 4px;
+}
+
+.readinessScore p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.readinessBadge,
+.checkStatus {
+  display: inline-flex;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.readinessChecks {
+  display: grid;
+  gap: 8px;
+}
+
+.readinessCheck {
+  display: flex;
+  align-items: start;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.readinessCheck > div {
+  min-width: 0;
+}
+
+.readinessCheck strong,
+.readinessCheck p {
+  display: block;
+  margin: 0;
+}
+
+.readinessCheck p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 650px) {
+  .readinessIntro {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .readinessScore {
+    align-items: flex-start;
+  }
+}
