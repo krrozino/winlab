@@ -18,6 +18,13 @@ import {
 } from "../src/lib/inventory";
 import { generateInventoryScannerScript } from "../src/lib/inventory-script";
 import { getConfigErrors } from "../src/lib/validation";
+import {
+  buildPackageManifest,
+  buildWinLabPackageFiles,
+  getBasePackageFiles,
+  sha256Text,
+  verifyPackageFiles
+} from "../src/lib/package-integrity";
 
 test("imports legacy 0.2 config without schemaVersion", () => {
   const imported = parseConfigJson(
@@ -465,4 +472,67 @@ test("generated preflight independently validates local-user names", () => {
   assert.ok(setup.includes("Nome inválido para a conta restrita"));
   assert.ok(setup.includes("Value.Length -gt 20"));
   assert.ok(setup.includes("^[.\\s]+$"));
+});
+
+
+test("sha256 implementation matches known vector", async () => {
+  assert.equal(
+    await sha256Text("abc"),
+    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+  );
+});
+
+test("package manifest hashes every generated file except itself", async () => {
+  const baseFiles = getBasePackageFiles(defaultConfig);
+  const manifest = await buildPackageManifest(defaultConfig, baseFiles, {
+    packageId: "test-package",
+    generatedAt: "2026-10-06T00:00:00.000Z"
+  });
+
+  assert.equal(manifest.packageId, "test-package");
+  assert.equal(manifest.packageVersion, "0.7.0");
+  assert.equal(manifest.files.length, baseFiles.length);
+  assert.equal(manifest.files.some((file) => file.name === "manifest.json"), false);
+
+  const result = await verifyPackageFiles(manifest, baseFiles);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.failures, []);
+});
+
+test("package verifier detects modified content", async () => {
+  const baseFiles = getBasePackageFiles(defaultConfig);
+  const manifest = await buildPackageManifest(defaultConfig, baseFiles, {
+    packageId: "test-tamper",
+    generatedAt: "2026-10-06T00:00:00.000Z"
+  });
+
+  const changed = baseFiles.map((file) =>
+    file.name === "README.txt"
+      ? { ...file, content: file.content + "\nALTERADO" }
+      : file
+  );
+
+  const result = await verifyPackageFiles(manifest, changed);
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.some((failure) => failure.name === "README.txt"));
+});
+
+test("complete package contains manifest and verifier", async () => {
+  const files = await buildWinLabPackageFiles(defaultConfig, {
+    packageId: "test-complete",
+    generatedAt: "2026-10-06T00:00:00.000Z"
+  });
+
+  assert.ok(files.some((file) => file.name === "manifest.json"));
+  assert.ok(files.some((file) => file.name === "verify-package.ps1"));
+  assert.ok(files.some((file) => file.name === "setup.ps1"));
+});
+
+test("mutating scripts check package integrity before apply", () => {
+  const setup = generateSetupScript(defaultConfig);
+  const rollback = generateRollbackScript(defaultConfig);
+
+  assert.ok(setup.includes("function Assert-WinLabPackageIntegrity"));
+  assert.ok(setup.includes("Integridade do pacote: PASS"));
+  assert.ok(rollback.includes("Assert-WinLabPackageIntegrity"));
 });
