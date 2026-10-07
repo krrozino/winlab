@@ -49,6 +49,53 @@ function Assert-Administrator {
     }
 }
 
+function Assert-WinLabPackageIntegrity {
+    if (-not $PSScriptRoot) {
+        Write-Warning "Integridade do pacote indisponível: script sem diretório de origem."
+        return
+    }
+
+    $manifestPath = Join-Path $PSScriptRoot "manifest.json"
+
+    if (-not (Test-Path $manifestPath)) {
+        Write-Warning "manifest.json não encontrado. O script parece ter sido baixado isoladamente; a integridade do pacote não pode ser verificada."
+        return
+    }
+
+    try {
+        $manifest = Get-Content -Path $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw "manifest.json inválido: $($_.Exception.Message)"
+    }
+
+    if ($manifest.schemaVersion -ne 1) {
+        throw "Versão de manifesto não suportada: $($manifest.schemaVersion)"
+    }
+
+    foreach ($entry in @($manifest.files)) {
+        $path = Join-Path $PSScriptRoot ([string]$entry.name)
+
+        if (-not (Test-Path $path -PathType Leaf)) {
+            throw "Integridade do pacote falhou: arquivo ausente '$($entry.name)'."
+        }
+
+        $actualHash = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expectedHash = ([string]$entry.sha256).ToLowerInvariant()
+
+        if ($actualHash -ne $expectedHash) {
+            throw "Integridade do pacote falhou: hash divergente em '$($entry.name)'."
+        }
+
+        $actualBytes = (Get-Item -LiteralPath $path).Length
+        if ([int64]$actualBytes -ne [int64]$entry.bytes) {
+            throw "Integridade do pacote falhou: tamanho divergente em '$($entry.name)'."
+        }
+    }
+
+    Write-Host "Integridade do pacote: PASS" -ForegroundColor Green
+}
+
 function Get-AdminsGroup { Get-LocalGroup -SID "S-1-5-32-544" }
 function Get-UsersGroup { Get-LocalGroup -SID "S-1-5-32-545" }
 
@@ -910,6 +957,7 @@ function Install-WinLabProfile {
 
 if ($Apply) {
     Assert-Administrator
+    Assert-WinLabPackageIntegrity
     Test-WinLabPreflight
 
     if ($UserPoliciesOnly) {
@@ -1076,6 +1124,7 @@ function Archive-WinLabState {
 
 if ($Apply) {
     Assert-Administrator
+    Assert-WinLabPackageIntegrity
     $state = Get-WinLabRollbackState
 
     Restore-AppLockerBaseline -State $state
@@ -1149,6 +1198,7 @@ if (-not $Apply) {
 }
 
 Assert-Administrator
+Assert-WinLabPackageIntegrity
 Set-WallpaperLock -Value 0
 
 $folder = "C:\\ProgramData\\WinLab"
@@ -1362,6 +1412,10 @@ export function generateMaintenanceScript(config: Config): string {
 
 Assert-Administrator
 
+if ($Apply) {
+    Assert-WinLabPackageIntegrity
+}
+
 $Mode = "${config.profileCleanupMode}"
 $Days = ${config.profileCleanupDays}
 $StorageWarningFreePercent = ${config.storageWarningFreePercent}
@@ -1532,6 +1586,13 @@ maintenance.ps1
   Mostra espaço livre e perfis inativos. No modo Delete pode remover perfis
   não carregados e antigos, preservando as contas Aluno/Admin configuradas.
 
+verify-package.ps1
+  Verifica SHA-256 e tamanho de todos os arquivos listados no manifest.
+
+manifest.json
+  Registra Package ID, versão, geração e hashes SHA-256.
+  O manifesto verifica integridade, mas ainda não fornece assinatura/autenticidade criptográfica.
+
 config.json
   Configuração versionada usada para gerar este pacote.
   Pode ser importada novamente no WinLab.
@@ -1548,6 +1609,12 @@ FLUXO RECOMENDADO
 8. Ajuste a allowlist no WinLab.
 9. Gere novamente em modo BLOQUEIO ATIVO.
 10. Revise o preview e só então execute o novo setup.ps1 -Apply.
+
+INTEGRIDADE DO PACOTE
+---------------------
+Antes de usar um ZIP completo, execute verify-package.ps1.
+Quando manifest.json está presente, scripts mutáveis também conferem a integridade antes de -Apply.
+Um script baixado isoladamente continua funcionando, mas sem a garantia de integridade do pacote.
 
 SEGURANÇA DE EXECUÇÃO
 ---------------------

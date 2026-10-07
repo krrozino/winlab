@@ -4,9 +4,19 @@ Gerador local-first de configurações PowerShell para computadores Windows comp
 
 O WinLab gera os scripts no navegador. Senhas não são armazenadas pelo projeto.
 
-## MVP 0.6 — Safety & Recovery
+## MVP 0.7 — Package Integrity & Provenance
 
-Esta versão prioriza robustez antes do primeiro teste físico.
+A fundação Safety & Recovery do 0.6 continua ativa. O 0.7 adiciona rastreabilidade e integridade ao pacote antes do primeiro teste físico.
+
+### Integridade do pacote
+
+Todo ZIP completo passa a conter:
+
+- `manifest.json` com Package ID, versão, data, perfil e hashes SHA-256;
+- `verify-package.ps1` para validar arquivos ausentes, tamanho e hash;
+- verificação automática de integridade antes de ações com `-Apply` quando o manifesto está presente.
+
+O manifesto não é uma assinatura digital: ele protege contra corrupção e alterações não coordenadas. Autenticidade criptográfica/assinatura está planejada para o Windows Companion.
 
 ### Preview por padrão
 
@@ -165,6 +175,8 @@ maintenance.ps1
 liberar-wallpaper.ps1
 config.json
 README.txt
+verify-package.ps1
+manifest.json
 ```
 
 ## Validação automatizada
@@ -241,4 +253,5 @@ Para preservar os limites da Vercel:
 - branches de feature e pull requests usam GitHub Actions, sem preview automático;
 - preview Vercel de feature branch deve ser criado manualmente apenas quando houver necessidade real de revisão visual;
 - desenvolvimento normal deve ser validado por testes, typecheck, build e runner Windows;
-- merge em `main` pode gerar o deployment de produção.
+- Git não gera deployment automático nem em `main` nem em feature branches;
+- deployment Vercel é manual e só acontece em checkpoints explicitamente escolhidos.
