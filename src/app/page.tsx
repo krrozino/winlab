@@ -20,6 +20,7 @@ import { getPreset, presets } from "@/lib/presets";
 import { Config, AllowedAppId, PresetId } from "@/lib/types";
 import { pathRisk } from "@/lib/security";
 import { buildWinLabPackageFiles } from "@/lib/package-integrity";
+import { buildPilotPackageFiles, evaluatePilotReadiness } from "@/lib/pilot";
 import { createZip } from "@/lib/zip";
 import { getConfigErrors } from "@/lib/validation";
 import {
@@ -60,6 +61,10 @@ export default function Home() {
   const setupScript = useMemo(() => generateSetupScript(config), [config]);
   const reviewItems = useMemo(() => getConfigReview(config), [config]);
   const configErrors = useMemo(() => getConfigErrors(config), [config]);
+  const pilotReadiness = useMemo(
+    () => evaluatePilotReadiness(config, preflightReport),
+    [config, preflightReport]
+  );
   const inventoryDetectedApps = inventory ? detectedKnownApps(inventory) : [];
   const inventorySuggestions = inventory ? suggestedAllowedApps(inventory, config) : [];
   const inventoryInstalledApps = inventory
@@ -166,11 +171,33 @@ export default function Home() {
     downloadBlob(`winlab-${slug}.zip`, blob);
   }
 
+  async function exportPilotPackage() {
+    if (!preflightReport || pilotReadiness.status === "BLOCKED") return;
+
+    const files = await buildPilotPackageFiles(config, preflightReport);
+    const blob = createZip(files);
+    const slug =
+      config.profileName
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "") || "winlab";
+
+    const machine =
+      preflightReport.computerName
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, "-")
+        .replace(/^-|-$/g, "") || "pc";
+
+    downloadBlob(`winlab-${slug}-pilot-${machine}.zip`, blob);
+  }
+
   return (
     <main>
       <header className="hero">
         <div>
-          <p className="eyebrow">WinLab Configurator · MVP 0.8</p>
+          <p className="eyebrow">WinLab Configurator · MVP 0.9</p>
           <h1>Configure o Windows sem configurar máquina por máquina.</h1>
           <p className="subtitle">
             Escolha um preset, ajuste as políticas e gere um pacote portátil com
@@ -450,6 +477,52 @@ export default function Home() {
             </div>
           </div>
         )}
+      </section>
+
+      <section className="pilotPanel">
+        <div className="pilotHeader">
+          <div>
+            <p className="eyebrow">0.9 · Pilot Candidate</p>
+            <h2>Gate final antes do primeiro PC real.</h2>
+            <p>
+              O pacote piloto sempre usa AppLocker AuditOnly e manutenção ReportOnly.
+              BLOCK impede a geração; WARN exige revisão, mas não impede.
+            </p>
+          </div>
+
+          <button
+            className="primary"
+            disabled={!preflightReport || pilotReadiness.status === "BLOCKED"}
+            onClick={exportPilotPackage}
+          >
+            Gerar pacote piloto
+          </button>
+        </div>
+
+        <div className="pilotSummary">
+          <span className={`pilotState ${pilotReadiness.status.toLowerCase()}`}>
+            {pilotReadiness.status.replaceAll("_", " ")}
+          </span>
+          <span>
+            Alvo: {pilotReadiness.targetComputerName ?? "preflight não importado"}
+          </span>
+          <span>AppLocker efetivo: AuditOnly</span>
+          <span>Limpeza efetiva: ReportOnly</span>
+        </div>
+
+        <div className="pilotGates">
+          {pilotReadiness.gates.map((gate) => (
+            <div className="pilotGate" key={gate.id}>
+              <span className={`checkStatus ${gate.status.toLowerCase()}`}>
+                {gate.status}
+              </span>
+              <div>
+                <strong>{gate.label}</strong>
+                <p>{gate.message}</p>
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
 
       <div className="grid">
