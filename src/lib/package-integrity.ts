@@ -9,10 +9,11 @@ import {
   generateUnlockWallpaperScript,
   generateVerifyScript
 } from "./generator";
+import { generatePreflightScript } from "./preflight-script";
 import type { Config } from "./types";
 
 export const PACKAGE_MANIFEST_SCHEMA_VERSION = 1;
-export const WINLAB_PACKAGE_VERSION = "0.7.0";
+export const WINLAB_PACKAGE_VERSION = "0.8.0";
 
 export type PackageFile = {
   name: string;
@@ -139,6 +140,7 @@ export function getBasePackageFiles(config: Config): PackageFile[] {
       content: generateUnlockWallpaperScript(config)
     },
     { name: "verify.ps1", content: generateVerifyScript(config) },
+    { name: "preflight.ps1", content: generatePreflightScript(config) },
     { name: "scan-pc.ps1", content: generateInventoryScannerScript() },
     { name: "maintenance.ps1", content: generateMaintenanceScript(config) },
     { name: "config.json", content: generateConfigJson(config) },
