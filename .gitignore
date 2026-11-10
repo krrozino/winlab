@@ -3,3 +3,8 @@ node_modules
 out
 .env*
 *.log
+artifacts/
+*.tsbuildinfo
+bin/
+obj/
+*.user
