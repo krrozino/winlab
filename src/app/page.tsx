@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { APP_CATALOG } from "@/lib/apps";
 import { parseConfigJson } from "@/lib/config-io";
@@ -205,18 +206,34 @@ export default function Home() {
           </p>
         </div>
 
-        <button
-          className="primary"
-          onClick={exportPackage}
-          disabled={configErrors.length > 0}
-          title={
-            configErrors.length
-              ? "Corrija os erros de configuração antes de gerar o pacote."
-              : undefined
-          }
-        >
-          Gerar pacote .zip
-        </button>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <Link
+            href="/desktop"
+            className="secondary"
+            style={{
+              textDecoration: "none",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "13px 16px",
+              fontWeight: 700
+            }}
+          >
+            🖥️ WinLab Desktop
+          </Link>
+          <button
+            className="primary"
+            onClick={exportPackage}
+            disabled={configErrors.length > 0}
+            title={
+              configErrors.length
+                ? "Corrija os erros de configuração antes de gerar o pacote."
+                : undefined
+            }
+          >
+            Gerar pacote .zip
+          </button>
+        </div>
       </header>
 
       <section className="presetBar" aria-label="Presets">

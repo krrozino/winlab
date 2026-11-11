@@ -30,6 +30,11 @@ function validateUserName(
   label: string
 ): ConfigValidationError[] {
   const errors: ConfigValidationError[] = [];
+  if (value === null || value === undefined || typeof value !== "string") {
+    errors.push({ field, message: `${label} não pode ficar vazio.` });
+    return errors;
+  }
+
   const trimmed = value.trim();
 
   if (!trimmed) {
@@ -65,7 +70,7 @@ function validateUserName(
 export function getConfigErrors(config: Config): ConfigValidationError[] {
   const errors: ConfigValidationError[] = [];
 
-  if (!config.profileName.trim()) {
+  if (!config.profileName || typeof config.profileName !== "string" || !config.profileName.trim()) {
     errors.push({
       field: "profileName",
       message: "O nome do perfil WinLab não pode ficar vazio."
@@ -77,10 +82,13 @@ export function getConfigErrors(config: Config): ConfigValidationError[] {
     ...validateUserName(config.adminUser, "adminUser", "Administrador")
   );
 
+  const studentTrimmed = (config.studentUser ?? "").trim();
+  const adminTrimmed = (config.adminUser ?? "").trim();
+
   if (
-    config.studentUser.trim() &&
-    config.adminUser.trim() &&
-    config.studentUser.localeCompare(config.adminUser, undefined, {
+    studentTrimmed &&
+    adminTrimmed &&
+    studentTrimmed.localeCompare(adminTrimmed, undefined, {
       sensitivity: "accent"
     }) === 0
   ) {
@@ -92,3 +100,35 @@ export function getConfigErrors(config: Config): ConfigValidationError[] {
 
   return errors;
 }
+
+export function validateAccountsSafety(
+  studentUser: string,
+  adminUser: string
+): { isValid: boolean; error?: string } {
+  const studentErrors = validateUserName(studentUser, "studentUser", "Usuário restrito");
+  if (studentErrors.length > 0) {
+    return { isValid: false, error: studentErrors[0].message };
+  }
+
+  const adminErrors = validateUserName(adminUser, "adminUser", "Administrador");
+  if (adminErrors.length > 0) {
+    return { isValid: false, error: adminErrors[0].message };
+  }
+
+  const studentTrimmed = (studentUser ?? "").trim();
+  const adminTrimmed = (adminUser ?? "").trim();
+
+  if (
+    studentTrimmed &&
+    adminTrimmed &&
+    studentTrimmed.localeCompare(adminTrimmed, undefined, { sensitivity: "accent" }) === 0
+  ) {
+    return {
+      isValid: false,
+      error: "Usuário restrito e administrador precisam ter nomes diferentes."
+    };
+  }
+
+  return { isValid: true };
+}
+
