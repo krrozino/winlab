@@ -11,7 +11,7 @@ namespace WinLab.Agent.Mock
     /// Opera com inventário somente leitura, catálogo de políticas e recusa operações privilegiadas.
     /// Não instala serviços nem altera o registro ou contas do sistema operacional.
     /// </summary>
-    public class MockAgentService
+    public class MockAgentService : IAgentService
     {
         public bool IsRunning { get; private set; } = true;
         public string ExecutionMode => "Unprivileged Mock (In-Memory Development)";
@@ -26,19 +26,30 @@ namespace WinLab.Agent.Mock
                 return IpcResponse<object>.Fail(string.Empty, shellCheck.Error!, "FORBIDDEN_SHELL_INJECTION");
             }
 
-            using var doc = JsonDocument.Parse(rawJson);
-            var root = doc.RootElement;
-
-            string id = root.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? Guid.NewGuid().ToString() : Guid.NewGuid().ToString();
-            string action = root.TryGetProperty("action", out var actionProp) ? actionProp.GetString() ?? string.Empty : string.Empty;
-
-            var (isValid, error, errorCode) = SecurityValidator.ValidateAction(action);
-            if (!isValid)
+            JsonDocument doc;
+            try
             {
-                return IpcResponse<object>.Fail(id, error!, errorCode!);
+                doc = JsonDocument.Parse(rawJson);
+            }
+            catch (Exception ex)
+            {
+                return IpcResponse<object>.Fail(string.Empty, $"Malformed JSON envelope: {ex.Message}", "MALFORMED_JSON");
             }
 
-            switch (action)
+            using (doc)
+            {
+                var root = doc.RootElement;
+                var (isSchemaValid, envelopeId, schemaError, schemaErrorCode) = SecurityValidator.ValidateEnvelopeSchema(root);
+                string id = envelopeId ?? (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String ? idProp.GetString() ?? Guid.NewGuid().ToString() : Guid.NewGuid().ToString());
+
+                if (!isSchemaValid)
+                {
+                    return IpcResponse<object>.Fail(id, schemaError!, schemaErrorCode!);
+                }
+
+                string action = root.GetProperty("action").GetString()!;
+
+                switch (action)
             {
                 case IpcConstants.ActionQueryInventory:
                     return IpcResponse<object>.Ok(id, GetMockInventory());
@@ -61,8 +72,28 @@ namespace WinLab.Agent.Mock
                         description = "Simulação segura de diff. Nenhuma alteração aplicada ao sistema nesta etapa."
                     });
 
+                case IpcConstants.ActionCreateBaseline:
+                    return IpcResponse<object>.Ok(id, new
+                    {
+                        transactionId = Guid.NewGuid().ToString(),
+                        timestamp = DateTime.UtcNow.ToString("o"),
+                        registryBaselinePath = @"C:\ProgramData\WinLab\Backups\Registry-Baseline-Mock",
+                        appLockerBaselinePath = @"C:\ProgramData\WinLab\Backups\AppLocker-Baseline-Mock.xml",
+                        success = true,
+                        message = "Baseline inicial capturado e registrado com sucesso em ambiente de simulação."
+                    });
+
+                case IpcConstants.ActionGetEnvironment:
+                    return IpcResponse<object>.Ok(id, new
+                    {
+                        environment = "MockAgent",
+                        isElevated = false,
+                        platform = "Simulated Windows"
+                    });
+
                 default:
                     return IpcResponse<object>.Fail(id, $"Unhandled action: {action}", "UNHANDLED_ACTION");
+            }
             }
         }
 
@@ -72,12 +103,20 @@ namespace WinLab.Agent.Mock
             {
                 ComputerName = "LAB-MICROLINS-01",
                 ScannedAt = DateTime.UtcNow.ToString("o"),
+                IsMock = true,
                 Windows = new WindowsInfoDto
                 {
                     Caption = "Windows 11 Pro",
                     Version = "10.0.26100",
                     BuildNumber = "26100",
-                    Architecture = "64 bits"
+                    Architecture = "64 bits",
+                    Edition = "Professional",
+                    DisplayVersion = "24H2",
+                    Ubr = 1742,
+                    Is64Bit = true,
+                    TpmPresent = true,
+                    TpmVersion = "2.0",
+                    SecureBootEnabled = true
                 },
                 DetectedApps = new List<DetectedAppDto>
                 {

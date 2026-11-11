@@ -1,11 +1,14 @@
 import {
   ALLOWED_IPC_ACTIONS,
+  DesktopIpcTransport,
   IPC_CONSTANTS,
   IpcEnvelope,
   IpcResponse,
   MachineInventoryDto,
-  PolicyStateSummaryDto
+  PolicyStateSummaryDto,
+  PolicyItemDto
 } from "./contracts";
+import { MILESTONE_3_POLICIES } from "../lib/policies";
 
 const FORBIDDEN_SHELL_PATTERNS = [
   "powershell.exe",
@@ -20,6 +23,16 @@ const FORBIDDEN_SHELL_PATTERNS = [
   "downloadstring",
   "system.diagnostics.process",
   "wscript.shell"
+];
+
+const DISALLOWED_PAYLOAD_COMMAND_FIELDS = [
+  "command",
+  "script",
+  "shell",
+  "exec",
+  "rawscript",
+  "powershell",
+  "cmd"
 ];
 
 export function validateNoArbitraryShell(raw: string): { isSafe: boolean; error?: string } {
@@ -59,17 +72,80 @@ export function validateIpcAction(action: string): { isValid: boolean; error?: s
   return { isValid: true };
 }
 
-export class MockDesktopAgent {
+export function validateEnvelopeSchema(envelope: unknown): { isValid: boolean; error?: string; errorCode?: string } {
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+    return { isValid: false, error: "IPC message must be a valid JSON object envelope.", errorCode: "INVALID_ENVELOPE_SCHEMA" };
+  }
+
+  const env = envelope as Record<string, unknown>;
+
+  if (typeof env.id !== "string" || !env.id.trim()) {
+    return { isValid: false, error: "Envelope 'id' must be a non-empty string.", errorCode: "INVALID_ENVELOPE_ID" };
+  }
+
+  const validTypes = ["query", "command", "response", "event"];
+  if (typeof env.type !== "string" || !validTypes.includes(env.type)) {
+    return { isValid: false, error: `Envelope 'type' must be one of: ${validTypes.join(", ")}.`, errorCode: "INVALID_ENVELOPE_TYPE" };
+  }
+
+  if (typeof env.action !== "string") {
+    return { isValid: false, error: "Envelope 'action' must be a string.", errorCode: "INVALID_ENVELOPE_ACTION" };
+  }
+
+  const actionCheck = validateIpcAction(env.action);
+  if (!actionCheck.isValid) {
+    return actionCheck;
+  }
+
+  // Schema-level validation on payload fields
+  if (env.payload !== undefined && env.payload !== null) {
+    if (typeof env.payload === "object" && !Array.isArray(env.payload)) {
+      const payloadObj = env.payload as Record<string, unknown>;
+      for (const key of Object.keys(payloadObj)) {
+        if (DISALLOWED_PAYLOAD_COMMAND_FIELDS.includes(key.toLowerCase())) {
+          return {
+            isValid: false,
+            error: `Disallowed command property '${key}' detected in payload. Arbitrary command execution is forbidden by typed IPC schema.`,
+            errorCode: "FORBIDDEN_COMMAND_FIELD"
+          };
+        }
+      }
+    } else if (typeof env.payload === "string") {
+      // Disallow raw string payloads that could represent arbitrary shell commands
+      const shellCheck = validateNoArbitraryShell(env.payload);
+      if (!shellCheck.isSafe) {
+        return { isValid: false, error: shellCheck.error, errorCode: "FORBIDDEN_SHELL_INJECTION" };
+      }
+    }
+  }
+
+  return { isValid: true };
+}
+
+export class MockDesktopAgent implements DesktopIpcTransport {
   public readonly isRunning = true;
   public readonly mode = "Unprivileged Mock (In-Memory Development)";
+  private readonly policyStates: Map<string, string> = new Map();
+  private readonly transactions: Map<string, any> = new Map();
 
   public async handleRequest<T = unknown>(envelope: IpcEnvelope): Promise<IpcResponse<T>> {
+    const schemaCheck = validateEnvelopeSchema(envelope);
+    if (!schemaCheck.isValid) {
+      return {
+        id: crypto.randomUUID(),
+        replyToId: typeof envelope?.id === "string" ? envelope.id : "",
+        success: false,
+        error: schemaCheck.error,
+        errorCode: schemaCheck.errorCode
+      };
+    }
+
     const rawString = JSON.stringify(envelope);
     const shellCheck = validateNoArbitraryShell(rawString);
     if (!shellCheck.isSafe) {
       return {
         id: crypto.randomUUID(),
-        replyToId: envelope.id || "",
+        replyToId: typeof envelope?.id === "string" ? envelope.id : "",
         success: false,
         error: shellCheck.error,
         errorCode: "FORBIDDEN_SHELL_INJECTION"
@@ -80,7 +156,7 @@ export class MockDesktopAgent {
     if (!actionCheck.isValid) {
       return {
         id: crypto.randomUUID(),
-        replyToId: envelope.id || "",
+        replyToId: typeof envelope?.id === "string" ? envelope.id : "",
         success: false,
         error: actionCheck.error,
         errorCode: actionCheck.errorCode
@@ -155,6 +231,163 @@ export class MockDesktopAgent {
           } as unknown as T
         };
 
+      case IPC_CONSTANTS.ACTION_CREATE_BASELINE:
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: {
+            transactionId: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
+            registryBaselinePath: "C:\\ProgramData\\WinLab\\Backups\\Registry-Baseline-Mock",
+            appLockerBaselinePath: "C:\\ProgramData\\WinLab\\Backups\\AppLocker-Baseline-Mock.xml",
+            success: true,
+            message: "Baseline inicial capturado e registrado com sucesso em ambiente de simulação."
+          } as unknown as T
+        };
+
+      case IPC_CONSTANTS.ACTION_GET_ENVIRONMENT:
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: {
+            environment: "MockDesktopAgent",
+            isElevated: false,
+            platform: "Simulated Windows"
+          } as unknown as T
+        };
+
+      case IPC_CONSTANTS.ACTION_QUERY_POLICY_CATALOG:
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: MILESTONE_3_POLICIES.map((p) => ({
+            id: p.id,
+            name: p.name,
+            category: p.category,
+            description: p.description,
+            riskLevel: p.riskLevel,
+            scope: p.scope,
+            reversible: p.reversible,
+            requiresRestart: p.rebootRequired,
+            requiresLogoff: p.requiresLogoff,
+            requiresAppRestart: p.requiresAppRestart,
+            targetProcesses: p.targetProcesses ?? []
+          })) as unknown as T
+        };
+
+      case IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES:
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: this.getMockMilestone3PolicyStates() as unknown as T
+        };
+
+      case IPC_CONSTANTS.ACTION_APPLY_TRANSACTION: {
+        const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+        const targetSid = typeof payload.targetUserSid === "string" ? payload.targetUserSid.trim() : "";
+        const targetName = typeof payload.targetUserName === "string" ? payload.targetUserName.trim() : "";
+
+        if (
+          targetSid === "S-1-5-32-544" ||
+          targetSid.endsWith("-500") ||
+          targetName.toLowerCase() === "administrador" ||
+          targetName.toLowerCase() === "administrator"
+        ) {
+          return {
+            id: crypto.randomUUID(),
+            replyToId: envelope.id,
+            success: false,
+            error: "Violação de segurança: Contas de Administrador possuem imunidade e não podem receber restrições de laboratório.",
+            errorCode: "ADMIN_IMMUNITY_VIOLATION"
+          };
+        }
+
+        const rawPolicies = Array.isArray(payload.policies) ? payload.policies : [];
+        const policies = rawPolicies as Array<{ policyId: string; desiredState: string }>;
+        const txId = typeof payload.transactionId === "string" && payload.transactionId ? payload.transactionId : crypto.randomUUID();
+
+        for (const item of policies) {
+          this.policyStates.set(item.policyId, item.desiredState || "Blocked");
+        }
+
+        const txRecord = {
+          transactionId: txId,
+          status: "Committed",
+          createdAt: new Date().toISOString(),
+          targetUserName: targetName,
+          targetUserSid: targetSid,
+          policies
+        };
+        this.transactions.set(txId, txRecord);
+
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: {
+            transactionId: txId,
+            status: "Committed",
+            appliedCount: policies.length,
+            rolledBackCount: 0,
+            success: true,
+            message: `Todas as ${policies.length} políticas foram aplicadas, verificadas e confirmadas com sucesso.`
+          } as unknown as T
+        };
+      }
+
+      case IPC_CONSTANTS.ACTION_ROLLBACK_TRANSACTION: {
+        const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+        const txId = typeof payload.transactionId === "string" ? payload.transactionId : "";
+        const tx = this.transactions.get(txId);
+
+        if (tx) {
+          tx.status = "RolledBack";
+          for (const item of tx.policies || []) {
+            this.policyStates.set(item.policyId, "NotConfigured");
+          }
+        }
+
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: {
+            transactionId: txId,
+            status: "RolledBack",
+            restoredCount: tx?.policies?.length ?? 0,
+            success: true,
+            message: `Transação '${txId}' revertida com sucesso.`
+          } as unknown as T
+        };
+      }
+
+      case IPC_CONSTANTS.ACTION_QUERY_TRANSACTION_STATUS: {
+        const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+        const txId = typeof payload.transactionId === "string" ? payload.transactionId : "";
+        const tx = this.transactions.get(txId);
+
+        if (tx) {
+          return {
+            id: crypto.randomUUID(),
+            replyToId: envelope.id,
+            success: true,
+            data: tx as unknown as T
+          };
+        }
+
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: false,
+          error: `Transação '${txId}' não encontrada.`,
+          errorCode: "TRANSACTION_NOT_FOUND"
+        };
+      }
+
       default:
         return {
           id: crypto.randomUUID(),
@@ -170,11 +403,19 @@ export class MockDesktopAgent {
     return {
       computerName: "LAB-MICROLINS-01",
       scannedAt: new Date().toISOString(),
+      isMock: true,
       windows: {
         caption: "Windows 11 Pro",
         version: "10.0.26100",
         buildNumber: "26100",
-        architecture: "64 bits"
+        architecture: "64 bits",
+        edition: "Professional",
+        displayVersion: "24H2",
+        ubr: 1742,
+        is64Bit: true,
+        tpmPresent: true,
+        tpmVersion: "2.0",
+        secureBootEnabled: true
       },
       detectedApps: [
         { id: "chrome", name: "Google Chrome", path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", detected: true, allowed: true },
@@ -284,6 +525,63 @@ export class MockDesktopAgent {
           reversible: true
         }
       ]
+    };
+  }
+
+  public browserRunning = false;
+  public setBrowserRunning(running: boolean): void {
+    this.browserRunning = running;
+  }
+
+  public getMockMilestone3PolicyStates(): PolicyStateSummaryDto {
+    const items: PolicyItemDto[] = MILESTONE_3_POLICIES.map((p) => {
+      const raw = this.policyStates.get(p.id) ?? "NotConfigured";
+      const isBlocked = raw === "Blocked" || raw === "Applied";
+
+      let effective: any = "NotConfigured";
+      let current: any = "NotConfigured";
+
+      if (isBlocked) {
+        if (p.requiresLogoff) {
+          effective = "PendingLogoff";
+          current = "Applied";
+        } else if (p.requiresAppRestart) {
+          effective = this.browserRunning ? "PendingAppRestart" : "Applied";
+          current = this.browserRunning ? "PendingAppRestart" : "Applied";
+        } else {
+          effective = "Applied";
+          current = "Applied";
+        }
+      }
+
+      return {
+        id: p.id,
+        category: p.category,
+        title: p.name,
+        description: p.description,
+        scope: p.scope,
+        risk: p.riskLevel,
+        currentState: current,
+        desiredState: raw,
+        configuredState: raw,
+        effectiveState: effective,
+        requiresRestart: p.rebootRequired,
+        requiresLogoff: p.requiresLogoff,
+        requiresAppRestart: p.requiresAppRestart,
+        reversible: p.reversible
+      };
+    });
+
+    const applied = items.filter((i) => i.effectiveState === "Applied" || i.currentState === "Applied").length;
+    const notConfigured = items.filter((i) => i.effectiveState === "NotConfigured").length;
+    const pending = items.filter((i) => i.effectiveState === "PendingLogoff" || i.effectiveState === "PendingAppRestart" || i.effectiveState === "PendingFirstLogon").length;
+
+    return {
+      totalPolicies: items.length,
+      appliedCount: applied,
+      notConfiguredCount: notConfigured,
+      pendingCount: pending,
+      items
     };
   }
 }

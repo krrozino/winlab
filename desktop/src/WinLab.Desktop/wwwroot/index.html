@@ -1,0 +1,341 @@
+<!DOCTYPE html><html lang="pt-BR"><head><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="/_next/static/chunks/3uj5p1kghavpu.css" data-precedence="next"/><link rel="preload" as="script" fetchPriority="low" href="/_next/static/chunks/310vm2bl3xxpt.js"/><script src="/_next/static/chunks/19mx3mg6lkumu.js" async=""></script><script src="/_next/static/chunks/3byuobrkyz9bj.js" async=""></script><script src="/_next/static/chunks/344n2zhqbh4pn.js" async=""></script><script src="/_next/static/chunks/turbopack-0aqb5hlrzlk2g.js" async=""></script><script src="/_next/static/chunks/3fntmmi971322.js" async="" crossorigin=""></script><script src="/_next/static/chunks/1er4kik1kj-vo.js" async="" crossorigin=""></script><script src="/_next/static/chunks/3iv6ovh7n29jz.js" async="" crossorigin=""></script><title>WinLab Configurator</title><meta name="description" content="Gerador de configuração de Windows para laboratórios, escolas e empresas"/><script src="/_next/static/chunks/0cz1d0mv5g_q7.js" noModule=""></script></head><body><div hidden=""><!--$--><!--/$--></div><main><header class="hero"><div><p class="eyebrow">WinLab Configurator · MVP 0.9</p><h1>Configure o Windows sem configurar máquina por máquina.</h1><p class="subtitle">Escolha um preset, ajuste as políticas e gere um pacote portátil com setup, rollback, auditoria e configuração reutilizável.</p></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><a class="secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:13px 16px;font-weight:700" href="/desktop/">🖥️ WinLab Desktop</a><button class="primary">Gerar pacote .zip</button></div></header><section class="presetBar" aria-label="Presets"><button class="preset"><strong>Microlins — Iniciante (Kids &amp; Alfabetização)</strong><span>Ambiente estritamente protegido para cursos introdutórios. Apenas Chrome liberado, com bloqueio total de personalização, Store e utilitários do sistema.</span></button><button class="preset"><strong>Microlins — Intermediário (Office &amp; Power BI)</strong><span>Perfil padrão para laboratórios de informática comercial. Chrome, Office 365, Power BI e VLC liberados com bloqueio de pendrives executáveis.</span></button><button class="preset"><strong>Microlins — Avançado (Design &amp; Programação)</strong><span>Perfil flexível para cursos de desenvolvimento, design e tecnologias avançadas. Suporte a caminhos customizados com salvaguardas no sistema.</span></button><button class="preset active"><strong>Microlins (Padrão)</strong><span>Laboratório com Chrome, Office, Power BI e personalização controlada.</span></button><button class="preset"><strong>Escola</strong><span>Ambiente educacional restrito, com Office e navegador liberados.</span></button><button class="preset"><strong>Empresa</strong><span>Estação compartilhada com navegador e produtividade, sem personalização.</span></button><button class="preset"><strong>Totem</strong><span>Perfil mínimo, com apenas navegador e bloqueios mais rígidos.</span></button></section><section class="importBar"><div><strong>Reutilizar configuração</strong><span>Importe um config.json gerado anteriormente e continue de onde parou.</span></div><label class="importButton">Importar config.json<input type="file" accept=".json,application/json"/></label></section><section class="inventoryPanel"><div class="inventoryIntro"><div><p class="eyebrow">Analisar este PC</p><h2>Descubra o que já existe na máquina antes de configurar.</h2><p>Baixe o scanner, execute no Windows e importe o JSON gerado. O WinLab usa o inventário somente no seu navegador.</p></div><div class="inventoryActions"><button class="secondary">Baixar scan-pc.ps1</button><label class="importButton">Importar inventário<input type="file" accept=".json,application/json"/></label></div></div></section><section class="readinessPanel"><div class="readinessIntro"><div><p class="eyebrow">Diagnostics &amp; Readiness</p><h2>Saiba se a máquina está pronta antes de aplicar.</h2><p>Execute o preflight no Windows. Ele não altera contas nem políticas e gera um relatório PASS / WARN / BLOCK para importar aqui.</p></div><div class="inventoryActions"><button class="secondary">Baixar preflight.ps1</button><label class="importButton">Importar preflight<input type="file" accept=".json,application/json"/></label></div></div></section><section class="pilotPanel"><div class="pilotHeader"><div><p class="eyebrow">0.9 · Pilot Candidate</p><h2>Gate final antes do primeiro PC real.</h2><p>O pacote piloto sempre usa AppLocker AuditOnly e manutenção ReportOnly. BLOCK impede a geração; WARN exige revisão, mas não impede.</p></div><button class="primary" disabled="">Gerar pacote piloto</button></div><div class="pilotSummary"><span class="pilotState blocked">BLOCKED</span><span>Alvo: <!-- -->preflight não importado</span><span>AppLocker efetivo: AuditOnly</span><span>Limpeza efetiva: ReportOnly</span></div><div class="pilotGates"><div class="pilotGate"><span class="checkStatus block">BLOCK</span><div><strong>Preflight</strong><p>Importe um relatório de preflight desta máquina antes de gerar o pacote piloto.</p></div></div><div class="pilotGate"><span class="checkStatus pass">PASS</span><div><strong>AppLocker do piloto</strong><p>Pacote piloto usará AuditOnly.</p></div></div><div class="pilotGate"><span class="checkStatus pass">PASS</span><div><strong>Limpeza de perfis</strong><p>Pacote piloto não excluirá perfis.</p></div></div></div></section><div class="grid"><section class="panel"><h2>Identidade</h2><label>Nome do perfil<input value="Microlins Lab"/></label><div class="two"><label>Usuário restrito<input value="Aluno"/></label><label>Administrador<input value="MicrolinsAdmin"/></label></div><label class="toggleRow"><span>Criar/ajustar as contas automaticamente</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label></section><section class="panel important"><h2>Modo de implantação</h2><label>AppLocker<select><option value="AuditOnly" selected="">Auditoria — não bloqueia ainda</option><option value="Enabled">Bloqueio ativo</option></select></label><p class="notice">Recomendado no primeiro teste: o Windows registra o que seria bloqueado sem interromper a aula.</p></section><section class="panel"><h2>Aplicativos permitidos</h2><p class="muted">O usuário restrito recebe uma allowlist. O administrador continua irrestrito.</p><div class="apps"><button class="app active"><span>✓</span>Google Chrome</button><button class="app"><span>+</span>Microsoft Edge</button><button class="app"><span>+</span>Mozilla Firefox</button><button class="app active"><span>✓</span>Microsoft Word</button><button class="app active"><span>✓</span>Microsoft Excel</button><button class="app active"><span>✓</span>Microsoft PowerPoint</button><button class="app active"><span>✓</span>Power BI Desktop</button><button class="app"><span>+</span>Adobe Acrobat / Reader</button><button class="app"><span>+</span>Visual Studio Code</button><button class="app"><span>+</span>VLC Media Player</button></div><div class="custom"><input placeholder="C:\Program Files\Aplicativo\app.exe" value=""/><button>Adicionar</button></div></section><section class="panel"><h2>Windows</h2><label class="toggleRow"><span>Bloquear instaladores MSI</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear apps empacotados / Microsoft Store</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear CMD</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear PowerShell</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear Regedit</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Permitir adicionar contas locais (continua exigindo credencial de administrador)</span><button type="button" aria-pressed="false" class="switch"><span></span></button></label></section><section class="panel"><h2>Google Chrome · somente usuário restrito</h2><label class="toggleRow"><span>Bloquear extensões</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear modo convidado</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear novos perfis</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear modo anônimo</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear novas senhas</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label></section><section class="panel"><h2>Sites · Chrome e Edge</h2><label>Regra de navegação<select><option value="Unrestricted" selected="">Sem restrição por URL</option><option value="BlockList">Bloquear sites específicos</option><option value="AllowListOnly">Permitir somente sites da lista</option></select></label><p class="muted">As regras são aplicadas somente ao usuário restrito e usam as políticas URLBlocklist/URLAllowlist dos navegadores.</p></section><section class="panel"><h2>USB / armazenamento removível</h2><label class="toggleRow"><span>Bloquear leitura de pendrive</span><button type="button" aria-pressed="false" class="switch"><span></span></button></label><label class="toggleRow"><span>Bloquear gravação em pendrive</span><button type="button" aria-pressed="false" class="switch"><span></span></button></label><label class="toggleRow"><span>Bloquear execução de programas pelo USB</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><p class="muted">Leitura e gravação são políticas por usuário. Execução usa AppLocker; em AuditOnly ela é registrada, mas ainda não bloqueada.</p></section><section class="panel important"><h2>Manutenção de perfis e armazenamento</h2><label>Perfis antigos<select><option value="Off">Desativado</option><option value="ReportOnly" selected="">Somente relatório</option><option value="Delete">Excluir quando maintenance.ps1 for executado</option></select></label><div class="two"><label class="numberField">Considerar inativo após<div><input type="number" min="1" max="3650" value="30"/><span>dias</span></div></label><label class="numberField">Alertar disco abaixo de<div><input type="number" min="1" max="99" value="20"/><span>% livre</span></div></label></div><p class="notice">O padrão é relatório: você enxerga candidatos à limpeza e o estado do disco sem apagar dados.</p></section><section class="panel"><h2>Personalização</h2><label class="toggleRow"><span>Bloquear wallpaper</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear ponteiro do mouse</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="toggleRow"><span>Bloquear esquema de sons</span><button type="button" aria-pressed="true" class="switch on"><span></span></button></label><label class="numberField">Liberação temporária do wallpaper<div><input type="number" min="5" max="480" value="90"/><span>minutos</span></div></label></section><section class="panel safetyPanel"><h2>Safety &amp; Recovery</h2><p class="muted">O pacote foi desenhado para falhar antes de alterar a máquina e manter um caminho de volta.</p><div class="safetyGrid"><div><strong>Preview por padrão</strong><span>setup e rollback só alteram o Windows com <code>-Apply</code>.</span></div><div><strong>Preflight</strong><span>Valida contas, AppLocker e comandos essenciais antes da aplicação.</span></div><div><strong>Baseline preservado</strong><span>AppLocker e políticas de usuário anteriores são snapshotados uma única vez.</span></div><div><strong>Rollback seguro</strong><span>Sem <code>state.json</code> e backups válidos, o rollback se recusa a executar.</span></div><div><strong>Primeiro login</strong><span>Se a conta ainda não tiver perfil, as políticas HKCU são aplicadas por tarefa temporária no primeiro logon.</span></div><div><strong>Reaplicação idempotente</strong><span>Novas aplicações preservam o baseline original em vez de sobrescrevê-lo.</span></div></div></section><section class="panel reviewPanel"><h2>Revisão antes de gerar</h2><p class="muted">Confira o que merece atenção antes de levar o pacote para um PC.</p><div class="reviewList"><div class="review info"><strong>Info</strong><span>Safety &amp; Recovery ativo: scripts mutáveis exigem -Apply; setup preserva baseline e rollback exige state.json válido.</span></div><div class="review info"><strong>Info</strong><span>Se a conta restrita ainda não tiver perfil, políticas por usuário serão concluídas automaticamente no primeiro logon.</span></div><div class="review info"><strong>Info</strong><span>AppLocker está em auditoria: registra eventos sem bloquear aplicativos.</span></div><div class="review info"><strong>Info</strong><span>5 aplicativo(s) conhecido(s) na allowlist: Google Chrome, Microsoft Word, Microsoft Excel, Microsoft PowerPoint, Power BI Desktop.</span></div><div class="review info"><strong>Info</strong><span>A página de Contas &gt; Outros usuários ficará oculta para o usuário restrito.</span></div><div class="review info"><strong>Info</strong><span>Navegação web sem lista de URLs do WinLab.</span></div><div class="review info"><strong>Info</strong><span>USB — leitura: permitida; gravação: permitida; execução: bloqueada.</span></div><div class="review info"><strong>Info</strong><span>maintenance.ps1 apenas listará perfis inativos há mais de 30 dias; nenhum perfil será excluído.</span></div></div></section><section class="panel packagePanel"><h2>Pacote gerado</h2><div class="fileList"><div class="file"><code>setup.ps1</code><span>Aplica a configuração.</span></div><div class="file"><code>rollback.ps1</code><span>Restaura o baseline anterior do AppLocker/registro sem apagar as contas.</span></div><div class="file"><code>audit.ps1</code><span>Lê os eventos do AppLocker dos últimos 7 dias.</span></div><div class="file"><code>liberar-wallpaper.ps1</code><span>Libera o wallpaper e agenda o rebloqueio.</span></div><div class="file"><code>verify.ps1</code><span>Verifica Windows, AppLocker, contas e caminhos dos aplicativos.</span></div><div class="file"><code>preflight.ps1</code><span>Gera readiness PASS/WARN/BLOCK e relatório JSON antes do Apply.</span></div><div class="file"><code>scan-pc.ps1</code><span>Gera inventário JSON para importar novamente no WinLab.</span></div><div class="file"><code>maintenance.ps1</code><span>Relata espaço em disco e perfis antigos; pode removê-los quando explicitamente configurado.</span></div><div class="file"><code>config.json</code><span>Permite reproduzir a mesma configuração.</span></div><div class="file"><code>README.txt</code><span>Instruções para o técnico.</span></div></div></section><section class="panel preview"><div class="previewHeader"><div><h2>Prévia do setup.ps1</h2><p class="muted">951<!-- --> linhas ·<!-- --> <!-- -->auditoria</p></div><button>Baixar só setup.ps1</button></div><pre>#requires -version 5.1
+&lt;#
+SETUP
+Gerado por WinLab Configurator
+Perfil: Microlins Lab
+
+Teste primeiro em uma máquina piloto.
+Nenhuma senha é armazenada neste arquivo.
+#&gt;
+[CmdletBinding()]
+param([switch]$Apply, [switch]$UserPoliciesOnly)
+
+$ErrorActionPreference = &quot;Stop&quot;
+$Aluno = &#x27;Aluno&#x27;
+$Admin = &#x27;MicrolinsAdmin&#x27;
+
+function Assert-Administrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw &quot;Execute este arquivo como administrador.&quot;
+    }
+}
+
+function Assert-WinLabPackageIntegrity {
+    if (-not $PSScriptRoot) {
+        Write-Warning &quot;Integridade do pacote indisponível: script sem diretório de origem.&quot;
+        return
+    }
+
+    $manifestPath = Join-Path $PSScriptRoot &quot;manifest.json&quot;
+
+    if (-not (Test-Path $manifestPath)) {
+        Write-Warning &quot;manifest.json não encontrado. O script parece ter sido baixado isoladamente; a integridade do pacote não pode ser verificada.&quot;
+        return
+    }
+
+    try {
+        $manifest = Get-Content -Path $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw &quot;manifest.json inválido: $($_.Exception.Message)&quot;
+    }
+
+    if ($manifest.schemaVersion -ne 1) {
+        throw &quot;Versão de manifesto não suportada: $($manifest.schemaVersion)&quot;
+    }
+
+    foreach ($entry in @($manifest.files)) {
+        $path = Join-Path $PSScriptRoot ([string]$entry.name)
+
+        if (-not (Test-Path $path -PathType Leaf)) {
+            throw &quot;Integridade do pacote falhou: arquivo ausente &#x27;$($entry.name)&#x27;.&quot;
+        }
+
+        $actualHash = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expectedHash = ([string]$entry.sha256).ToLowerInvariant()
+
+        if ($actualHash -ne $expectedHash) {
+            throw &quot;Integridade do pacote falhou: hash divergente em &#x27;$($entry.name)&#x27;.&quot;
+        }
+
+        $actualBytes = (Get-Item -LiteralPath $path).Length
+        if ([int64]$actualBytes -ne [int64]$entry.bytes) {
+            throw &quot;Integridade do pacote falhou: tamanho divergente em &#x27;$($entry.name)&#x27;.&quot;
+        }
+    }
+
+    Write-Host &quot;Integridade do pacote: PASS&quot; -ForegroundColor Green
+}
+
+function Get-AdminsGroup { Get-LocalGroup -SID &quot;S-1-5-32-544&quot; }
+function Get-UsersGroup { Get-LocalGroup -SID &quot;S-1-5-32-545&quot; }
+
+function Invoke-WithUserHive {
+    param(
+        [Parameter(Mandatory=$true)][string]$UserName,
+        [Parameter(Mandatory=$true)][scriptblock]$Action,
+        $Context = $null
+    )
+
+    $user = Get-LocalUser -Name $UserName -ErrorAction Stop
+    $sid = $user.SID.Value
+    $hive = &quot;Registry::HKEY_USERS\$sid&quot;
+    $mountedByUs = $false
+
+    if (-not (Test-Path $hive)) {
+        $profile = Get-CimInstance Win32_UserProfile -Filter &quot;SID=&#x27;$sid&#x27;&quot; -ErrorAction SilentlyContinue
+
+        if (-not $profile.LocalPath) {
+            throw &quot;O perfil de &#x27;$UserName&#x27; ainda não existe; as políticas por usuário não podem ser aplicadas imediatamente.&quot;
+        }
+
+        $ntUser = Join-Path $profile.LocalPath &quot;NTUSER.DAT&quot;
+
+        if (-not (Test-Path $ntUser)) {
+            throw &quot;NTUSER.DAT de &#x27;$UserName&#x27; não encontrado.&quot;
+        }
+
+        reg.exe load &quot;HKU\$sid&quot; &quot;$ntUser&quot; | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw &quot;Não foi possível carregar o registro da conta &#x27;$UserName&#x27;.&quot;
+        }
+
+        $mountedByUs = $true
+    }
+
+    try {
+        &amp; $Action $sid $Context
+    }
+    finally {
+        if ($mountedByUs) {
+            [gc]::Collect()
+            [gc]::WaitForPendingFinalizers()
+            reg.exe unload &quot;HKU\$sid&quot; | Out-Null
+        }
+    }
+}
+
+$ProfileName = &#x27;Microlins Lab&#x27;
+$CreateAccounts = $true
+$BlockInstallers = $true
+$BlockStoreApps = $true
+$BlockCmd = $true
+$BlockPowerShell = $true
+$BlockRegedit = $true
+$AllowLocalAccountManagement = $false
+
+$BlockChromeExtensions = $true
+$BlockChromeGuest = $true
+$BlockChromeNewProfiles = $true
+$BlockChromeIncognito = $true
+$BlockChromePasswordManager = $true
+
+$BrowserUrlMode = &quot;Unrestricted&quot;
+$BlockedUrls = @()
+$AllowedUrls = @()
+
+$BlockUsbRead = $false
+$BlockUsbWrite = $false
+$BlockUsbExecute = $true
+
+$BlockWallpaper = $true
+$BlockMousePointers = $true
+$BlockSoundScheme = $true
+
+$AllowedExecutables = @(
+    &#x27;%PROGRAMFILES%\Google\Chrome\Application\chrome.exe&#x27;,
+    &#x27;%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe&#x27;,
+    &#x27;%PROGRAMFILES%\Microsoft Office\root\Office16\WINWORD.EXE&#x27;,
+    &#x27;%PROGRAMFILES(X86)%\Microsoft Office\root\Office16\WINWORD.EXE&#x27;,
+    &#x27;%PROGRAMFILES%\Microsoft Office\root\Office16\EXCEL.EXE&#x27;,
+    &#x27;%PROGRAMFILES(X86)%\Microsoft Office\root\Office16\EXCEL.EXE&#x27;,
+    &#x27;%PROGRAMFILES%\Microsoft Office\root\Office16\POWERPNT.EXE&#x27;,
+    &#x27;%PROGRAMFILES(X86)%\Microsoft Office\root\Office16\POWERPNT.EXE&#x27;,
+    &#x27;%PROGRAMFILES%\Microsoft Power BI Desktop\bin\PBIDesktop.exe&#x27;,
+    &#x27;%PROGRAMFILES(X86)%\Microsoft Power BI Desktop\bin\PBIDesktop.exe&#x27;
+)
+$EnforcementMode = &quot;AuditOnly&quot;
+
+$WinLabRoot = &quot;C:\ProgramData\WinLab&quot;
+$StatePath = Join-Path $WinLabRoot &quot;state.json&quot;
+$DeferredTaskName = &quot;WinLab-Apply-UserPolicies&quot;
+
+function Get-WinLabState {
+    if (-not (Test-Path $StatePath)) { return $null }
+
+    try {
+        return Get-Content -Path $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw &quot;O estado WinLab existente em &#x27;$StatePath&#x27; está corrompido ou ilegível. Não é seguro continuar.&quot;
+    }
+}
+
+function Save-WinLabState {
+    param([Parameter(Mandatory=$true)]$State)
+
+    New-Item -Path $WinLabRoot -ItemType Directory -Force | Out-Null
+    $State | ConvertTo-Json -Depth 8 | Set-Content -Path $StatePath -Encoding UTF8
+}
+
+function Test-WinLabUserName {
+    param([Parameter(Mandatory=$true)][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    if ($Value.Length -gt 20) { return $false }
+    if ($Value -match &#x27;^[.\s]+$&#x27;) { return $false }
+
+    $invalid = @(&#x27;&quot;&#x27;, &#x27;/&#x27;, &#x27;\&#x27;, &#x27;[&#x27;, &#x27;]&#x27;, &#x27;:&#x27;, &#x27;;&#x27;, &#x27;|&#x27;, &#x27;=&#x27;, &#x27;,&#x27;, &#x27;+&#x27;, &#x27;*&#x27;, &#x27;?&#x27;, &#x27;&lt;&#x27;, &#x27;&gt;&#x27;, &#x27;@&#x27;)
+    foreach ($character in $invalid) {
+        if ($Value.Contains($character)) { return $false }
+    }
+
+    return $true
+}
+
+function Test-WinLabPreflight {
+    $errors = New-Object System.Collections.Generic.List[string]
+
+    if (-not (Test-WinLabUserName -Value $Aluno)) {
+        $errors.Add(&quot;Nome inválido para a conta restrita &#x27;$Aluno&#x27;. Use até 20 caracteres e evite caracteres reservados do Windows.&quot;)
+    }
+
+    if (-not (Test-WinLabUserName -Value $Admin)) {
+        $errors.Add(&quot;Nome inválido para a conta administrativa &#x27;$Admin&#x27;. Use até 20 caracteres e evite caracteres reservados do Windows.&quot;)
+    }
+
+    if ([string]::Equals($Aluno, $Admin, [StringComparison]::OrdinalIgnoreCase)) {
+        $errors.Add(&quot;A conta restrita e a conta administrativa usam o mesmo nome.&quot;)
+    }
+
+    $requiredCommands = @(
+        &quot;Get-LocalUser&quot;,
+        &quot;Get-LocalGroup&quot;,
+        &quot;Get-AppLockerPolicy&quot;,
+        &quot;Set-AppLockerPolicy&quot;,
+        &quot;New-ScheduledTaskAction&quot;,
+        &quot;New-ScheduledTaskTrigger&quot;,
+        &quot;New-ScheduledTaskPrincipal&quot;,
+        &quot;Register-ScheduledTask&quot;,
+        &quot;Unregister-ScheduledTask&quot;
+    )
+
+    if ($CreateAccounts) {
+        $requiredCommands += @(
+            &quot;New-LocalUser&quot;,
+            &quot;Add-LocalGroupMember&quot;,
+            &quot;Remove-LocalGroupMember&quot;
+        )
+    }
+
+    foreach ($command in $requiredCommands) {
+        if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
+            $errors.Add(&quot;Comando obrigatório não encontrado: $command&quot;)
+        }
+    }
+
+    if (-not $CreateAccounts) {
+        if (-not (Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue)) {
+            $errors.Add(&quot;A conta restrita &#x27;$Aluno&#x27; não existe e a criação automática está desativada.&quot;)
+        }
+
+        if (-not (Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue)) {
+            $errors.Add(&quot;A conta administrativa &#x27;$Admin&#x27; não existe e a criação automática está desativada.&quot;)
+        }
+    }
+
+    $appIdService = Get-Service AppIDSvc -ErrorAction SilentlyContinue
+    if (-not $appIdService) {
+        $errors.Add(&quot;Serviço Application Identity (AppIDSvc) não encontrado.&quot;)
+    }
+
+    $state = Get-WinLabState
+    if ($state) {
+        if ($state.studentUser -and -not [string]::Equals([string]$state.studentUser, $Aluno, [StringComparison]::OrdinalIgnoreCase)) {
+            $errors.Add(&quot;Já existe estado WinLab para o usuário &#x27;$($state.studentUser)&#x27;. Execute o rollback antes de mudar o usuário restrito.&quot;)
+        }
+
+        if ($state.adminUser -and -not [string]::Equals([string]$state.adminUser, $Admin, [StringComparison]::OrdinalIgnoreCase)) {
+            $errors.Add(&quot;Já existe estado WinLab para o administrador &#x27;$($state.adminUser)&#x27;. Execute o rollback antes de mudar a conta administrativa.&quot;)
+        }
+
+        $currentStudent = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
+        if ($state.studentSid -and $currentStudent -and ([string]$state.studentSid -ne $currentStudent.SID.Value)) {
+            $errors.Add(&quot;A conta &#x27;$Aluno&#x27; foi recriada com outro SID. Faça recuperação/rollback antes de reaplicar.&quot;)
+        }
+
+        $currentAdmin = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
+        if ($state.adminSid -and $currentAdmin -and ([string]$state.adminSid -ne $currentAdmin.SID.Value)) {
+            $errors.Add(&quot;A conta &#x27;$Admin&#x27; foi recriada com outro SID. Faça recuperação/rollback antes de reaplicar.&quot;)
+        }
+    }
+
+    if ($errors.Count -gt 0) {
+        $message = &quot;Preflight WinLab falhou:&quot; + [Environment]::NewLine + (($errors | ForEach-Object { &quot; - $_&quot; }) -join [Environment]::NewLine)
+        throw $message
+    }
+
+    Write-Host &quot;Preflight WinLab: OK&quot; -ForegroundColor Green
+}
+
+function Ensure-Accounts {
+    if (-not $CreateAccounts) { return }
+
+    if (-not (Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue)) {
+        $password = Read-Host &quot;Defina a senha da conta administrativa &#x27;$Admin&#x27;&quot; -AsSecureString
+        New-LocalUser -Name $Admin -Password $password -Description &quot;WinLab - Administrador&quot; | Out-Null
+    }
+
+    Add-LocalGroupMember -Group (Get-AdminsGroup) -Member $Admin -ErrorAction SilentlyContinue
+
+    if (-not (Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue)) {
+        $password = Read-Host &quot;Defina a senha da conta &#x27;$Aluno&#x27;&quot; -AsSecureString
+        New-LocalUser -Name $Aluno -Password $password -Description &quot;WinLab - Usuário restrito&quot; | Out-Null
+    }
+
+    Remove-LocalGroupMember -Group (Get-AdminsGroup) -Member $Aluno -ErrorAction SilentlyContinue
+    Add-LocalGroupMember -Group (Get-UsersGroup) -Member $Aluno -ErrorAction SilentlyContinue
+}
+
+function Set-PolicyStringList {
+    param(
+        [Parameter(Mandatory=$true)][string]$BasePath,
+        [Parameter(Mandatory=$true)][string]$Name,
+        [string[]]$Values
+    )
+
+    $target = Join-Path $BasePath $Name
+    Remove-Item -Path $target -Recurse -Force -ErrorAction SilentlyContinue
+
+    if (-not $Values -or $Values.Count -eq 0) { return }
+
+    New-Item -Path $target -Force | Out-Null
+
+    for ($index = 0; $index -lt $Values.Count; $index++) {
+        New-ItemProperty -Path $target -Name ([string]($index + 1)) -PropertyType String -Value $Values[$index] -Force | Out-Null
+    }
+}
+
+function Set-StudentChromePolicies {
+    Invoke-WithUserHive -UserName $Aluno -Action {
+        param($sid)
+        $base = &quot;Registry::HKEY_USERS\$sid\Software\Policies\Google\Chrome&quot;
+        New-Item -Path $base -Force | Out-Null
+
+        if ($BlockChromeGuest) {
+            New-ItemProperty -Path $base -Name BrowserGuestModeEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+        }
+
+        if ($BlockChromeNewProfiles) {
+            New-ItemProperty -Path $base -Name BrowserAddPersonEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+        }
+
+        if ($BlockChromeIncognito) {
+            New-ItemProperty -Path $base -Name IncognitoModeAvailability -PropertyType DWord -Value 1 -Force | Out-Null
+        }
+
+        if ($BlockChromePasswordManager) {
+            New-Item</pre></section></div></main><!--$--><!--/$--><script src="/_next/static/chunks/310vm2bl3xxpt.js" id="_R_" async=""></script><script>(self.__next_f=self.__next_f||[]).push([0])</script><script>self.__next_f.push([1,"1:\"$Sreact.fragment\"\n2:I[39756,[\"/_next/static/chunks/3fntmmi971322.js\"],\"default\"]\n3:I[37457,[\"/_next/static/chunks/3fntmmi971322.js\"],\"default\"]\n4:I[47257,[\"/_next/static/chunks/3fntmmi971322.js\"],\"ClientPageRoot\"]\n5:I[52683,[\"/_next/static/chunks/3fntmmi971322.js\",\"/_next/static/chunks/1er4kik1kj-vo.js\",\"/_next/static/chunks/3iv6ovh7n29jz.js\"],\"default\"]\n8:I[97367,[\"/_next/static/chunks/3fntmmi971322.js\"],\"OutletBoundary\"]\n9:\"$Sreact.suspense\"\nb:I[97367,[\"/_next/static/chunks/3fntmmi971322.js\"],\"ViewportBoundary\"]\nd:I[97367,[\"/_next/static/chunks/3fntmmi971322.js\"],\"MetadataBoundary\"]\nf:I[68027,[\"/_next/static/chunks/3fntmmi971322.js\"],\"default\",1]\n:HL[\"/_next/static/chunks/3uj5p1kghavpu.css\",\"style\"]\n0:{\"P\":null,\"c\":[\"\",\"\"],\"q\":\"\",\"i\":false,\"f\":[[[\"\",{\"children\":[\"__PAGE__\",{},\"$undefined\",\"$undefined\",4608]},\"$undefined\",\"$undefined\",4624],[[\"$\",\"$1\",\"c\",{\"children\":[[[\"$\",\"link\",\"0\",{\"rel\":\"stylesheet\",\"href\":\"/_next/static/chunks/3uj5p1kghavpu.css\",\"precedence\":\"next\",\"crossOrigin\":\"$undefined\",\"nonce\":\"$undefined\"}],[\"$\",\"script\",\"script-0\",{\"src\":\"/_next/static/chunks/3fntmmi971322.js\",\"async\":true,\"nonce\":\"$undefined\"}]],[\"$\",\"html\",null,{\"lang\":\"pt-BR\",\"children\":[\"$\",\"body\",null,{\"children\":[\"$\",\"$L2\",null,{\"parallelRouterKey\":\"children\",\"error\":\"$undefined\",\"errorStyles\":\"$undefined\",\"errorScripts\":\"$undefined\",\"template\":[\"$\",\"$L3\",null,{}],\"templateStyles\":\"$undefined\",\"templateScripts\":\"$undefined\",\"notFound\":[[[\"$\",\"title\",null,{\"children\":\"404: This page could not be found.\"}],[\"$\",\"div\",null,{\"style\":{\"fontFamily\":\"system-ui,\\\"Segoe UI\\\",Roboto,Helvetica,Arial,sans-serif,\\\"Apple Color Emoji\\\",\\\"Segoe UI Emoji\\\"\",\"height\":\"100vh\",\"textAlign\":\"center\",\"display\":\"flex\",\"flexDirection\":\"column\",\"alignItems\":\"center\",\"justifyContent\":\"center\"},\"children\":[\"$\",\"div\",null,{\"children\":[[\"$\",\"style\",null,{\"dangerouslySetInnerHTML\":{\"__html\":\"body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}\"}}],[\"$\",\"h1\",null,{\"className\":\"next-error-h1\",\"style\":{\"display\":\"inline-block\",\"margin\":\"0 20px 0 0\",\"padding\":\"0 23px 0 0\",\"fontSize\":24,\"fontWeight\":500,\"verticalAlign\":\"top\",\"lineHeight\":\"49px\"},\"children\":404}],[\"$\",\"div\",null,{\"style\":{\"display\":\"inline-block\"},\"children\":[\"$\",\"h2\",null,{\"style\":{\"fontSize\":14,\"fontWeight\":400,\"lineHeight\":\"49px\",\"margin\":0},\"children\":\"This page could not be found.\"}]}]]}]}]],[]],\"forbidden\":\"$undefined\",\"unauthorized\":\"$undefined\"}]}]}]]}],{\"children\":[[\"$\",\"$1\",\"c\",{\"children\":[[\"$\",\"$L4\",null,{\"Component\":\"$5\",\"serverProvidedParams\":{\"searchParams\":{},\"params\":{},\"promises\":[\"$@6\",\"$@7\"]}}],[[\"$\",\"script\",\"script-0\",{\"src\":\"/_next/static/chunks/1er4kik1kj-vo.js\",\"async\":true,\"nonce\":\"$undefined\"}],[\"$\",\"script\",\"script-1\",{\"src\":\"/_next/static/chunks/3iv6ovh7n29jz.js\",\"async\":true,\"nonce\":\"$undefined\"}]],[\"$\",\"$L8\",null,{\"children\":[\"$\",\"$9\",null,{\"name\":\"Next.MetadataOutlet\",\"children\":\"$@a\"}]}]]}],{},null,false,null]},null,false,null],[\"$\",\"$1\",\"h\",{\"children\":[null,[\"$\",\"$Lb\",null,{\"children\":\"$Lc\"}],[\"$\",\"div\",null,{\"hidden\":true,\"children\":[\"$\",\"$Ld\",null,{\"children\":[\"$\",\"$9\",null,{\"name\":\"Next.Metadata\",\"children\":\"$Le\"}]}]}],null]}],false]],\"m\":\"$undefined\",\"G\":[\"$f\",[[\"$\",\"link\",\"0\",{\"rel\":\"stylesheet\",\"href\":\"/_next/static/chunks/3uj5p1kghavpu.css\",\"precedence\":\"next\",\"crossOrigin\":\"$undefined\",\"nonce\":\"$undefined\"}]]],\"S\":true,\"h\":null,\"r\":\"$undefined\",\"s\":\"$undefined\",\"a\":\"$undefined\",\"l\":\"$undefined\",\"p\":\"$undefined\",\"d\":\"$undefined\",\"b\":\"scOUnYlM87X4EgMwawiuq\"}\n6:{}\n7:\"$0:f:0:1:1:children:0:props:children:0:props:serverProvidedParams:params\"\nc:[[\"$\",\"meta\",\"0\",{\"charSet\":\"utf-8\"}],[\"$\",\"meta\",\"1\",{\"name\":\"viewport\",\"content\":\"width=device-width, initial-scale=1\"}]]\na:null\ne:[[\"$\",\"title\",\"0\",{\"children\":\"WinLab Configurator\"}],[\"$\",\"meta\",\"1\",{\"name\":\"description\",\"content\":\"Gerador de configuração de Windows para laboratórios, escolas e empresas\"}]]\n"])</script></body></html>

@@ -5,7 +5,25 @@ export type { AllowedAppId } from "./apps";
 export type EnforcementMode = "AuditOnly" | "Enabled";
 export type BrowserUrlMode = "Unrestricted" | "BlockList" | "AllowListOnly";
 export type ProfileCleanupMode = "Off" | "ReportOnly" | "Delete";
-export type PresetId = "microlins" | "school" | "company" | "kiosk";
+export type PresetId =
+  | "microlins"
+  | "microlins_iniciante"
+  | "microlins_intermediario"
+  | "microlins_avancado"
+  | "school"
+  | "company"
+  | "kiosk";
+
+export type OperatingMode = "Demo" | "Real";
+
+export interface FirstRunState {
+  isCompleted: boolean;
+  completedAt?: string;
+  configuredPresetId?: PresetId;
+  targetStudentUser?: string;
+  protectedAdminUser?: string;
+  initialBaselineId?: string;
+}
 
 export type Config = {
   profileName: string;

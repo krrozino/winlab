@@ -29,6 +29,8 @@ namespace WinLab.Contracts
 
         [JsonPropertyName("disks")]
         public List<DiskInfoDto> Disks { get; set; } = new List<DiskInfoDto>();
+        [JsonPropertyName("isMock")]
+        public bool? IsMock { get; set; }
     }
 
     public class WindowsInfoDto
@@ -44,6 +46,27 @@ namespace WinLab.Contracts
 
         [JsonPropertyName("architecture")]
         public string Architecture { get; set; } = string.Empty;
+
+        [JsonPropertyName("edition")]
+        public string Edition { get; set; } = string.Empty;
+
+        [JsonPropertyName("displayVersion")]
+        public string DisplayVersion { get; set; } = string.Empty;
+
+        [JsonPropertyName("ubr")]
+        public int? Ubr { get; set; }
+
+        [JsonPropertyName("is64Bit")]
+        public bool Is64Bit { get; set; } = true;
+
+        [JsonPropertyName("tpmPresent")]
+        public bool TpmPresent { get; set; }
+
+        [JsonPropertyName("tpmVersion")]
+        public string? TpmVersion { get; set; }
+
+        [JsonPropertyName("secureBootEnabled")]
+        public bool SecureBootEnabled { get; set; }
     }
 
     public class DetectedAppDto
@@ -74,6 +97,12 @@ namespace WinLab.Contracts
 
         [JsonPropertyName("publisher")]
         public string Publisher { get; set; } = string.Empty;
+
+        [JsonPropertyName("installLocation")]
+        public string? InstallLocation { get; set; }
+
+        [JsonPropertyName("isAppx")]
+        public bool IsAppx { get; set; }
     }
 
     public class LocalUserDto

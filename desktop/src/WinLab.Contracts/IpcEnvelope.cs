@@ -76,14 +76,15 @@ namespace WinLab.Contracts
             };
         }
 
-        public static IpcResponse<T> Fail(string replyToId, string error, string errorCode = "GENERIC_ERROR")
+        public static IpcResponse<T> Fail(string replyToId, string error, string errorCode = "GENERIC_ERROR", T? data = default)
         {
             return new IpcResponse<T>
             {
                 ReplyToId = replyToId,
                 Success = false,
                 Error = error,
-                ErrorCode = errorCode
+                ErrorCode = errorCode,
+                Data = data
             };
         }
     }

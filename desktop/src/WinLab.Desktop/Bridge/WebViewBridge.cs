@@ -13,20 +13,20 @@ namespace WinLab.Desktop.Bridge
     /// </summary>
     public class WebViewBridge
     {
-        private readonly MockAgentService _mockService;
+        private readonly IAgentService _agentService;
         private readonly CoreWebView2 _coreWebView2;
 
-        public WebViewBridge(CoreWebView2 coreWebView2, MockAgentService mockService)
+        public WebViewBridge(CoreWebView2 coreWebView2, IAgentService agentService)
         {
             _coreWebView2 = coreWebView2 ?? throw new ArgumentNullException(nameof(coreWebView2));
-            _mockService = mockService ?? throw new ArgumentNullException(nameof(mockService));
+            _agentService = agentService ?? throw new ArgumentNullException(nameof(agentService));
         }
 
         public async Task HandleWebMessageReceivedAsync(string rawJson)
         {
             try
             {
-                var response = await _mockService.HandleRequestAsync(rawJson);
+                var response = await _agentService.HandleRequestAsync(rawJson);
                 string responseJson = JsonSerializer.Serialize(response);
                 _coreWebView2.PostWebMessageAsString(responseJson);
             }

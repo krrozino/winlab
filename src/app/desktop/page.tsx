@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { MockDesktopAgent } from "@/desktop/mock-agent";
+import { createDesktopTransport, isWebView2Available } from "@/desktop/ipc-bridge";
 import {
+  DesktopIpcTransport,
   IPC_CONSTANTS,
   IpcEnvelope,
   IpcResponse,
@@ -14,7 +15,9 @@ import { presets, getPreset } from "@/lib/presets";
 import { defaultConfig } from "@/lib/default-config";
 import { parseConfigJson } from "@/lib/config-io";
 import { getConfigReview } from "@/lib/review";
-import { Config, PresetId } from "@/lib/types";
+import { Config, OperatingMode, PresetId } from "@/lib/types";
+import { DemoBanner } from "@/desktop/DemoBanner";
+import { FirstRunWizard } from "@/desktop/FirstRunWizard";
 
 interface IpcLogEntry {
   id: string;
@@ -27,7 +30,14 @@ interface IpcLogEntry {
 }
 
 export default function DesktopPage() {
-  const agent = useMemo(() => new MockDesktopAgent(), []);
+  const [isNativeWebView2, setIsNativeWebView2] = useState(false);
+  const transport: DesktopIpcTransport = useMemo(() => {
+    return createDesktopTransport();
+  }, []);
+
+  useEffect(() => {
+    setIsNativeWebView2(isWebView2Available());
+  }, []);
 
   // Estado do inventário e políticas obtidos via IPC
   const [inventory, setInventory] = useState<MachineInventoryDto | null>(null);
@@ -44,6 +54,12 @@ export default function DesktopPage() {
   const [config, setConfig] = useState<Config>(defaultConfig);
   const [activePresetId, setActivePresetId] = useState<PresetId>("microlins");
   const [importStatus, setImportStatus] = useState<string | null>(null);
+
+  // Modo de operação (Demo vs Real) e Assistente Inicial
+  const [mode, setMode] = useState<OperatingMode>("Demo");
+  const [showWizard, setShowWizard] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
 
   // Aba ativa da interface desktop
   const [activeTab, setActiveTab] = useState<
@@ -72,7 +88,7 @@ export default function DesktopPage() {
       }
     };
 
-    const response = (await agent.handleRequest<T>(envelope)) as IpcResponse<T>;
+    const response = (await transport.handleRequest<T>(envelope)) as IpcResponse<T>;
     const durationMs = Math.round(performance.now() - start);
 
     setIpcLogs((prev) => [
@@ -119,6 +135,81 @@ export default function DesktopPage() {
 
     loadInitialData();
   }, []);
+
+  // Alternância entre Modo Demonstração e Modo Computador Real (Feature 16)
+  async function handleToggleMode(targetMode: OperatingMode) {
+    if (targetMode === "Real") {
+      // Invariante de Purga (Zero-Masquerade): limpa dados mock de forma síncrona
+      setInventory(null);
+      setPolicySummary(null);
+      setPreflightData(null);
+      setScanError(null);
+      setMode("Real");
+
+      setIsScanning(true);
+      try {
+        await sendIpcMessage("mode.set", { mode: "Real" });
+        const res = await sendIpcMessage<MachineInventoryDto>(IPC_CONSTANTS.ACTION_QUERY_INVENTORY);
+        if (res.success && res.data) {
+          setInventory(res.data);
+        } else {
+          setScanError(res.error || "Falha ao escanear o computador real.");
+        }
+
+        const polRes = await sendIpcMessage<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE);
+        if (polRes.success && polRes.data) {
+          setPolicySummary(polRes.data);
+        }
+
+        const preRes = await sendIpcMessage<{
+          computerName: string;
+          status: string;
+          readinessScore: number;
+          summary: { pass: number; warn: number; block: number };
+          readinessMessage: string;
+        }>(IPC_CONSTANTS.ACTION_QUERY_PREFLIGHT);
+        if (preRes.success && preRes.data) {
+          setPreflightData(preRes.data);
+        }
+      } catch (err) {
+        setScanError((err as Error).message);
+      } finally {
+        setIsScanning(false);
+      }
+    } else {
+      // Retorno ao Modo Demo
+      setInventory(null);
+      setPolicySummary(null);
+      setPreflightData(null);
+      setScanError(null);
+      setMode("Demo");
+
+      setIsScanning(true);
+      try {
+        await sendIpcMessage("mode.set", { mode: "Demo" });
+        const invRes = await sendIpcMessage<MachineInventoryDto>(IPC_CONSTANTS.ACTION_QUERY_INVENTORY);
+        if (invRes.success && invRes.data) {
+          setInventory(invRes.data);
+        }
+        const polRes = await sendIpcMessage<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE);
+        if (polRes.success && polRes.data) {
+          setPolicySummary(polRes.data);
+        }
+        const preRes = await sendIpcMessage<{
+          computerName: string;
+          status: string;
+          readinessScore: number;
+          summary: { pass: number; warn: number; block: number };
+          readinessMessage: string;
+        }>(IPC_CONSTANTS.ACTION_QUERY_PREFLIGHT);
+        if (preRes.success && preRes.data) {
+          setPreflightData(preRes.data);
+        }
+      } finally {
+        setIsScanning(false);
+      }
+    }
+  }
 
   // Seleciona um preset
   function selectPreset(id: PresetId) {
@@ -168,7 +259,7 @@ export default function DesktopPage() {
       payload: { command: "powershell.exe -Command Remove-Item C:\\Windows" }
     };
 
-    const res = await agent.handleRequest(maliciousEnvelope);
+    const res = await transport.handleRequest(maliciousEnvelope);
     setIpcLogs((prev) => [
       {
         id: maliciousEnvelope.id,
@@ -192,6 +283,56 @@ export default function DesktopPage() {
 
   return (
     <main style={{ maxWidth: 1240, margin: "0 auto", padding: "24px 20px 80px" }}>
+      {/* Persistent Demonstration Banner vs Real Machine Live Status (Feature 16) */}
+      <DemoBanner
+        mode={mode}
+        computerName={inventory?.computerName}
+        isWebView2Available={isNativeWebView2}
+        onToggleMode={handleToggleMode}
+        isScanning={isScanning}
+      />
+
+      {/* Error Banner when Real Scan fails */}
+      {scanError && (
+        <div
+          role="alert"
+          style={{
+            background: "rgba(231, 76, 60, 0.15)",
+            border: "1px solid #e74c3c",
+            borderRadius: 8,
+            padding: "12px 16px",
+            marginBottom: 20,
+            display: "flex",
+            alignItems: "center",
+            gap: 12
+          }}
+        >
+          <span style={{ fontSize: 20 }}>❌</span>
+          <div style={{ flex: 1 }}>
+            <strong style={{ color: "#e74c3c", fontSize: 13, display: "block" }}>
+              Falha de Conexão com o Host Windows
+            </strong>
+            <span style={{ color: "var(--muted)", fontSize: 12 }}>{scanError}</span>
+          </div>
+        </div>
+      )}
+
+      {/* First-Run Configuration Wizard (Feature 14) */}
+      {showWizard && (
+        <FirstRunWizard
+          transport={transport}
+          isWebView2Available={isNativeWebView2}
+          initialMode={mode}
+          onComplete={({ mode: newMode, config: newConfig }) => {
+            setMode(newMode);
+            setConfig(newConfig);
+            setShowWizard(false);
+            handleToggleMode(newMode);
+          }}
+          onCancel={() => setShowWizard(false)}
+        />
+      )}
+
       {/* Top Header */}
       <div
         style={{
@@ -234,6 +375,20 @@ export default function DesktopPage() {
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => setShowWizard((prev) => !prev)}
+            className="secondary"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 13,
+              cursor: "pointer"
+            }}
+          >
+            🧙 {showWizard ? "Fechar Assistente" : "Assistente Inicial"}
+          </button>
           <Link
             href="/"
             className="secondary"
@@ -309,10 +464,10 @@ export default function DesktopPage() {
             Conexão IPC Local
           </div>
           <strong style={{ display: "block", color: "var(--success)", marginTop: 4, fontSize: 14 }}>
-            Mock In-Memory Ativo
+            {isNativeWebView2 ? "Host C# (WebView2 Nativo)" : "Mock In-Memory (Web Fallback)"}
           </strong>
           <small style={{ color: "var(--muted)", fontSize: 11 }}>
-            Protocolo v1.0.0 com allowlist estrita
+            {isNativeWebView2 ? "Ponte bidirecional postMessage ativa" : "Protocolo v1.0.0 com allowlist estrita"}
           </small>
         </div>
 

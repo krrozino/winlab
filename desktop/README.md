@@ -11,18 +11,28 @@ Este diretório contém a estrutura de código-fonte da aplicação desktop inst
 
 ## Projetos na Solução
 
-- **`src/WinLab.Contracts`**: Biblioteca de classes contendo constantes, DTOs de inventário, políticas, envelopes IPC e validações de segurança da allowlist.
-- **`src/WinLab.Agent.Mock`**: Agente em memória para desenvolvimento offline e execução de testes de integração da interface.
-- **`src/WinLab.Desktop`**: Aplicativo cliente WPF (.NET 8) hospedando o controle nativo `Microsoft.Web.WebView2.Wpf`, com mapeamento de virtual host (`winlab.local`) para carregar a interface React offline sem servidor web local.
+- **`src/WinLab.Contracts`**: Biblioteca de classes (.NET 10) contendo constantes, DTOs de inventário, políticas, envelopes IPC e validações de segurança da allowlist.
+- **`src/WinLab.Agent.Mock`**: Agente em memória (.NET 10) para desenvolvimento offline e execução de testes de integração da interface.
+- **`src/WinLab.Desktop`**: Aplicativo cliente WPF (.NET 10 LTS) hospedando o controle nativo `Microsoft.Web.WebView2.Wpf`, com mapeamento de virtual host (`winlab.local`) para carregar a interface React offline sem servidor web local.
+- **`tests/WinLab.Tests`**: Suite de testes unitários automatizados xUnit (.NET 10) cobrindo validadores de segurança, envelopes IPC e o serviço de mock.
+- **`packaging/winlab.iss`**: Script do Inno Setup para geração do instalador autocontido x64 (`WinLabSetup-0.9.0-x64.exe`).
 
 ## Compilação no Windows
 
 Requisitos:
 - Windows 10 (2004+) ou Windows 11
-- .NET 8 SDK
+- .NET 10 SDK (LTS)
+- Node.js 22 LTS
 - Microsoft Edge WebView2 Runtime (instalado por padrão no Windows 11)
 
 ```bash
+# 1. Exportar os ativos estáticos da interface web para wwwroot
+npm run build:desktop
+
+# 2. Compilar e testar a solução .NET 10
 cd desktop
-dotnet build WinLab.sln
+dotnet restore WinLab.sln
+dotnet build WinLab.sln -c Release
+dotnet test WinLab.sln -c Release
 ```
+

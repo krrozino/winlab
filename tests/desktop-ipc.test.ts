@@ -158,3 +158,250 @@ test("MockDesktopAgent rejects attempt to invoke apply policies in foundation st
   assert.equal(res.success, false);
   assert.equal(res.errorCode, "PRIVILEGED_EXECUTOR_DISABLED");
 });
+
+test("validateEnvelopeSchema enforces structural typing and rejects command fields", async () => {
+  const { validateEnvelopeSchema } = await import("../src/desktop/mock-agent");
+
+  // Rejeita valores não-objeto
+  assert.equal(validateEnvelopeSchema(null).isValid, false);
+  assert.equal(validateEnvelopeSchema("string").isValid, false);
+  assert.equal(validateEnvelopeSchema([]).isValid, false);
+
+  // Rejeita envelope sem id
+  assert.equal(
+    validateEnvelopeSchema({
+      version: "1.0.0",
+      type: "query",
+      action: IPC_CONSTANTS.ACTION_QUERY_INVENTORY
+    }).isValid,
+    false
+  );
+
+  // Rejeita tipo inválido
+  assert.equal(
+    validateEnvelopeSchema({
+      id: "test-1",
+      version: "1.0.0",
+      type: "arbitrary_type",
+      action: IPC_CONSTANTS.ACTION_QUERY_INVENTORY
+    }).isValid,
+    false
+  );
+
+  // Rejeita ação não-autorizada
+  assert.equal(
+    validateEnvelopeSchema({
+      id: "test-2",
+      version: "1.0.0",
+      type: "query",
+      action: "unauthorized.action"
+    }).isValid,
+    false
+  );
+
+  // Rejeita payload com campo de comando arbitrário
+  const commandInjection = validateEnvelopeSchema({
+    id: "test-3",
+    version: "1.0.0",
+    type: "command",
+    action: IPC_CONSTANTS.ACTION_VALIDATE_CONFIG,
+    payload: { command: "whoami" }
+  });
+  assert.equal(commandInjection.isValid, false);
+  assert.equal(commandInjection.errorCode, "FORBIDDEN_COMMAND_FIELD");
+
+  // Aceita envelope válido
+  const valid = validateEnvelopeSchema({
+    id: "test-4",
+    version: "1.0.0",
+    type: "query",
+    action: IPC_CONSTANTS.ACTION_QUERY_INVENTORY
+  });
+  assert.equal(valid.isValid, true);
+});
+
+test("WebViewIpcBridge detects environment and handles missing WebView2 runtime gracefully", async () => {
+  const { isWebView2Available, WebViewIpcBridge, createDesktopTransport } = await import(
+    "../src/desktop/ipc-bridge"
+  );
+
+  // No Node.js puro, window.chrome.webview não existe
+  assert.equal(isWebView2Available(), false);
+
+  const bridge = new WebViewIpcBridge(1000);
+  assert.equal(bridge.isRunning, true);
+  assert.equal(bridge.mode, "Native C# Host (WebView2 IPC)");
+
+  const res = await bridge.handleRequest({
+    id: "bridge-test-1",
+    version: IPC_CONSTANTS.PROTOCOL_VERSION,
+    timestamp: new Date().toISOString(),
+    type: "query",
+    action: IPC_CONSTANTS.ACTION_QUERY_INVENTORY
+  });
+
+  assert.equal(res.success, false);
+  assert.equal(res.errorCode, "WEBVIEW2_NOT_AVAILABLE");
+  bridge.dispose();
+
+  // createDesktopTransport faz fallback seguro para MockDesktopAgent fora do WebView2
+  const transport = createDesktopTransport();
+  assert.equal(transport.isRunning, true);
+  assert.equal(transport.mode, "Unprivileged Mock (In-Memory Development)");
+});
+
+test("MockDesktopAgent guarantees typeof response.replyToId is string when envelope contains non-string id tokens", async () => {
+  const agent = new MockDesktopAgent();
+  const nonStringIdCases: Array<{ label: string; id: unknown }> = [
+    { label: "numeric integer id", id: 12345 },
+    { label: "numeric zero id", id: 0 },
+    { label: "numeric float id", id: 3.14159 },
+    { label: "boolean true id", id: true },
+    { label: "boolean false id", id: false },
+    { label: "object id", id: { tenant: "lab", session: 42 } },
+    { label: "array id", id: [1, 2, 3] },
+    { label: "null id", id: null },
+    { label: "undefined id", id: undefined },
+    { label: "function id", id: () => "id" }
+  ];
+
+  for (const tc of nonStringIdCases) {
+    const envelope = {
+      id: tc.id,
+      version: IPC_CONSTANTS.PROTOCOL_VERSION,
+      timestamp: new Date().toISOString(),
+      type: "query",
+      action: IPC_CONSTANTS.ACTION_QUERY_INVENTORY
+    } as unknown as IpcEnvelope;
+
+    const res = await agent.handleRequest(envelope);
+    assert.equal(res.success, false, `Expected failure for ${tc.label}`);
+    assert.equal(res.errorCode, "INVALID_ENVELOPE_ID", `Expected INVALID_ENVELOPE_ID for ${tc.label}`);
+    assert.equal(
+      typeof res.replyToId,
+      "string",
+      `Expected res.replyToId to be string for ${tc.label}, got ${typeof res.replyToId}`
+    );
+    assert.equal(res.replyToId, "", `Expected res.replyToId to be empty string for non-string ${tc.label}`);
+  }
+
+  // Also verify when envelope itself is not a valid JSON object envelope
+  const nonObjectEnvelopes: Array<{ label: string; envelope: unknown }> = [
+    { label: "null envelope", envelope: null },
+    { label: "undefined envelope", envelope: undefined },
+    { label: "number envelope", envelope: 42 },
+    { label: "array envelope", envelope: ["query", "inventory.query"] }
+  ];
+
+  for (const tc of nonObjectEnvelopes) {
+    const res = await agent.handleRequest(tc.envelope as unknown as IpcEnvelope);
+    assert.equal(res.success, false);
+    assert.equal(res.errorCode, "INVALID_ENVELOPE_SCHEMA");
+    assert.equal(
+      typeof res.replyToId,
+      "string",
+      `Expected res.replyToId to be string for ${tc.label}, got ${typeof res.replyToId}`
+    );
+    assert.equal(res.replyToId, "");
+  }
+});
+
+test("fuzz MockDesktopAgent with 1,000 randomized envelopes and extreme payloads confirming 100% schema conformance", async () => {
+  const agent = new MockDesktopAgent();
+
+  function assertConformance(resp: any, inputDesc: string) {
+    assert.ok(resp && typeof resp === "object", `${inputDesc}: response must be object`);
+    assert.equal(typeof resp.id, "string", `${inputDesc}: resp.id must be string`);
+    assert.ok(resp.id.length > 0, `${inputDesc}: resp.id must not be empty`);
+    assert.equal(typeof resp.replyToId, "string", `${inputDesc}: resp.replyToId must be string`);
+    assert.equal(typeof resp.success, "boolean", `${inputDesc}: resp.success must be boolean`);
+
+    if (resp.success) {
+      assert.equal(resp.error, undefined, `${inputDesc}: success response error must be undefined`);
+      assert.equal(resp.errorCode, undefined, `${inputDesc}: success response errorCode must be undefined`);
+      assert.notEqual(resp.data, undefined, `${inputDesc}: success response data must be present`);
+    } else {
+      assert.equal(typeof resp.error, "string", `${inputDesc}: fail response error must be string`);
+      assert.ok(resp.error.trim().length > 0, `${inputDesc}: fail response error must not be empty`);
+      assert.equal(typeof resp.errorCode, "string", `${inputDesc}: fail response errorCode must be string`);
+      assert.ok(resp.errorCode.trim().length > 0, `${inputDesc}: fail response errorCode must not be empty`);
+      assert.equal(resp.data, undefined, `${inputDesc}: fail response data must be undefined`);
+    }
+  }
+
+  // 1. Extreme payloads
+  const extreme100k = await agent.handleRequest({
+    id: "ext-100k",
+    version: IPC_CONSTANTS.PROTOCOL_VERSION,
+    timestamp: new Date().toISOString(),
+    type: "query",
+    action: IPC_CONSTANTS.ACTION_QUERY_INVENTORY,
+    payload: "A".repeat(100 * 1024)
+  });
+  assertConformance(extreme100k, "Extreme 100KB payload");
+  assert.equal(extreme100k.success, true);
+  assert.equal(extreme100k.replyToId, "ext-100k");
+
+  const extreme5mb = await agent.handleRequest({
+    id: "ext-5mb",
+    version: IPC_CONSTANTS.PROTOCOL_VERSION,
+    timestamp: new Date().toISOString(),
+    type: "query",
+    action: IPC_CONSTANTS.ACTION_QUERY_INVENTORY,
+    payload: "C".repeat(5 * 1024 * 1024)
+  });
+  assertConformance(extreme5mb, "Extreme 5MB payload");
+  assert.equal(extreme5mb.success, true);
+
+  const hugeId = "ID-" + "Z".repeat(50000);
+  const extremeHugeId = await agent.handleRequest({
+    id: hugeId,
+    version: IPC_CONSTANTS.PROTOCOL_VERSION,
+    timestamp: new Date().toISOString(),
+    type: "query",
+    action: IPC_CONSTANTS.ACTION_QUERY_INVENTORY
+  });
+  assertConformance(extremeHugeId, "Extreme 50K char ID");
+  assert.equal(extremeHugeId.replyToId, hugeId);
+
+  // 2. 1,000 Randomized fuzz iterations
+  const randomKeys = ["cmd", "shell", "exec", "script", "id", "type", "action", "payload", "randomKey"];
+  const randomChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;':\",./<>?`~\0\n\r\t \t ";
+
+  for (let i = 0; i < 1000; i++) {
+    let randomPayload: any;
+    const mode = i % 6;
+    if (mode === 0) {
+      randomPayload = Array.from({ length: 10 + (i % 50) }, () => randomChars[Math.floor(Math.random() * randomChars.length)]).join("");
+    } else if (mode === 1) {
+      randomPayload = {
+        [randomKeys[i % randomKeys.length]]: randomChars.slice(0, 10 + (i % 20))
+      };
+    } else if (mode === 2) {
+      randomPayload = Array.from({ length: i % 100 }, (_, idx) => idx);
+    } else if (mode === 3) {
+      randomPayload = null;
+    } else if (mode === 4) {
+      randomPayload = (i % 2 === 0);
+    } else {
+      randomPayload = i * 1.5;
+    }
+
+    const testId = i % 4 === 0 ? `fuzz-${i}` : (i % 4 === 1 ? (i as any) : (i % 4 === 2 ? null : "   "));
+    const testAction = i % 3 === 0 ? IPC_CONSTANTS.ACTION_QUERY_INVENTORY : (i % 3 === 1 ? "invalid.action" : IPC_CONSTANTS.ACTION_APPLY_POLICIES);
+    const testType = i % 2 === 0 ? "query" : "invalid_type";
+
+    const res = await agent.handleRequest({
+      id: testId,
+      version: IPC_CONSTANTS.PROTOCOL_VERSION,
+      timestamp: new Date().toISOString(),
+      type: testType,
+      action: testAction,
+      payload: randomPayload
+    } as any);
+
+    assertConformance(res, `Fuzz iteration #${i}`);
+  }
+});
+
+
