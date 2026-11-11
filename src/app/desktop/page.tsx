@@ -17,6 +17,7 @@ import { parseConfigJson } from "@/lib/config-io";
 import { getConfigReview } from "@/lib/review";
 import { Config, OperatingMode, PresetId } from "@/lib/types";
 import { DemoBanner } from "@/desktop/DemoBanner";
+import { DiagnosticReport } from "@/desktop/DiagnosticReport";
 import { FirstRunWizard } from "@/desktop/FirstRunWizard";
 
 interface IpcLogEntry {
@@ -63,7 +64,7 @@ export default function DesktopPage() {
 
   // Aba ativa da interface desktop
   const [activeTab, setActiveTab] = useState<
-    "overview" | "inventory" | "presets" | "policies" | "config" | "ipc"
+    "overview" | "inventory" | "diagnostic" | "presets" | "policies" | "config" | "ipc"
   >("overview");
 
   // Log de mensagens IPC
@@ -505,6 +506,7 @@ export default function DesktopPage() {
         {[
           { id: "overview", label: "Visão Geral & Segurança" },
           { id: "inventory", label: "Inventário (Read-Only)" },
+          { id: "diagnostic", label: "Relatório de Diagnóstico" },
           { id: "presets", label: "Presets de Configuração" },
           { id: "policies", label: "Matriz de Políticas" },
           { id: "config", label: "Importar / Exportar" },
@@ -749,6 +751,20 @@ export default function DesktopPage() {
               <p style={{ color: "var(--muted)" }}>Carregando inventário via IPC...</p>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Tab: Diagnostic Report (read-only consolidation + JSON export) */}
+      {activeTab === "diagnostic" && (
+        <div className="panel">
+          <DiagnosticReport
+            mode={mode}
+            inventory={inventory}
+            policySummary={policySummary}
+            preflightData={preflightData}
+            isScanning={isScanning}
+            scanError={scanError}
+          />
         </div>
       )}
 
