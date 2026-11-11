@@ -4,6 +4,8 @@ export const DIAGNOSTIC_REPORT_SCHEMA_VERSION = "1.0.0";
 
 export type ReportOrigin = "DEMO" | "REAL";
 
+export type OriginIntegrity = "CONSISTENT" | "MOCK_DATA_IN_REAL_MODE";
+
 export interface PreflightSnapshot {
   status: string;
   readinessScore: number;
@@ -55,6 +57,7 @@ export interface DiagnosticReport {
   schemaVersion: string;
   generatedAt: string;
   origin: ReportOrigin;
+  originIntegrity: OriginIntegrity;
   system: DiagnosticReportSystemSection | null;
   inventoryMetrics: DiagnosticReportInventorySection | null;
   policySummary: DiagnosticReportPolicySection | null;
@@ -75,6 +78,11 @@ export function isValidCount(value: unknown): value is number {
 
 export function sanitizeFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function sanitizeReadinessScore(value: unknown): number | null {
+  const score = sanitizeFiniteNumber(value);
+  return score !== null && score >= 0 && score <= 100 ? score : null;
 }
 
 function round2(value: number): number {
@@ -160,7 +168,7 @@ function buildPreflightSection(preflight: PreflightSnapshot | null): DiagnosticR
 
   return {
     status: preflight.status,
-    readinessScore: sanitizeFiniteNumber(preflight.readinessScore),
+    readinessScore: sanitizeReadinessScore(preflight.readinessScore),
     pass: summary.pass,
     warn: summary.warn,
     block: summary.block
@@ -172,10 +180,14 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): DiagnosticR
     throw new Error("generatedAt deve ser uma data/hora ISO 8601.");
   }
 
+  const originIntegrity: OriginIntegrity =
+    input.mode === "Real" && input.inventory?.isMock === true ? "MOCK_DATA_IN_REAL_MODE" : "CONSISTENT";
+
   const report: DiagnosticReport = {
     schemaVersion: DIAGNOSTIC_REPORT_SCHEMA_VERSION,
     generatedAt: input.generatedAt,
     origin: input.mode === "Real" ? "REAL" : "DEMO",
+    originIntegrity,
     system: buildSystemSection(input.inventory),
     inventoryMetrics: buildInventoryMetrics(input.inventory),
     policySummary: buildPolicySection(input.policySummary),
@@ -187,6 +199,7 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): DiagnosticR
   if (!report.inventoryMetrics) missingSections.push("inventoryMetrics");
   if (!report.policySummary) missingSections.push("policySummary");
   if (!report.preflight) missingSections.push("preflight");
+  if (originIntegrity !== "CONSISTENT") missingSections.push("originIntegrity");
 
   return {
     report,
@@ -197,6 +210,7 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): DiagnosticR
 
 export function canExportDiagnosticReport(report: DiagnosticReport): boolean {
   return (
+    report.originIntegrity === "CONSISTENT" &&
     report.system !== null &&
     report.inventoryMetrics !== null &&
     report.policySummary !== null &&
@@ -205,6 +219,9 @@ export function canExportDiagnosticReport(report: DiagnosticReport): boolean {
 }
 
 export function serializeDiagnosticReport(report: DiagnosticReport): string {
+  if (report.originIntegrity !== "CONSISTENT") {
+    throw new Error("Origem inconsistente: dados de demonstração não podem ser exportados como diagnóstico de máquina real.");
+  }
   if (!canExportDiagnosticReport(report)) {
     throw new Error("Relatório incompleto: a exportação exige inventário, políticas e preflight disponíveis.");
   }

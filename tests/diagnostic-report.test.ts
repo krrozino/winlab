@@ -11,6 +11,7 @@ import {
   canExportDiagnosticReport,
   diagnosticReportFileName,
   DiagnosticReportInput,
+  OriginIntegrity,
   PreflightSnapshot,
   serializeDiagnosticReport
 } from "../src/desktop/diagnostic-report";
@@ -22,7 +23,6 @@ function sensitiveInventory(): MachineInventoryDto {
   return {
     computerName: "LAB-SECRET-01",
     scannedAt: "2026-11-11T11:00:00.000Z",
-    isMock: true,
     windows: {
       caption: "Windows 11 Pro",
       version: "10.0.26100",
@@ -99,7 +99,8 @@ test("exported JSON has the correct schema and ISO 8601 timestamp", () => {
   assert.equal(parsed.schemaVersion, "1.0.0");
   assert.ok(!Number.isNaN(Date.parse(parsed.generatedAt)), "generatedAt must parse as a date");
   assert.match(parsed.generatedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, "generatedAt must be ISO 8601");
-  assert.deepEqual(Object.keys(parsed).sort(), ["generatedAt", "inventoryMetrics", "origin", "policySummary", "preflight", "schemaVersion", "system"]);
+  assert.deepEqual(Object.keys(parsed).sort(), ["generatedAt", "inventoryMetrics", "origin", "originIntegrity", "policySummary", "preflight", "schemaVersion", "system"]);
+  assert.equal(parsed.originIntegrity, "CONSISTENT");
   assert.deepEqual(Object.keys(parsed.system).sort(), ["architecture", "build", "operatingSystem", "version"]);
   assert.deepEqual(
     Object.keys(parsed.inventoryMetrics).sort(),
@@ -132,6 +133,96 @@ test("DEMO and REAL reports are strictly separated by origin", () => {
   );
   assert.match(rendered, /MODO DEMONSTRAÇÃO/);
   assert.equal(rendered.includes("MODO REAL"), false, "DEMO UI must never display the REAL badge");
+});
+
+test("mock inventory in Real mode is flagged as an origin integrity violation and blocked from export", () => {
+  const result = buildDiagnosticReport({ ...fullInput(), inventory: { ...sensitiveInventory(), isMock: true } });
+
+  assert.equal(result.report.originIntegrity, "MOCK_DATA_IN_REAL_MODE");
+  assert.equal(result.isComplete, false);
+  assert.ok(result.missingSections.includes("originIntegrity"));
+  assert.equal(canExportDiagnosticReport(result.report), false);
+  assert.throws(() => serializeDiagnosticReport(result.report), /inconsistente/i);
+});
+
+test("direct serialization cannot bypass the origin integrity guard", () => {
+  const { report } = buildDiagnosticReport({ ...fullInput(), inventory: { ...sensitiveInventory(), isMock: true } });
+
+  assert.equal(report.system !== null && report.inventoryMetrics !== null && report.policySummary !== null && report.preflight !== null, true, "all sections are present; only the origin marker blocks export");
+  assert.equal(canExportDiagnosticReport(report), false);
+  assert.throws(() => serializeDiagnosticReport(report), /Origem inconsistente/i);
+
+  const tampered = { ...report, originIntegrity: undefined as unknown as OriginIntegrity };
+  assert.equal(canExportDiagnosticReport(tampered), false, "missing integrity marker must fail closed");
+  assert.throws(() => serializeDiagnosticReport(tampered));
+});
+
+test("UI warns about origin inconsistency and never shows the positive REAL seal", () => {
+  const rendered = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(DiagnosticReport, {
+      mode: "Real",
+      inventory: { ...sensitiveInventory(), isMock: true },
+      policySummary: validPolicySummary(),
+      preflightData: validPreflight()
+    })
+  );
+
+  assert.equal(rendered.includes("MODO REAL"), false, "inconsistent data must never display the positive REAL badge");
+  assert.match(rendered, /DADOS INCONSISTENTES/);
+  assert.match(rendered, /Inconsist\u00eancia de origem detectada/);
+  assert.match(rendered, /disabled=""/, "export button must stay disabled for inconsistent origin");
+});
+
+test("Demo mode with mock inventory remains exportable as DEMO", () => {
+  const result = buildDiagnosticReport({ ...fullInput("Demo"), inventory: { ...sensitiveInventory(), isMock: true } });
+
+  assert.equal(result.report.origin, "DEMO");
+  assert.equal(result.report.originIntegrity, "CONSISTENT");
+  assert.equal(result.isComplete, true);
+  assert.equal(canExportDiagnosticReport(result.report), true);
+});
+
+test("Real mode with genuine inventory (isMock absent or false) remains exportable as REAL", () => {
+  const absent = buildDiagnosticReport(fullInput());
+  assert.equal(absent.report.originIntegrity, "CONSISTENT");
+  assert.equal(absent.isComplete, true);
+  assert.equal(canExportDiagnosticReport(absent.report), true);
+
+  const explicitFalse = buildDiagnosticReport({ ...fullInput(), inventory: { ...sensitiveInventory(), isMock: false } });
+  assert.equal(explicitFalse.report.originIntegrity, "CONSISTENT");
+  assert.equal(canExportDiagnosticReport(explicitFalse.report), true);
+});
+
+test("readiness score outside 0-100 becomes unavailable", () => {
+  const cases: Array<[number, number | null]> = [
+    [-1, null],
+    [0, 0],
+    [100, 100],
+    [101, null],
+    [Number.NaN, null],
+    [Number.POSITIVE_INFINITY, null],
+    [Number.NEGATIVE_INFINITY, null]
+  ];
+
+  for (const [score, expected] of cases) {
+    const { report, isComplete } = buildDiagnosticReport({
+      ...fullInput(),
+      preflight: { status: "PASS", readinessScore: score, summary: { pass: 8, warn: 2, block: 0 } }
+    });
+    assert.equal(report.preflight?.readinessScore, expected, `readiness ${score} must become ${JSON.stringify(expected)}`);
+    assert.equal(isComplete, true, "an unavailable readiness must not invalidate the whole preflight section");
+  }
+
+  const unavailable = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(DiagnosticReport, {
+      mode: "Real",
+      inventory: sensitiveInventory(),
+      policySummary: validPolicySummary(),
+      preflightData: { status: "PASS", readinessScore: -5, summary: { pass: 8, warn: 2, block: 0 } }
+    })
+  );
+  assert.match(unavailable, /Indispon\u00edvel/);
+  assert.equal(unavailable.includes("-5/100"), false, "out-of-range readiness must never render as a score");
 });
 
 test("exported content contains no personal data, paths, app names or identifiers", () => {

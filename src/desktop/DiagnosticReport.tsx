@@ -80,7 +80,8 @@ export function DiagnosticReport({
     [mode, inventory, policySummary, preflightData]
   );
   const hasAnyData = report.system !== null || report.policySummary !== null || report.preflight !== null;
-  const canExport = isComplete && !isScanning && !scanError;
+  const hasOriginConflict = report.originIntegrity !== "CONSISTENT";
+  const canExport = isComplete && !hasOriginConflict && !isScanning && !scanError;
 
   function handleExport() {
     if (!report || !canExportDiagnosticReport(report)) {
@@ -115,9 +116,28 @@ export function DiagnosticReport({
             Consolidação somente leitura do inventário, das políticas e do preflight. Nenhuma alteração é aplicada.
           </small>
         </div>
-        <span
-          role="status"
-          aria-label={isDemo ? "Origem do relatório: modo demonstração" : "Origem do relatório: máquina real"}
+        {hasOriginConflict ? (
+          <span
+            role="status"
+            aria-label="Inconsistência de origem: dados de demonstração recebidos no modo Real"
+            style={{
+              background: "rgba(255, 107, 107, 0.12)",
+              border: "2px solid var(--danger)",
+              color: "var(--danger)",
+              borderRadius: 10,
+              padding: "8px 14px",
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase"
+            }}
+          >
+            DADOS INCONSISTENTES — ORIGEM NÃO CONFIÁVEL
+          </span>
+        ) : (
+          <span
+            role="status"
+            aria-label={isDemo ? "Origem do relatório: modo demonstração" : "Origem do relatório: máquina real"}
           style={{
             background: isDemo ? "rgba(255, 122, 24, 0.12)" : "rgba(83, 209, 138, 0.12)",
             border: `2px solid ${isDemo ? "var(--accent)" : "var(--success)"}`,
@@ -130,9 +150,23 @@ export function DiagnosticReport({
             textTransform: "uppercase"
           }}
         >
-          {isDemo ? "MODO DEMONSTRAÇÃO — DADOS FICTÍCIOS" : "MODO REAL — DIAGNÓSTICO DESTA MÁQUINA"}
-        </span>
+            {isDemo ? "MODO DEMONSTRAÇÃO — DADOS FICTÍCIOS" : "MODO REAL — DIAGNÓSTICO DESTA MÁQUINA"}
+          </span>
+        )}
       </div>
+
+      {hasOriginConflict ? (
+        <div
+          role="alert"
+          style={{ background: "var(--panel)", border: "1px solid var(--danger)", borderRadius: 12, padding: 20, marginBottom: 16 }}
+        >
+          <strong style={{ color: "var(--danger)" }}>Inconsistência de origem detectada</strong>
+          <p style={{ color: "var(--muted)", fontSize: 13, margin: "8px 0 0" }}>
+            O modo Real recebeu dados de demonstração (isMock). Este relatório não representa um diagnóstico desta máquina
+            e a exportação permanece bloqueada até que uma consulta real seja concluída.
+          </p>
+        </div>
+      ) : null}
 
       {scanError ? (
         <div
@@ -267,9 +301,11 @@ export function DiagnosticReport({
         </button>
         {!canExport ? (
           <small style={{ color: "var(--muted)", fontSize: 12 }}>
-            {isComplete
-              ? "Exportação indisponível durante carregamento ou falha de consulta."
-              : "A exportação exige inventário, políticas e preflight disponíveis e válidos."}
+            {hasOriginConflict
+              ? "Exportação bloqueada: inconsistência de origem detectada (dados de demonstração no modo Real)."
+              : isComplete
+                ? "Exportação indisponível durante carregamento ou falha de consulta."
+                : "A exportação exige inventário, políticas e preflight disponíveis e válidos."}
           </small>
         ) : null}
         <span role="status" aria-live="polite" style={{ fontSize: 12 }}>
