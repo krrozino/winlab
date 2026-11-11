@@ -86,6 +86,17 @@ namespace WinLab.Contracts.Transactions
             {
                 string txId = SanitizeTransactionId(request.TransactionId);
 
+                if (request.Policies == null || request.Policies.Count == 0)
+                {
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = "A lista de políticas solicitadas não pode ser nula ou vazia."
+                    };
+                }
+
                 var tx = new TransactionDto
                 {
                     TransactionId = txId,

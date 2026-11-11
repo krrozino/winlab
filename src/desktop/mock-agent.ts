@@ -5,6 +5,7 @@ import {
   IpcEnvelope,
   IpcResponse,
   MachineInventoryDto,
+  PolicyState,
   PolicyStateSummaryDto,
   PolicyItemDto
 } from "./contracts";
@@ -23,6 +24,22 @@ const FORBIDDEN_SHELL_PATTERNS = [
   "downloadstring",
   "system.diagnostics.process",
   "wscript.shell"
+];
+
+const VALID_POLICY_STATES: readonly PolicyState[] = [
+  "NotConfigured",
+  "Allowed",
+  "Blocked",
+  "Applied",
+  "PendingLogoff",
+  "PendingReboot",
+  "PendingAppRestart",
+  "PendingFirstLogon",
+  "Drifted",
+  "Failed",
+  "Inconclusive",
+  "NotSupported",
+  "Reverted"
 ];
 
 const DISALLOWED_PAYLOAD_COMMAND_FIELDS = [
@@ -125,7 +142,7 @@ export function validateEnvelopeSchema(envelope: unknown): { isValid: boolean; e
 export class MockDesktopAgent implements DesktopIpcTransport {
   public readonly isRunning = true;
   public readonly mode = "Unprivileged Mock (In-Memory Development)";
-  private readonly policyStates: Map<string, string> = new Map();
+  private readonly policyStates: Map<string, PolicyState> = new Map();
   private readonly transactions: Map<string, any> = new Map();
 
   public async handleRequest<T = unknown>(envelope: IpcEnvelope): Promise<IpcResponse<T>> {
@@ -307,11 +324,12 @@ export class MockDesktopAgent implements DesktopIpcTransport {
         }
 
         const rawPolicies = Array.isArray(payload.policies) ? payload.policies : [];
-        const policies = rawPolicies as Array<{ policyId: string; desiredState: string }>;
+        const policies = rawPolicies as Array<{ policyId: string; desiredState: PolicyState }>;
         const txId = typeof payload.transactionId === "string" && payload.transactionId ? payload.transactionId : crypto.randomUUID();
 
         for (const item of policies) {
-          this.policyStates.set(item.policyId, item.desiredState || "Blocked");
+          const desired = VALID_POLICY_STATES.includes(item.desiredState) ? item.desiredState : "Blocked";
+          this.policyStates.set(item.policyId, desired);
         }
 
         const txRecord = {
@@ -535,11 +553,11 @@ export class MockDesktopAgent implements DesktopIpcTransport {
 
   public getMockMilestone3PolicyStates(): PolicyStateSummaryDto {
     const items: PolicyItemDto[] = MILESTONE_3_POLICIES.map((p) => {
-      const raw = this.policyStates.get(p.id) ?? "NotConfigured";
+      const raw: PolicyState = this.policyStates.get(p.id) ?? "NotConfigured";
       const isBlocked = raw === "Blocked" || raw === "Applied";
 
-      let effective: any = "NotConfigured";
-      let current: any = "NotConfigured";
+      let effective: PolicyState = "NotConfigured";
+      let current: PolicyState = "NotConfigured";
 
       if (isBlocked) {
         if (p.requiresLogoff) {

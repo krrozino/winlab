@@ -422,6 +422,91 @@ namespace WinLab.Tests
                 if (File.Exists(escapeTarget)) File.Delete(escapeTarget);
             }
         }
+
+        // =========================================================================
+        // 7. Null or Empty Policies Collection (Controlled Failure, No NRE)
+        // =========================================================================
+
+        [Fact]
+        public async Task ApplyTransaction_NullPolicies_MustFailGracefullyWithoutException()
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: p => false);
+            string testDir = CreateTempTransactionDir();
+
+            try
+            {
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                var request = new ApplyTransactionRequestDto
+                {
+                    TransactionId = $"tx-null-policies-{Guid.NewGuid():N}",
+                    TargetUserName = "Aluno",
+                    TargetUserSid = "S-1-5-21-999-1002",
+                    Policies = null!
+                };
+
+                var result = await engine.ApplyTransactionAsync(request);
+
+                Assert.False(result.Success);
+                Assert.Equal(TransactionStatus.Failed, result.Status);
+                Assert.False(string.IsNullOrWhiteSpace(result.Message));
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
+        [Fact]
+        public async Task ApplyTransaction_EmptyPolicies_MustFailGracefullyWithoutCommit()
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: p => false);
+            string testDir = CreateTempTransactionDir();
+
+            try
+            {
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                var request = new ApplyTransactionRequestDto
+                {
+                    TransactionId = $"tx-empty-policies-{Guid.NewGuid():N}",
+                    TargetUserName = "Aluno",
+                    TargetUserSid = "S-1-5-21-999-1002",
+                    Policies = new List<PolicyApplyItemDto>()
+                };
+
+                var result = await engine.ApplyTransactionAsync(request);
+
+                Assert.False(result.Success);
+                Assert.Equal(TransactionStatus.Failed, result.Status);
+                Assert.Equal(0, result.AppliedCount);
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
+        // =========================================================================
+        // 8. TransactionId Sanitization Hardening (No Path Separators Escape)
+        // =========================================================================
+
+        [Theory]
+        [InlineData("../traversal_escape")]
+        [InlineData("..\\..\\traversal_escape")]
+        [InlineData("sub/dir/escape")]
+        [InlineData("   ")]
+        [InlineData("")]
+        public void SanitizeTransactionId_AdversarialInputs_MustNeverEscapeTransactionDirectory(string rawId)
+        {
+            string sanitized = TransactionEngine.SanitizeTransactionId(rawId);
+
+            Assert.False(string.IsNullOrWhiteSpace(sanitized));
+            Assert.DoesNotContain('/', sanitized);
+            Assert.Equal(Path.GetFileName(sanitized), sanitized);
+        }
     }
 }
 
