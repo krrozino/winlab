@@ -139,6 +139,7 @@ export interface BaselineCreationResultDto {
 
 export type PolicyRisk = "Low" | "Medium" | "High" | "Critical";
 export type PolicyScope = "User" | "Device" | "Machine";
+export type PolicyDesiredState = "NotConfigured" | "Allowed" | "Blocked";
 export type PolicyState =
   | "NotConfigured"
   | "Allowed"
@@ -162,8 +163,8 @@ export interface PolicyItemDto {
   scope: PolicyScope;
   risk: PolicyRisk;
   currentState: PolicyState;
-  desiredState: PolicyState;
-  configuredState?: PolicyState;
+  desiredState: PolicyDesiredState;
+  configuredState?: PolicyDesiredState;
   effectiveState?: PolicyState;
   requiresRestart: boolean;
   requiresLogoff: boolean;

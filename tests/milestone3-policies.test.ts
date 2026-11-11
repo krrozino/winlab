@@ -333,7 +333,8 @@ test("MockDesktopAgent handles adversarial unexpected inputs and malformed paylo
     action: IPC_CONSTANTS.ACTION_APPLY_TRANSACTION,
     payload: null
   });
-  assert.equal(nullPayloadRes.success, true); // Safely handles empty/null payload as 0 policies
+  assert.equal(nullPayloadRes.success, false); // M3 Iter 2 Round 2: missing policies list is a controlled failure, never a 0-policy commit
+  assert.equal(nullPayloadRes.errorCode, "INVALID_POLICY_REQUEST");
 
   // 3. Payload containing forbidden command property
   const forbiddenFieldRes = await agent.handleRequest({

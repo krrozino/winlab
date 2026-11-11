@@ -68,13 +68,110 @@ namespace WinLab.Contracts.Transactions
                 return Guid.NewGuid().ToString("D");
             }
 
-            string clean = Path.GetFileName(transactionId.Trim());
+            string clean = transactionId.Trim();
+
+            // OS-independent hardening: neutralize path separators, traversal components,
+            // invalid filename characters and control characters regardless of the host
+            // platform's Path semantics, so the final file can never leave the transaction dir.
+            clean = clean.Replace('/', '_').Replace('\\', '_');
             foreach (char c in Path.GetInvalidFileNameChars())
             {
                 clean = clean.Replace(c, '_');
             }
 
-            return string.IsNullOrWhiteSpace(clean) ? Guid.NewGuid().ToString("D") : clean;
+            var chars = clean.ToCharArray();
+            for (int i = 0; i < chars.Length; i++)
+            {
+                if (char.IsControl(chars[i]))
+                {
+                    chars[i] = '_';
+                }
+            }
+            clean = new string(chars);
+
+            if (string.IsNullOrWhiteSpace(clean) || clean == "." || clean == "..")
+            {
+                return Guid.NewGuid().ToString("D");
+            }
+
+            return clean;
+        }
+
+        private static readonly string[] ExecutableDesiredStateNames =
+        {
+            nameof(PolicyDesiredState.NotConfigured),
+            nameof(PolicyDesiredState.Blocked)
+        };
+
+        public static bool TryResolveDesiredState(string? rawDesiredState, out PolicyDesiredState desired, out string? error)
+        {
+            desired = PolicyDesiredState.NotConfigured;
+            error = null;
+
+            if (string.IsNullOrWhiteSpace(rawDesiredState))
+            {
+                error = "DesiredState ausente ou vazio. Valores suportados: NotConfigured, Blocked.";
+                return false;
+            }
+
+            if (rawDesiredState.Trim().Length != rawDesiredState.Length)
+            {
+                error = $"DesiredState '{rawDesiredState}' contém espaços não permitidos. Use o nome exato do estado (NotConfigured, Blocked).";
+                return false;
+            }
+
+            if (rawDesiredState.IndexOfAny(new[] { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' }) >= 0)
+            {
+                error = $"DesiredState '{rawDesiredState}' usa representação numérica, que não é aceita. Use o nome do estado (NotConfigured, Blocked).";
+                return false;
+            }
+
+            if (string.Equals(rawDesiredState, nameof(PolicyDesiredState.Allowed), StringComparison.OrdinalIgnoreCase))
+            {
+                error = "BLOCKED — CONTRACT DECISION REQUIRED: DesiredState 'Allowed' é reservado no contrato e não é executável no M3; não pode ser convertido silenciosamente para NotConfigured ou Blocked.";
+                return false;
+            }
+
+            foreach (string name in ExecutableDesiredStateNames)
+            {
+                if (string.Equals(rawDesiredState, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    desired = string.Equals(name, nameof(PolicyDesiredState.Blocked), StringComparison.OrdinalIgnoreCase)
+                        ? PolicyDesiredState.Blocked
+                        : PolicyDesiredState.NotConfigured;
+                    return true;
+                }
+            }
+
+            error = $"DesiredState '{rawDesiredState}' é desconhecido, composto, operacional ou incompatível com o contrato. Valores executáveis no M3: NotConfigured, Blocked.";
+            return false;
+        }
+
+        private bool TryResolveTransactionFilePath(string transactionId, out string finalPath)
+        {
+            finalPath = string.Empty;
+            string safeId = SanitizeTransactionId(transactionId);
+            if (string.IsNullOrWhiteSpace(safeId))
+            {
+                return false;
+            }
+
+            string fullDir = Path.GetFullPath(_transactionDir);
+            if (!fullDir.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) &&
+                !fullDir.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+            {
+                fullDir += Path.DirectorySeparatorChar;
+            }
+
+            string candidate = Path.Combine(_transactionDir, $"{safeId}.json");
+            string fullFile = Path.GetFullPath(candidate);
+            if (!fullFile.StartsWith(fullDir, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            finalPath = candidate;
+            return true;
         }
 
         public async Task<ApplyTransactionResultDto> ApplyTransactionAsync(
@@ -86,6 +183,17 @@ namespace WinLab.Contracts.Transactions
             {
                 string txId = SanitizeTransactionId(request.TransactionId);
 
+                if (request.Policies == null || request.Policies.Count == 0)
+                {
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = "A lista de políticas solicitadas não pode ser nula ou vazia."
+                    };
+                }
+
                 var tx = new TransactionDto
                 {
                     TransactionId = txId,
@@ -95,10 +203,77 @@ namespace WinLab.Contracts.Transactions
                     TargetUserSid = request.TargetUserSid
                 };
 
+                // Atomic cross-instance reservation of the normalized TransactionId.
+                // FileMode.CreateNew fails when the file already exists (O_CREAT|O_EXCL on
+                // POSIX, CREATE_NEW on NTFS), so exactly one engine — in-process or
+                // cross-process — can claim an id before any baseline capture or registry
+                // mutation. A crash after the reservation leaves an orphan record that
+                // squats the id (fail-safe: nothing pre-existing is ever overwritten).
+                if (!TryResolveTransactionFilePath(txId, out string reservedPath))
+                {
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = $"TransactionId '{txId}' não pôde ser resolvido para o diretório autorizado de transações."
+                    };
+                }
+
+                try
+                {
+                    await WriteTransactionRecordAsync(tx, reservedPath, FileMode.CreateNew, ct);
+                }
+                catch (IOException) when (File.Exists(reservedPath))
+                {
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = $"TransactionId '{txId}' já pertence a uma transação persistida. A solicitação foi rejeitada sem modificar o registro anterior (baseline e rollback preservados)."
+                    };
+                }
+
                 // 1. Resolve requested policy handlers
                 var handlers = new List<(IPolicyHandler Handler, PolicyDesiredState DesiredState)>();
                 foreach (var item in request.Policies)
                 {
+                    if (item == null || string.IsNullOrWhiteSpace(item.PolicyId))
+                    {
+                        tx.Status = TransactionStatus.Failed;
+                        tx.FailureReason = "Item de política nulo ou sem identificador. A solicitação foi rejeitada sem aplicar nenhuma política.";
+                        await SaveTransactionAsync(tx, ct);
+
+                        return new ApplyTransactionResultDto
+                        {
+                            TransactionId = txId,
+                            Status = TransactionStatus.Failed,
+                            Success = false,
+                            Message = tx.FailureReason ?? string.Empty
+                        };
+                    }
+
+                    // Canonical PolicyId rule (shared with the TS mock): identifiers must be
+                    // canonical — no leading/trailing whitespace — while matching stays
+                    // case-insensitive, consistent with the catalog's OrdinalIgnoreCase lookup.
+                    if (item.PolicyId.Trim().Length != item.PolicyId.Length)
+                    {
+                        tx.Status = TransactionStatus.Failed;
+                        tx.FailedPolicyId = item.PolicyId;
+                        tx.FailureReason = $"PolicyId '{item.PolicyId}' contém espaços nas extremidades. Use o identificador canônico do catálogo.";
+                        await SaveTransactionAsync(tx, ct);
+
+                        return new ApplyTransactionResultDto
+                        {
+                            TransactionId = txId,
+                            Status = TransactionStatus.Failed,
+                            Success = false,
+                            FailedPolicyId = item.PolicyId,
+                            Message = tx.FailureReason ?? string.Empty
+                        };
+                    }
+
                     var handler = _catalog.GetPolicy(item.PolicyId);
                     if (handler == null)
                     {
@@ -113,13 +288,26 @@ namespace WinLab.Contracts.Transactions
                             Status = TransactionStatus.Failed,
                             Success = false,
                             FailedPolicyId = item.PolicyId,
-                            Message = tx.FailureReason
+                            Message = tx.FailureReason ?? string.Empty
                         };
                     }
 
-                    var desired = Enum.TryParse<PolicyDesiredState>(item.DesiredState, true, out var ds)
-                        ? ds
-                        : PolicyDesiredState.Blocked;
+                    if (!TryResolveDesiredState(item.DesiredState, out var desired, out var desiredError))
+                    {
+                        tx.Status = TransactionStatus.Failed;
+                        tx.FailedPolicyId = item.PolicyId;
+                        tx.FailureReason = desiredError;
+                        await SaveTransactionAsync(tx, ct);
+
+                        return new ApplyTransactionResultDto
+                        {
+                            TransactionId = txId,
+                            Status = TransactionStatus.Failed,
+                            Success = false,
+                            FailedPolicyId = item.PolicyId,
+                            Message = tx.FailureReason ?? string.Empty
+                        };
+                    }
 
                     handlers.Add((handler, desired));
                 }
@@ -145,7 +333,7 @@ namespace WinLab.Contracts.Transactions
                             TransactionId = txId,
                             Status = TransactionStatus.Failed,
                             Success = false,
-                            Message = tx.FailureReason
+                            Message = tx.FailureReason ?? string.Empty
                         };
                     }
                 }
@@ -427,6 +615,23 @@ namespace WinLab.Contracts.Transactions
             return list.OrderByDescending(t => t.CreatedAt).ToList();
         }
 
+        private async Task WriteTransactionRecordAsync(TransactionDto tx, string finalPath, FileMode mode, CancellationToken ct)
+        {
+            if (!Directory.Exists(_transactionDir))
+            {
+                Directory.CreateDirectory(_transactionDir);
+            }
+
+            string json = JsonSerializer.Serialize(tx, new JsonSerializerOptions { WriteIndented = true });
+
+            await using (var stream = new FileStream(finalPath, mode, FileAccess.Write, FileShare.None))
+            await using (var writer = new StreamWriter(stream))
+            {
+                await writer.WriteAsync(json.AsMemory(), ct);
+                await writer.FlushAsync(ct);
+            }
+        }
+
         private async Task SaveTransactionAsync(TransactionDto tx, CancellationToken ct)
         {
             try
@@ -436,9 +641,12 @@ namespace WinLab.Contracts.Transactions
                     Directory.CreateDirectory(_transactionDir);
                 }
 
-                string safeId = SanitizeTransactionId(tx.TransactionId);
-                string finalPath = Path.Combine(_transactionDir, $"{safeId}.json");
-                string tempPath = $"{finalPath}.tmp";
+                if (!TryResolveTransactionFilePath(tx.TransactionId, out string finalPath))
+                {
+                    return;
+                }
+
+                string tempPath = $"{finalPath}.{Guid.NewGuid():N}.tmp";
 
                 string json = JsonSerializer.Serialize(tx, new JsonSerializerOptions { WriteIndented = true });
                 await File.WriteAllTextAsync(tempPath, json, ct);
@@ -454,8 +662,7 @@ namespace WinLab.Contracts.Transactions
         private async Task<TransactionDto?> LoadTransactionAsync(string transactionId, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(transactionId)) return null;
-            string safeId = SanitizeTransactionId(transactionId);
-            string path = Path.Combine(_transactionDir, $"{safeId}.json");
+            if (!TryResolveTransactionFilePath(transactionId, out string path)) return null;
             if (!File.Exists(path)) return null;
 
             string json = await File.ReadAllTextAsync(path, ct);

@@ -190,7 +190,7 @@ namespace WinLab.Contracts.Transactions
         public string PolicyId { get; set; } = string.Empty;
 
         [JsonPropertyName("desiredState")]
-        public string DesiredState { get; set; } = "Blocked";
+        public string DesiredState { get; set; } = string.Empty;
     }
 
     public class ApplyTransactionRequestDto
