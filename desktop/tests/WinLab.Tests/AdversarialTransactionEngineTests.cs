@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using WinLab.Contracts;
 using WinLab.Contracts.Policies;
@@ -490,13 +491,19 @@ namespace WinLab.Tests
         }
 
         // =========================================================================
-        // 8. TransactionId Sanitization Hardening (No Path Separators Escape)
+        // 8. TransactionId Sanitization Hardening (OS-independent)
         // =========================================================================
 
         [Theory]
         [InlineData("../traversal_escape")]
         [InlineData("..\\..\\traversal_escape")]
         [InlineData("sub/dir/escape")]
+        [InlineData("sub\\dir\\escape")]
+        [InlineData("./nested/../escape")]
+        [InlineData("tx\nwith\nnewlines")]
+        [InlineData("tx\twith\ttabs")]
+        [InlineData("..")]
+        [InlineData(".")]
         [InlineData("   ")]
         [InlineData("")]
         public void SanitizeTransactionId_AdversarialInputs_MustNeverEscapeTransactionDirectory(string rawId)
@@ -505,7 +512,314 @@ namespace WinLab.Tests
 
             Assert.False(string.IsNullOrWhiteSpace(sanitized));
             Assert.DoesNotContain('/', sanitized);
+            Assert.DoesNotContain('\\', sanitized);
             Assert.Equal(Path.GetFileName(sanitized), sanitized);
+        }
+
+        [Fact]
+        public async Task ApplyTransaction_AdversarialTransactionId_PersistsOnlyInsideAuthorizedDirectory()
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: p => false);
+            string testDir = CreateTempTransactionDir();
+            string parentDir = Path.GetFullPath(Path.Combine(testDir, ".."));
+            var parentFilesBefore = Directory.GetFiles(parentDir, "*.json", SearchOption.AllDirectories)
+                .Select(f => Path.GetFullPath(f))
+                .ToHashSet(StringComparer.Ordinal);
+
+            try
+            {
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                var request = new ApplyTransactionRequestDto
+                {
+                    TransactionId = "..\\..\\nested_escape",
+                    TargetUserName = "Aluno",
+                    TargetUserSid = "S-1-5-21-999-1002",
+                    Policies = new List<PolicyApplyItemDto>
+                    {
+                        new() { PolicyId = "personalization.wallpaper", DesiredState = "Blocked" }
+                    }
+                };
+
+                var result = await engine.ApplyTransactionAsync(request);
+
+                Assert.True(result.Success);
+
+                var filesInside = Directory.GetFiles(testDir, "*.json", SearchOption.AllDirectories)
+                    .Select(f => Path.GetFullPath(f))
+                    .ToList();
+                Assert.Single(filesInside);
+                Assert.All(filesInside, f => Assert.StartsWith(Path.GetFullPath(testDir), f, StringComparison.Ordinal));
+
+                var parentFilesAfter = Directory.GetFiles(parentDir, "*.json", SearchOption.AllDirectories)
+                    .Select(f => Path.GetFullPath(f))
+                    .ToHashSet(StringComparer.Ordinal);
+                parentFilesAfter.ExceptWith(parentFilesBefore);
+                Assert.All(parentFilesAfter, f => Assert.StartsWith(Path.GetFullPath(testDir), f, StringComparison.Ordinal));
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
+        // =========================================================================
+        // 9. Strict DesiredState Validation (fail-closed, no silent Blocked fallback)
+        // =========================================================================
+
+        private static void AssertZeroMutations(InMemoryRegistryService registry, string userSid)
+        {
+            Assert.False(registry.ValueExists(RegistryHiveType.Users, $@"{userSid}\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop", "NoChangingWallPaper"),
+                "MUTATION DETECTED on user hive!");
+            Assert.False(registry.ValueExists(RegistryHiveType.Users, $@"{userSid}\Software\Policies\Microsoft\Internet Explorer", "NoChangingSoundScheme"),
+                "MUTATION DETECTED on user hive (sounds)!");
+            Assert.False(registry.ValueExists(RegistryHiveType.CurrentUser, @"Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop", "NoChangingWallPaper"),
+                "MUTATION DETECTED on CurrentUser hive!");
+        }
+
+        private static async Task AssertNoCommittedTransaction(TransactionEngine engine)
+        {
+            var txs = await engine.ListTransactionsAsync();
+            Assert.DoesNotContain(txs, t => t.Status == TransactionStatus.Committed);
+        }
+
+        [Theory]
+        [InlineData("Restrict")]
+        [InlineData("Enforce")]
+        [InlineData("Applied")]
+        [InlineData("Drifted")]
+        [InlineData("PendingLogoff")]
+        [InlineData("Reverted")]
+        [InlineData("1")]
+        [InlineData("2")]
+        [InlineData("99")]
+        [InlineData("BLOCKED!")]
+        [InlineData("blocked ")]
+        public async Task ApplyTransaction_InvalidDesiredState_MustFailWithZeroMutations(string invalidDesiredState)
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: p => false);
+            string testDir = CreateTempTransactionDir();
+            const string userSid = "S-1-5-21-999-1002";
+
+            try
+            {
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                var request = new ApplyTransactionRequestDto
+                {
+                    TransactionId = $"tx-invalid-desired-{Guid.NewGuid():N}",
+                    TargetUserName = "Aluno",
+                    TargetUserSid = userSid,
+                    Policies = new List<PolicyApplyItemDto>
+                    {
+                        new() { PolicyId = "personalization.wallpaper", DesiredState = invalidDesiredState }
+                    }
+                };
+
+                var result = await engine.ApplyTransactionAsync(request);
+
+                Assert.False(result.Success);
+                Assert.Equal(TransactionStatus.Failed, result.Status);
+                Assert.Equal("personalization.wallpaper", result.FailedPolicyId);
+                Assert.Equal(0, result.AppliedCount);
+                Assert.False(string.IsNullOrWhiteSpace(result.Message));
+                AssertZeroMutations(registry, userSid);
+                await AssertNoCommittedTransaction(engine);
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task ApplyTransaction_NullOrWhitespaceDesiredState_MustFailWithoutMutations(string? invalidDesiredState)
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: p => false);
+            string testDir = CreateTempTransactionDir();
+            const string userSid = "S-1-5-21-999-1002";
+
+            try
+            {
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                var request = new ApplyTransactionRequestDto
+                {
+                    TransactionId = $"tx-null-desired-{Guid.NewGuid():N}",
+                    TargetUserName = "Aluno",
+                    TargetUserSid = userSid,
+                    Policies = new List<PolicyApplyItemDto>
+                    {
+                        new() { PolicyId = "personalization.wallpaper", DesiredState = invalidDesiredState! }
+                    }
+                };
+
+                var result = await engine.ApplyTransactionAsync(request);
+
+                Assert.False(result.Success);
+                Assert.Equal(TransactionStatus.Failed, result.Status);
+                AssertZeroMutations(registry, userSid);
+                await AssertNoCommittedTransaction(engine);
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
+        [Fact]
+        public async Task ApplyTransaction_AllowedDesiredState_MustFailClosedPendingContractDecision()
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: p => false);
+            string testDir = CreateTempTransactionDir();
+            const string userSid = "S-1-5-21-999-1002";
+
+            try
+            {
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                var request = new ApplyTransactionRequestDto
+                {
+                    TransactionId = $"tx-allowed-desired-{Guid.NewGuid():N}",
+                    TargetUserName = "Aluno",
+                    TargetUserSid = userSid,
+                    Policies = new List<PolicyApplyItemDto>
+                    {
+                        new() { PolicyId = "personalization.wallpaper", DesiredState = "Allowed" },
+                        new() { PolicyId = "personalization.sounds", DesiredState = "allowed" }
+                    }
+                };
+
+                var result = await engine.ApplyTransactionAsync(request);
+
+                Assert.False(result.Success);
+                Assert.Equal(TransactionStatus.Failed, result.Status);
+                Assert.Contains("CONTRACT DECISION REQUIRED", result.Message, StringComparison.OrdinalIgnoreCase);
+                AssertZeroMutations(registry, userSid);
+                await AssertNoCommittedTransaction(engine);
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
+        [Fact]
+        public async Task ApplyTransaction_MixedValidThenInvalid_MustNotApplyPartially()
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: p => false);
+            string testDir = CreateTempTransactionDir();
+            const string userSid = "S-1-5-21-999-1002";
+
+            try
+            {
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                var request = new ApplyTransactionRequestDto
+                {
+                    TransactionId = $"tx-mixed-{Guid.NewGuid():N}",
+                    TargetUserName = "Aluno",
+                    TargetUserSid = userSid,
+                    Policies = new List<PolicyApplyItemDto>
+                    {
+                        new() { PolicyId = "personalization.wallpaper", DesiredState = "Blocked" },
+                        new() { PolicyId = "personalization.sounds", DesiredState = "Restrict" }
+                    }
+                };
+
+                var result = await engine.ApplyTransactionAsync(request);
+
+                Assert.False(result.Success);
+                Assert.Equal(TransactionStatus.Failed, result.Status);
+                Assert.Equal("personalization.sounds", result.FailedPolicyId);
+                Assert.Equal(0, result.AppliedCount);
+                AssertZeroMutations(registry, userSid);
+                await AssertNoCommittedTransaction(engine);
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
+        [Fact]
+        public async Task ApplyTransaction_NullPolicyItem_MustFailGracefullyWithoutException()
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: p => false);
+            string testDir = CreateTempTransactionDir();
+            const string userSid = "S-1-5-21-999-1002";
+
+            try
+            {
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                var request = new ApplyTransactionRequestDto
+                {
+                    TransactionId = $"tx-null-item-{Guid.NewGuid():N}",
+                    TargetUserName = "Aluno",
+                    TargetUserSid = userSid,
+                    Policies = new List<PolicyApplyItemDto> { null! }
+                };
+
+                var result = await engine.ApplyTransactionAsync(request);
+
+                Assert.False(result.Success);
+                Assert.Equal(TransactionStatus.Failed, result.Status);
+                Assert.False(string.IsNullOrWhiteSpace(result.Message));
+                AssertZeroMutations(registry, userSid);
+                await AssertNoCommittedTransaction(engine);
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task ApplyTransaction_EmptyOrWhitespacePolicyId_MustFailGracefully(string invalidPolicyId)
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: p => false);
+            string testDir = CreateTempTransactionDir();
+            const string userSid = "S-1-5-21-999-1002";
+
+            try
+            {
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                var request = new ApplyTransactionRequestDto
+                {
+                    TransactionId = $"tx-empty-policyid-{Guid.NewGuid():N}",
+                    TargetUserName = "Aluno",
+                    TargetUserSid = userSid,
+                    Policies = new List<PolicyApplyItemDto>
+                    {
+                        new() { PolicyId = invalidPolicyId, DesiredState = "Blocked" }
+                    }
+                };
+
+                var result = await engine.ApplyTransactionAsync(request);
+
+                Assert.False(result.Success);
+                Assert.Equal(TransactionStatus.Failed, result.Status);
+                AssertZeroMutations(registry, userSid);
+                await AssertNoCommittedTransaction(engine);
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
         }
     }
 }

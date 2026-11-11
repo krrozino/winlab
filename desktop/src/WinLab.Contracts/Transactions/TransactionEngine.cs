@@ -68,13 +68,103 @@ namespace WinLab.Contracts.Transactions
                 return Guid.NewGuid().ToString("D");
             }
 
-            string clean = Path.GetFileName(transactionId.Trim());
+            string clean = transactionId.Trim();
+
+            // OS-independent hardening: neutralize path separators, traversal components,
+            // invalid filename characters and control characters regardless of the host
+            // platform's Path semantics, so the final file can never leave the transaction dir.
+            clean = clean.Replace('/', '_').Replace('\\', '_');
             foreach (char c in Path.GetInvalidFileNameChars())
             {
                 clean = clean.Replace(c, '_');
             }
 
-            return string.IsNullOrWhiteSpace(clean) ? Guid.NewGuid().ToString("D") : clean;
+            var chars = clean.ToCharArray();
+            for (int i = 0; i < chars.Length; i++)
+            {
+                if (char.IsControl(chars[i]))
+                {
+                    chars[i] = '_';
+                }
+            }
+            clean = new string(chars);
+
+            if (string.IsNullOrWhiteSpace(clean) || clean == "." || clean == "..")
+            {
+                return Guid.NewGuid().ToString("D");
+            }
+
+            return clean;
+        }
+
+        public static bool TryResolveDesiredState(string? rawDesiredState, out PolicyDesiredState desired, out string? error)
+        {
+            desired = default;
+            error = null;
+
+            if (string.IsNullOrWhiteSpace(rawDesiredState))
+            {
+                error = "DesiredState ausente ou vazio. Valores suportados: NotConfigured, Blocked.";
+                return false;
+            }
+
+            string trimmed = rawDesiredState.Trim();
+
+            if (trimmed.Length != rawDesiredState.Length)
+            {
+                error = $"DesiredState '{rawDesiredState}' contém espaços não permitidos. Use o nome exato do estado (NotConfigured, Blocked).";
+                return false;
+            }
+
+            if (trimmed.IndexOfAny(new[] { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' }) >= 0)
+            {
+                error = $"DesiredState '{rawDesiredState}' usa representação numérica, que não é aceita. Use o nome do estado (NotConfigured, Blocked).";
+                return false;
+            }
+
+            if (string.Equals(trimmed, nameof(PolicyDesiredState.Allowed), StringComparison.OrdinalIgnoreCase))
+            {
+                error = "BLOCKED — CONTRACT DECISION REQUIRED: DesiredState 'Allowed' não possui semântica implementada nos handlers e não pode ser convertido silenciosamente para NotConfigured ou Blocked.";
+                return false;
+            }
+
+            if (Enum.TryParse(trimmed, ignoreCase: true, out PolicyDesiredState parsed)
+                && Enum.IsDefined(parsed)
+                && (parsed == PolicyDesiredState.NotConfigured || parsed == PolicyDesiredState.Blocked))
+            {
+                desired = parsed;
+                return true;
+            }
+
+            error = $"DesiredState '{rawDesiredState}' é desconhecido, operacional ou incompatível com o contrato. Valores suportados: NotConfigured, Blocked.";
+            return false;
+        }
+
+        private bool TryResolveTransactionFilePath(string transactionId, out string finalPath)
+        {
+            finalPath = string.Empty;
+            string safeId = SanitizeTransactionId(transactionId);
+            if (string.IsNullOrWhiteSpace(safeId))
+            {
+                return false;
+            }
+
+            string fullDir = Path.GetFullPath(_transactionDir);
+            if (!fullDir.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) &&
+                !fullDir.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+            {
+                fullDir += Path.DirectorySeparatorChar;
+            }
+
+            string candidate = Path.Combine(_transactionDir, $"{safeId}.json");
+            string fullFile = Path.GetFullPath(candidate);
+            if (!fullFile.StartsWith(fullDir, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            finalPath = candidate;
+            return true;
         }
 
         public async Task<ApplyTransactionResultDto> ApplyTransactionAsync(
@@ -110,6 +200,21 @@ namespace WinLab.Contracts.Transactions
                 var handlers = new List<(IPolicyHandler Handler, PolicyDesiredState DesiredState)>();
                 foreach (var item in request.Policies)
                 {
+                    if (item == null || string.IsNullOrWhiteSpace(item.PolicyId))
+                    {
+                        tx.Status = TransactionStatus.Failed;
+                        tx.FailureReason = "Item de política nulo ou sem identificador. A solicitação foi rejeitada sem aplicar nenhuma política.";
+                        await SaveTransactionAsync(tx, ct);
+
+                        return new ApplyTransactionResultDto
+                        {
+                            TransactionId = txId,
+                            Status = TransactionStatus.Failed,
+                            Success = false,
+                            Message = tx.FailureReason
+                        };
+                    }
+
                     var handler = _catalog.GetPolicy(item.PolicyId);
                     if (handler == null)
                     {
@@ -128,9 +233,22 @@ namespace WinLab.Contracts.Transactions
                         };
                     }
 
-                    var desired = Enum.TryParse<PolicyDesiredState>(item.DesiredState, true, out var ds)
-                        ? ds
-                        : PolicyDesiredState.Blocked;
+                    if (!TryResolveDesiredState(item.DesiredState, out var desired, out var desiredError))
+                    {
+                        tx.Status = TransactionStatus.Failed;
+                        tx.FailedPolicyId = item.PolicyId;
+                        tx.FailureReason = desiredError;
+                        await SaveTransactionAsync(tx, ct);
+
+                        return new ApplyTransactionResultDto
+                        {
+                            TransactionId = txId,
+                            Status = TransactionStatus.Failed,
+                            Success = false,
+                            FailedPolicyId = item.PolicyId,
+                            Message = tx.FailureReason
+                        };
+                    }
 
                     handlers.Add((handler, desired));
                 }
@@ -447,8 +565,10 @@ namespace WinLab.Contracts.Transactions
                     Directory.CreateDirectory(_transactionDir);
                 }
 
-                string safeId = SanitizeTransactionId(tx.TransactionId);
-                string finalPath = Path.Combine(_transactionDir, $"{safeId}.json");
+                if (!TryResolveTransactionFilePath(tx.TransactionId, out string finalPath))
+                {
+                    return;
+                }
                 string tempPath = $"{finalPath}.tmp";
 
                 string json = JsonSerializer.Serialize(tx, new JsonSerializerOptions { WriteIndented = true });
@@ -465,8 +585,7 @@ namespace WinLab.Contracts.Transactions
         private async Task<TransactionDto?> LoadTransactionAsync(string transactionId, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(transactionId)) return null;
-            string safeId = SanitizeTransactionId(transactionId);
-            string path = Path.Combine(_transactionDir, $"{safeId}.json");
+            if (!TryResolveTransactionFilePath(transactionId, out string path)) return null;
             if (!File.Exists(path)) return null;
 
             string json = await File.ReadAllTextAsync(path, ct);

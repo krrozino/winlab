@@ -5,6 +5,7 @@ import {
   IpcEnvelope,
   IpcResponse,
   MachineInventoryDto,
+  PolicyDesiredState,
   PolicyState,
   PolicyStateSummaryDto,
   PolicyItemDto
@@ -26,21 +27,17 @@ const FORBIDDEN_SHELL_PATTERNS = [
   "wscript.shell"
 ];
 
-const VALID_POLICY_STATES: readonly PolicyState[] = [
-  "NotConfigured",
-  "Allowed",
-  "Blocked",
-  "Applied",
-  "PendingLogoff",
-  "PendingReboot",
-  "PendingAppRestart",
-  "PendingFirstLogon",
-  "Drifted",
-  "Failed",
-  "Inconclusive",
-  "NotSupported",
-  "Reverted"
-];
+const SUPPORTED_DESIRED_STATES: readonly PolicyDesiredState[] = ["NotConfigured", "Blocked"];
+
+function invalidPolicyRequest(envelope: IpcEnvelope, message: string, errorCode: string): IpcResponse<never> {
+  return {
+    id: crypto.randomUUID(),
+    replyToId: envelope.id,
+    success: false,
+    error: message,
+    errorCode
+  };
+}
 
 const DISALLOWED_PAYLOAD_COMMAND_FIELDS = [
   "command",
@@ -142,7 +139,7 @@ export function validateEnvelopeSchema(envelope: unknown): { isValid: boolean; e
 export class MockDesktopAgent implements DesktopIpcTransport {
   public readonly isRunning = true;
   public readonly mode = "Unprivileged Mock (In-Memory Development)";
-  private readonly policyStates: Map<string, PolicyState> = new Map();
+  private readonly policyStates: Map<string, PolicyDesiredState> = new Map();
   private readonly transactions: Map<string, any> = new Map();
 
   public async handleRequest<T = unknown>(envelope: IpcEnvelope): Promise<IpcResponse<T>> {
@@ -323,13 +320,99 @@ export class MockDesktopAgent implements DesktopIpcTransport {
           };
         }
 
-        const rawPolicies = Array.isArray(payload.policies) ? payload.policies : [];
-        const policies = rawPolicies as Array<{ policyId: string; desiredState: PolicyState }>;
         const txId = typeof payload.transactionId === "string" && payload.transactionId ? payload.transactionId : crypto.randomUUID();
 
+        if (!Array.isArray(payload.policies)) {
+          return invalidPolicyRequest(
+            envelope,
+            "A lista de políticas é obrigatória e deve ser um array. A solicitação foi rejeitada sem aplicar nenhuma política.",
+            "INVALID_POLICY_REQUEST"
+          ) as unknown as IpcResponse<T>;
+        }
+
+        const rawPolicies = payload.policies as unknown[];
+        if (rawPolicies.length === 0) {
+          return invalidPolicyRequest(
+            envelope,
+            "A lista de políticas solicitadas não pode ser vazia.",
+            "INVALID_POLICY_REQUEST"
+          ) as unknown as IpcResponse<T>;
+        }
+
+        const policies: Array<{ policyId: string; desiredState: PolicyDesiredState }> = [];
+        for (const entry of rawPolicies) {
+          if (entry === null || typeof entry !== "object") {
+            return invalidPolicyRequest(
+              envelope,
+              "Item de política nulo ou malformado. A solicitação foi rejeitada sem aplicar nenhuma política.",
+              "INVALID_POLICY_REQUEST"
+            ) as unknown as IpcResponse<T>;
+          }
+
+          const record = entry as Record<string, unknown>;
+          const policyId = typeof record.policyId === "string" ? record.policyId.trim() : "";
+          if (!policyId) {
+            return invalidPolicyRequest(
+              envelope,
+              "Item de política sem identificador válido (policyId). A solicitação foi rejeitada sem aplicar nenhuma política.",
+              "INVALID_POLICY_REQUEST"
+            ) as unknown as IpcResponse<T>;
+          }
+
+          if (!MILESTONE_3_POLICIES.some((p) => p.id === policyId)) {
+            return invalidPolicyRequest(
+              envelope,
+              `Política desconhecida no catálogo: '${policyId}'. A solicitação foi rejeitada sem aplicar nenhuma política.`,
+              "INVALID_POLICY_REQUEST"
+            ) as unknown as IpcResponse<T>;
+          }
+
+          const rawDesired = record.desiredState;
+          if (typeof rawDesired === "string" && rawDesired.trim() !== rawDesired) {
+            return invalidPolicyRequest(
+              envelope,
+              `DesiredState '${rawDesired}' contém espaços não permitidos. Use o nome exato do estado (NotConfigured, Blocked).`,
+              "INVALID_POLICY_REQUEST"
+            ) as unknown as IpcResponse<T>;
+          }
+          if (typeof rawDesired === "number") {
+            return invalidPolicyRequest(
+              envelope,
+              `DesiredState '${rawDesired}' usa representação numérica, que não é aceita. Use o nome do estado (NotConfigured, Blocked).`,
+              "INVALID_POLICY_REQUEST"
+            ) as unknown as IpcResponse<T>;
+          }
+          if (typeof rawDesired !== "string" || !rawDesired.trim()) {
+            return invalidPolicyRequest(
+              envelope,
+              `DesiredState ausente, vazio ou de tipo inválido para '${policyId}'. Valores suportados: NotConfigured, Blocked.`,
+              "INVALID_POLICY_REQUEST"
+            ) as unknown as IpcResponse<T>;
+          }
+
+          const normalized = rawDesired.trim().toLowerCase();
+          if (normalized === "allowed") {
+            return invalidPolicyRequest(
+              envelope,
+              "BLOCKED — CONTRACT DECISION REQUIRED: DesiredState 'Allowed' não possui semântica implementada e não pode ser convertido silenciosamente para NotConfigured ou Blocked.",
+              "UNSUPPORTED_DESIRED_STATE"
+            ) as unknown as IpcResponse<T>;
+          }
+
+          const desired = SUPPORTED_DESIRED_STATES.find((s) => s.toLowerCase() === normalized);
+          if (!desired) {
+            return invalidPolicyRequest(
+              envelope,
+              `DesiredState '${rawDesired}' é desconhecido, operacional ou incompatível com o contrato. Valores suportados: NotConfigured, Blocked.`,
+              "INVALID_POLICY_REQUEST"
+            ) as unknown as IpcResponse<T>;
+          }
+
+          policies.push({ policyId, desiredState: desired });
+        }
+
         for (const item of policies) {
-          const desired = VALID_POLICY_STATES.includes(item.desiredState) ? item.desiredState : "Blocked";
-          this.policyStates.set(item.policyId, desired);
+          this.policyStates.set(item.policyId, item.desiredState);
         }
 
         const txRecord = {
@@ -553,8 +636,8 @@ export class MockDesktopAgent implements DesktopIpcTransport {
 
   public getMockMilestone3PolicyStates(): PolicyStateSummaryDto {
     const items: PolicyItemDto[] = MILESTONE_3_POLICIES.map((p) => {
-      const raw: PolicyState = this.policyStates.get(p.id) ?? "NotConfigured";
-      const isBlocked = raw === "Blocked" || raw === "Applied";
+      const raw: PolicyDesiredState = this.policyStates.get(p.id) ?? "NotConfigured";
+      const isBlocked = raw === "Blocked";
 
       let effective: PolicyState = "NotConfigured";
       let current: PolicyState = "NotConfigured";
