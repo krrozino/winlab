@@ -1,0 +1,12 @@
+--- a/desktop/src/WinLab.Agent.Mock/MockAgentService.cs
++++ b/desktop/src/WinLab.Agent.Mock/MockAgentService.cs
+@@ -75,7 +75,8 @@
+                 default:
+                     return IpcResponse<object>.Fail(id, $"Unhandled action: {action}", "UNHANDLED_ACTION");
+             }
+-        }
++            }
++        }
+ 
+         public MachineInventoryDto GetMockInventory()
+         {
