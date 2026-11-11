@@ -183,21 +183,6 @@ namespace WinLab.Contracts.Transactions
             {
                 string txId = SanitizeTransactionId(request.TransactionId);
 
-                // TransactionId collision guard: a new application must never overwrite a
-                // previously persisted transaction (baseline + rollback plan would be lost).
-                // Legitimate status updates within the same transaction are unaffected:
-                // they go through SaveTransactionAsync after this guard has passed.
-                if (TryResolveTransactionFilePath(txId, out string existingPath) && File.Exists(existingPath))
-                {
-                    return new ApplyTransactionResultDto
-                    {
-                        TransactionId = txId,
-                        Status = TransactionStatus.Failed,
-                        Success = false,
-                        Message = $"TransactionId '{txId}' já pertence a uma transação persistida. A solicitação foi rejeitada sem modificar o registro anterior (baseline e rollback preservados)."
-                    };
-                }
-
                 if (request.Policies == null || request.Policies.Count == 0)
                 {
                     return new ApplyTransactionResultDto
@@ -218,6 +203,38 @@ namespace WinLab.Contracts.Transactions
                     TargetUserSid = request.TargetUserSid
                 };
 
+                // Atomic cross-instance reservation of the normalized TransactionId.
+                // FileMode.CreateNew fails when the file already exists (O_CREAT|O_EXCL on
+                // POSIX, CREATE_NEW on NTFS), so exactly one engine — in-process or
+                // cross-process — can claim an id before any baseline capture or registry
+                // mutation. A crash after the reservation leaves an orphan record that
+                // squats the id (fail-safe: nothing pre-existing is ever overwritten).
+                if (!TryResolveTransactionFilePath(txId, out string reservedPath))
+                {
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = $"TransactionId '{txId}' não pôde ser resolvido para o diretório autorizado de transações."
+                    };
+                }
+
+                try
+                {
+                    await WriteTransactionRecordAsync(tx, reservedPath, FileMode.CreateNew, ct);
+                }
+                catch (IOException) when (File.Exists(reservedPath))
+                {
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = $"TransactionId '{txId}' já pertence a uma transação persistida. A solicitação foi rejeitada sem modificar o registro anterior (baseline e rollback preservados)."
+                    };
+                }
+
                 // 1. Resolve requested policy handlers
                 var handlers = new List<(IPolicyHandler Handler, PolicyDesiredState DesiredState)>();
                 foreach (var item in request.Policies)
@@ -233,7 +250,7 @@ namespace WinLab.Contracts.Transactions
                             TransactionId = txId,
                             Status = TransactionStatus.Failed,
                             Success = false,
-                            Message = tx.FailureReason
+                            Message = tx.FailureReason ?? string.Empty
                         };
                     }
 
@@ -253,7 +270,7 @@ namespace WinLab.Contracts.Transactions
                             Status = TransactionStatus.Failed,
                             Success = false,
                             FailedPolicyId = item.PolicyId,
-                            Message = tx.FailureReason
+                            Message = tx.FailureReason ?? string.Empty
                         };
                     }
 
@@ -271,7 +288,7 @@ namespace WinLab.Contracts.Transactions
                             Status = TransactionStatus.Failed,
                             Success = false,
                             FailedPolicyId = item.PolicyId,
-                            Message = tx.FailureReason
+                            Message = tx.FailureReason ?? string.Empty
                         };
                     }
 
@@ -288,7 +305,7 @@ namespace WinLab.Contracts.Transactions
                             Status = TransactionStatus.Failed,
                             Success = false,
                             FailedPolicyId = item.PolicyId,
-                            Message = tx.FailureReason
+                            Message = tx.FailureReason ?? string.Empty
                         };
                     }
 
@@ -316,7 +333,7 @@ namespace WinLab.Contracts.Transactions
                             TransactionId = txId,
                             Status = TransactionStatus.Failed,
                             Success = false,
-                            Message = tx.FailureReason
+                            Message = tx.FailureReason ?? string.Empty
                         };
                     }
                 }
@@ -598,6 +615,23 @@ namespace WinLab.Contracts.Transactions
             return list.OrderByDescending(t => t.CreatedAt).ToList();
         }
 
+        private async Task WriteTransactionRecordAsync(TransactionDto tx, string finalPath, FileMode mode, CancellationToken ct)
+        {
+            if (!Directory.Exists(_transactionDir))
+            {
+                Directory.CreateDirectory(_transactionDir);
+            }
+
+            string json = JsonSerializer.Serialize(tx, new JsonSerializerOptions { WriteIndented = true });
+
+            await using (var stream = new FileStream(finalPath, mode, FileAccess.Write, FileShare.None))
+            await using (var writer = new StreamWriter(stream))
+            {
+                await writer.WriteAsync(json.AsMemory(), ct);
+                await writer.FlushAsync(ct);
+            }
+        }
+
         private async Task SaveTransactionAsync(TransactionDto tx, CancellationToken ct)
         {
             try
@@ -611,7 +645,8 @@ namespace WinLab.Contracts.Transactions
                 {
                     return;
                 }
-                string tempPath = $"{finalPath}.tmp";
+
+                string tempPath = $"{finalPath}.{Guid.NewGuid():N}.tmp";
 
                 string json = JsonSerializer.Serialize(tx, new JsonSerializerOptions { WriteIndented = true });
                 await File.WriteAllTextAsync(tempPath, json, ct);

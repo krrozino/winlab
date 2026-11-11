@@ -339,6 +339,14 @@ export class MockDesktopAgent implements DesktopIpcTransport {
           ) as unknown as IpcResponse<T>;
         }
 
+        if (this.transactions.has(txId)) {
+          return invalidPolicyRequest(
+            envelope,
+            `TransactionId '${txId}' já pertence a uma transação registrada. A solicitação foi rejeitada sem aplicar nenhuma política.`,
+            "TRANSACTION_ID_COLLISION"
+          ) as unknown as IpcResponse<T>;
+        }
+
         const policies: Array<{ policyId: string; desiredState: PolicyDesiredState }> = [];
         for (const entry of rawPolicies) {
           if (entry === null || typeof entry !== "object") {

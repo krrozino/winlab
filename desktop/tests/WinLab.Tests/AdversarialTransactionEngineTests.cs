@@ -397,8 +397,11 @@ namespace WinLab.Tests
             var registry = new InMemoryRegistryService();
             var hiveManager = new MockUserHiveManager();
             var catalog = new PolicyCatalog(processChecker: p => false);
-            string testDir = CreateTempTransactionDir();
-            string escapeTarget = Path.GetFullPath(Path.Combine(testDir, "..", "traversal_escape.json"));
+            string exclusiveRoot = Path.Combine(Path.GetTempPath(), "WinLab_AdvTest_Trav_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(exclusiveRoot);
+            string testDir = Path.Combine(exclusiveRoot, "transactions");
+            Directory.CreateDirectory(testDir);
+            string escapeTarget = Path.Combine(exclusiveRoot, "traversal_escape.json");
 
             try
             {
@@ -420,8 +423,7 @@ namespace WinLab.Tests
             }
             finally
             {
-                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
-                if (File.Exists(escapeTarget)) File.Delete(escapeTarget);
+                if (Directory.Exists(exclusiveRoot)) Directory.Delete(exclusiveRoot, true);
             }
         }
 
@@ -529,9 +531,11 @@ namespace WinLab.Tests
             var registry = new InMemoryRegistryService();
             var hiveManager = new MockUserHiveManager();
             var catalog = new PolicyCatalog(processChecker: p => false);
-            string testDir = CreateTempTransactionDir();
-            string parentDir = Path.GetFullPath(Path.Combine(testDir, ".."));
-            var parentFilesBefore = Directory.GetFiles(parentDir, "*.json", SearchOption.AllDirectories)
+            string exclusiveRoot = Path.Combine(Path.GetTempPath(), "WinLab_AdvTest_Root_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(exclusiveRoot);
+            string testDir = Path.Combine(exclusiveRoot, "transactions");
+            Directory.CreateDirectory(testDir);
+            var rootFilesBefore = Directory.GetFiles(exclusiveRoot, "*", SearchOption.AllDirectories)
                 .Select(f => Path.GetFullPath(f))
                 .ToHashSet(StringComparer.Ordinal);
 
@@ -559,15 +563,15 @@ namespace WinLab.Tests
                 Assert.Single(filesInside);
                 Assert.All(filesInside, f => Assert.StartsWith(Path.GetFullPath(testDir), f, StringComparison.Ordinal));
 
-                var parentFilesAfter = Directory.GetFiles(parentDir, "*.json", SearchOption.AllDirectories)
+                var rootFilesAfter = Directory.GetFiles(exclusiveRoot, "*", SearchOption.AllDirectories)
                     .Select(f => Path.GetFullPath(f))
                     .ToHashSet(StringComparer.Ordinal);
-                parentFilesAfter.ExceptWith(parentFilesBefore);
-                Assert.All(parentFilesAfter, f => Assert.StartsWith(Path.GetFullPath(testDir), f, StringComparison.Ordinal));
+                rootFilesAfter.ExceptWith(rootFilesBefore);
+                Assert.All(rootFilesAfter, f => Assert.StartsWith(Path.GetFullPath(testDir), f, StringComparison.Ordinal));
             }
             finally
             {
-                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+                if (Directory.Exists(exclusiveRoot)) Directory.Delete(exclusiveRoot, true);
             }
         }
 
@@ -1114,6 +1118,146 @@ namespace WinLab.Tests
             finally
             {
                 if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
+        // =========================================================================
+        // 11. Cross-Instance TransactionId Reservation (atomic FileMode.CreateNew)
+        // =========================================================================
+
+        [Fact]
+        public async Task ApplyTransaction_ConcurrentEngines_SameTransactionId_ExactlyOneWins()
+        {
+            const string userSid = "S-1-5-21-999-1002";
+
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                var registry = new InMemoryRegistryService();
+                var hiveManager = new MockUserHiveManager();
+                var catalog = new PolicyCatalog(processChecker: p => false);
+                string testDir = CreateTempTransactionDir();
+
+                try
+                {
+                    var engineA = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                    var engineB = new TransactionEngine(catalog, registry, hiveManager, testDir);
+
+                    var results = await Task.WhenAll(
+                        engineA.ApplyTransactionAsync(new ApplyTransactionRequestDto
+                        {
+                            TransactionId = "tx-race",
+                            TargetUserName = "Aluno",
+                            TargetUserSid = userSid,
+                            Policies = new List<PolicyApplyItemDto>
+                            {
+                                new() { PolicyId = "personalization.wallpaper", DesiredState = "Blocked" }
+                            }
+                        }),
+                        engineB.ApplyTransactionAsync(new ApplyTransactionRequestDto
+                        {
+                            TransactionId = "tx-race",
+                            TargetUserName = "Aluno",
+                            TargetUserSid = userSid,
+                            Policies = new List<PolicyApplyItemDto>
+                            {
+                                new() { PolicyId = "personalization.sounds", DesiredState = "Blocked" }
+                            }
+                        }));
+
+                    Assert.Equal(1, results.Count(r => r.Success));
+
+                    var loser = results.Single(r => !r.Success);
+                    Assert.Equal(TransactionStatus.Failed, loser.Status);
+                    Assert.Contains("já pertence", loser.Message, StringComparison.Ordinal);
+
+                    bool wallpaperApplied = registry.ValueExists(RegistryHiveType.Users, $@"{userSid}\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop", "NoChangingWallPaper");
+                    bool soundsApplied = registry.ValueExists(RegistryHiveType.Users, $@"{userSid}\Software\Policies\Microsoft\Windows\Personalization", "NoChangingSoundScheme");
+                    Assert.True(wallpaperApplied ^ soundsApplied,
+                        "Exactly one engine may apply its policy; the loser must apply zero mutations.");
+
+                    Assert.Single(Directory.GetFiles(testDir, "*.json"));
+
+                    var winnerRecord = await engineA.GetTransactionAsync("tx-race");
+                    Assert.NotNull(winnerRecord);
+                    Assert.NotEmpty(winnerRecord!.Baseline.Entries);
+                    Assert.NotEmpty(winnerRecord.RollbackPlan);
+
+                    var rollback = await engineA.RollbackTransactionAsync(new RollbackTransactionRequestDto { TransactionId = "tx-race" });
+                    Assert.True(rollback.Success);
+                    Assert.False(wallpaperApplied
+                        ? registry.ValueExists(RegistryHiveType.Users, $@"{userSid}\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop", "NoChangingWallPaper")
+                        : registry.ValueExists(RegistryHiveType.Users, $@"{userSid}\Software\Policies\Microsoft\Windows\Personalization", "NoChangingSoundScheme"),
+                        "Rollback of the winning transaction must remain functional after the race.");
+                }
+                finally
+                {
+                    if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+                }
+            }
+        }
+
+        [Fact]
+        public async Task ApplyTransaction_ConcurrentEngines_CollidingSanitizedIds_ExactlyOneWins()
+        {
+            const string userSid = "S-1-5-21-999-1002";
+
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                var registry = new InMemoryRegistryService();
+                var hiveManager = new MockUserHiveManager();
+                var catalog = new PolicyCatalog(processChecker: p => false);
+                string testDir = CreateTempTransactionDir();
+
+                try
+                {
+                    var engineA = new TransactionEngine(catalog, registry, hiveManager, testDir);
+                    var engineB = new TransactionEngine(catalog, registry, hiveManager, testDir);
+
+                    var results = await Task.WhenAll(
+                        engineA.ApplyTransactionAsync(new ApplyTransactionRequestDto
+                        {
+                            TransactionId = "sub/dir/escape",
+                            TargetUserName = "Aluno",
+                            TargetUserSid = userSid,
+                            Policies = new List<PolicyApplyItemDto>
+                            {
+                                new() { PolicyId = "personalization.wallpaper", DesiredState = "Blocked" }
+                            }
+                        }),
+                        engineB.ApplyTransactionAsync(new ApplyTransactionRequestDto
+                        {
+                            TransactionId = "sub_dir_escape",
+                            TargetUserName = "Aluno",
+                            TargetUserSid = userSid,
+                            Policies = new List<PolicyApplyItemDto>
+                            {
+                                new() { PolicyId = "personalization.sounds", DesiredState = "Blocked" }
+                            }
+                        }));
+
+                    Assert.Equal(1, results.Count(r => r.Success));
+
+                    var loser = results.Single(r => !r.Success);
+                    Assert.Equal(TransactionStatus.Failed, loser.Status);
+                    Assert.Equal("sub_dir_escape", loser.TransactionId);
+                    Assert.Contains("já pertence", loser.Message, StringComparison.Ordinal);
+
+                    bool wallpaperApplied = registry.ValueExists(RegistryHiveType.Users, $@"{userSid}\Software\Microsoft\Windows\CurrentVersion\Policies\ActiveDesktop", "NoChangingWallPaper");
+                    bool soundsApplied = registry.ValueExists(RegistryHiveType.Users, $@"{userSid}\Software\Policies\Microsoft\Windows\Personalization", "NoChangingSoundScheme");
+                    Assert.True(wallpaperApplied ^ soundsApplied,
+                        "Exactly one engine may apply its policy; the loser must apply zero mutations.");
+
+                    Assert.Single(Directory.GetFiles(testDir, "*.json"));
+
+                    var winnerRecord = await engineA.GetTransactionAsync("sub_dir_escape");
+                    Assert.NotNull(winnerRecord);
+                    Assert.NotEmpty(winnerRecord!.Baseline.Entries);
+                    Assert.NotEmpty(winnerRecord.RollbackPlan);
+                }
+                finally
+                {
+                    if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+                }
             }
         }
     }

@@ -136,3 +136,40 @@ Novos testes C#: desserialização JSON com DesiredState ausente/nulo/vazio (3),
 ## 16. Status dos gates (inalterado)
 
 - Gate M1 PASS, Gate M2 PASS, Gate M3 Iteration 1 FAIL (defeitos do Challenger), Gate M3 Iteration 2 — **aguardando nova revisão independente** desta rodada. Nenhum gate declarado aprovado nesta rodada. Homologação Windows (WPF/UAC/instalador) permanece gate independente não executado.
+
+# Rodada 4 — Remediation pós-terceira revisão independente da PR #25 (2026-11-11)
+
+## 17. Resolução dos dois bloqueadores da terceira revisão
+
+| # | Bloqueador | Resolução | Evidência |
+|---|-----------|-----------|-----------|
+| 1 | Concorrência entre TransactionEngines: `File.Exists` + `SemaphoreSlim` por instância não protege contra duas instâncias no mesmo diretório com o mesmo ID sanitizado | **Reserva atômica cross-platform**: a gravação inicial do registro `Pending` usa `FileMode.CreateNew` (`O_CREAT\|O_EXCL` no POSIX, `CREATE_NEW` no NTFS) — a criação do arquivo é o ponto de exclusão, antes de qualquer captura de baseline ou mutação. A segunda instância recebe `IOException` → falha controlada com a mesma mensagem de colisão, zero mutações. Atualizações legítimas de status continuam via `SaveTransactionAsync` (temp + `Move` overwrite); rollback (`LoadTransactionAsync`) não passa pela reserva. Arquivos temporários agora têm sufixo `Guid` único por gravação (elimina conflito de temp compartilhado) | `TransactionEngine.cs` (`WriteTransactionRecordAsync`, reserva em `ApplyTransactionAsync`, `SaveTransactionAsync`); testes: `ApplyTransaction_ConcurrentEngines_SameTransactionId_ExactlyOneWins` e `ApplyTransaction_ConcurrentEngines_CollidingSanitizedIds_ExactlyOneWins` (5 iterações cada, `Task.WhenAll`, invariantes determinísticas: exatamente 1 vencedor, perdedor aplica zero mutações — XOR nos valores de registro —, registro vencedor com baseline/rollback íntegros, rollback funcional) |
+| 2 | Teste enumerava recursivamente o pai do diretório de teste (= `/tmp` em Linux) → `UnauthorizedAccessException` | Raiz exclusiva por execução: `WinLab_AdvTest_Root_<guid>`/`transactions` (e `WinLab_AdvTest_Trav_<guid>` no teste de traversal); a enumeração de possíveis escapes fica restrita a essa árvore (agora `*`, não só `*.json`); limpeza recursiva da raiz exclusiva no `finally`. Nenhuma dependência de `TMPDIR` | `AdversarialTransactionEngineTests.cs` (`ApplyTransaction_AdversarialTransactionId_PersistsOnlyInsideAuthorizedDirectory`, `TransactionId_PathTraversal_MustBeSanitizedOrRejected`); suíte executada em Debian 13 padrão sem `UnauthorizedAccessException` |
+
+## 18. Verificações complementares
+
+- **Paridade mock × motor real (TransactionId reutilizado):** o mock agora rejeita `TransactionId` já registrado com falha controlada `TRANSACTION_ID_COLLISION`, sem aplicar políticas (mesma ordem contratual do motor: lista nula/vazia → colisão → validação de itens). Teste TS `reused TransactionId is rejected without reapplying policies (mock/real parity)`.
+- **CS8601:** `Message = tx.FailureReason` (5 ocorrências) → `?? string.Empty`; o aviso desapareceu do build Release.
+- **Comportamento em falhas/interrupções:** crash após a reserva deixa registro órfão que *squat* o ID (fail-safe: nada pré-existente é sobrescrito); falhas de validação após a reserva sobrescrevem legitimamente com registro `Failed`.
+
+## 19. Autorrevisão (Round 4)
+
+- Sem deadlock: a reserva é uma escrita curta com `FileShare.None`, liberada imediatamente; nenhum lock mantido durante a aplicação.
+- Reserva órfã não permite perda/sobrescrita (CreateNew nunca sobrescreve).
+- Rollback não é bloqueado por reserva (não usa CreateNew) — coberto pelos testes.
+- Invariantes dos testes de concorrência valem para qualquer intercalação (não dependem de timing); 5 iterações por teste.
+- **Limitação declarada:** a proteção entre processos decorre da atomicidade de `FileMode.CreateNew` no SO (NTFS e POSIX), mas os testes executados cobrem **múltiplas instâncias no mesmo processo** (Linux). Nenhum teste entre processos distintos ou em Windows foi executado — declarado como gate pendente, não como evidência.
+
+## 20. Verificação da rodada 4 (Linux/Debian 13, .NET 10.0.201, Node 22)
+
+| Comando | Resultado |
+|---|---|
+| `dotnet test desktop/tests/WinLab.Tests/WinLab.Tests.csproj -c Release` | **PASS — 375/375** (rodada 3: 373; +2 novos de concorrência); aviso CS8601 eliminado |
+| `npm run typecheck` | **PASS** |
+| `npm test` | **PASS — 114/114** (rodada 3: 113; +1 novo de paridade de colisão) |
+| `npm run build` | **PASS** |
+| `npm run build:desktop` | **PASS** (artefatos regenerados restaurados) |
+
+## 21. Status dos gates (inalterado)
+
+- Gate M1 PASS, Gate M2 PASS, Gate M3 Iteration 1 FAIL (defeitos do Challenger), Gate M3 Iteration 2 — **aguardando nova revisão independente** desta rodada. Nenhum gate declarado aprovado nesta rodada. Homologação Windows (WPF/UAC/instalador/registro real) permanece gate independente não executado.

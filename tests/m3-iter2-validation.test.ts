@@ -265,6 +265,27 @@ test("padded desiredState with otherwise valid name is rejected (mock/real parit
   assert.equal(states.notConfiguredCount, 5);
 });
 
+test("reused TransactionId is rejected without reapplying policies (mock/real parity)", async () => {
+  const agent = new MockDesktopAgent();
+
+  const first = await agent.handleRequest(
+    applyEnvelope("req-collision-1", [{ policyId: "personalization.wallpaper", desiredState: "Blocked" }])
+  );
+  assert.equal(first.success, true);
+
+  const second = await agent.handleRequest(
+    applyEnvelope("req-collision-2", [{ policyId: "personalization.sounds", desiredState: "Blocked" }], {
+      transactionId: "tx-validation-req-collision-1"
+    })
+  );
+  assert.equal(second.success, false, "reused TransactionId must be rejected");
+  assert.equal(second.errorCode, "TRANSACTION_ID_COLLISION");
+
+  const states = await queryStates(agent);
+  assert.equal(states.appliedCount, 1, "second request must not apply its policy");
+  assert.equal(states.notConfiguredCount, 4);
+});
+
 test("valid request still commits after rejected attempts (no poisoned state)", async () => {
   const agent = new MockDesktopAgent();
 
