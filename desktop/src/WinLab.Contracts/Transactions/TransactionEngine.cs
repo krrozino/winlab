@@ -97,9 +97,15 @@ namespace WinLab.Contracts.Transactions
             return clean;
         }
 
+        private static readonly string[] ExecutableDesiredStateNames =
+        {
+            nameof(PolicyDesiredState.NotConfigured),
+            nameof(PolicyDesiredState.Blocked)
+        };
+
         public static bool TryResolveDesiredState(string? rawDesiredState, out PolicyDesiredState desired, out string? error)
         {
-            desired = default;
+            desired = PolicyDesiredState.NotConfigured;
             error = null;
 
             if (string.IsNullOrWhiteSpace(rawDesiredState))
@@ -108,35 +114,36 @@ namespace WinLab.Contracts.Transactions
                 return false;
             }
 
-            string trimmed = rawDesiredState.Trim();
-
-            if (trimmed.Length != rawDesiredState.Length)
+            if (rawDesiredState.Trim().Length != rawDesiredState.Length)
             {
                 error = $"DesiredState '{rawDesiredState}' contém espaços não permitidos. Use o nome exato do estado (NotConfigured, Blocked).";
                 return false;
             }
 
-            if (trimmed.IndexOfAny(new[] { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' }) >= 0)
+            if (rawDesiredState.IndexOfAny(new[] { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' }) >= 0)
             {
                 error = $"DesiredState '{rawDesiredState}' usa representação numérica, que não é aceita. Use o nome do estado (NotConfigured, Blocked).";
                 return false;
             }
 
-            if (string.Equals(trimmed, nameof(PolicyDesiredState.Allowed), StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(rawDesiredState, nameof(PolicyDesiredState.Allowed), StringComparison.OrdinalIgnoreCase))
             {
-                error = "BLOCKED — CONTRACT DECISION REQUIRED: DesiredState 'Allowed' não possui semântica implementada nos handlers e não pode ser convertido silenciosamente para NotConfigured ou Blocked.";
+                error = "BLOCKED — CONTRACT DECISION REQUIRED: DesiredState 'Allowed' é reservado no contrato e não é executável no M3; não pode ser convertido silenciosamente para NotConfigured ou Blocked.";
                 return false;
             }
 
-            if (Enum.TryParse(trimmed, ignoreCase: true, out PolicyDesiredState parsed)
-                && Enum.IsDefined(parsed)
-                && (parsed == PolicyDesiredState.NotConfigured || parsed == PolicyDesiredState.Blocked))
+            foreach (string name in ExecutableDesiredStateNames)
             {
-                desired = parsed;
-                return true;
+                if (string.Equals(rawDesiredState, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    desired = string.Equals(name, nameof(PolicyDesiredState.Blocked), StringComparison.OrdinalIgnoreCase)
+                        ? PolicyDesiredState.Blocked
+                        : PolicyDesiredState.NotConfigured;
+                    return true;
+                }
             }
 
-            error = $"DesiredState '{rawDesiredState}' é desconhecido, operacional ou incompatível com o contrato. Valores suportados: NotConfigured, Blocked.";
+            error = $"DesiredState '{rawDesiredState}' é desconhecido, composto, operacional ou incompatível com o contrato. Valores executáveis no M3: NotConfigured, Blocked.";
             return false;
         }
 
@@ -176,6 +183,21 @@ namespace WinLab.Contracts.Transactions
             {
                 string txId = SanitizeTransactionId(request.TransactionId);
 
+                // TransactionId collision guard: a new application must never overwrite a
+                // previously persisted transaction (baseline + rollback plan would be lost).
+                // Legitimate status updates within the same transaction are unaffected:
+                // they go through SaveTransactionAsync after this guard has passed.
+                if (TryResolveTransactionFilePath(txId, out string existingPath) && File.Exists(existingPath))
+                {
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = $"TransactionId '{txId}' já pertence a uma transação persistida. A solicitação foi rejeitada sem modificar o registro anterior (baseline e rollback preservados)."
+                    };
+                }
+
                 if (request.Policies == null || request.Policies.Count == 0)
                 {
                     return new ApplyTransactionResultDto
@@ -211,6 +233,26 @@ namespace WinLab.Contracts.Transactions
                             TransactionId = txId,
                             Status = TransactionStatus.Failed,
                             Success = false,
+                            Message = tx.FailureReason
+                        };
+                    }
+
+                    // Canonical PolicyId rule (shared with the TS mock): identifiers must be
+                    // canonical — no leading/trailing whitespace — while matching stays
+                    // case-insensitive, consistent with the catalog's OrdinalIgnoreCase lookup.
+                    if (item.PolicyId.Trim().Length != item.PolicyId.Length)
+                    {
+                        tx.Status = TransactionStatus.Failed;
+                        tx.FailedPolicyId = item.PolicyId;
+                        tx.FailureReason = $"PolicyId '{item.PolicyId}' contém espaços nas extremidades. Use o identificador canônico do catálogo.";
+                        await SaveTransactionAsync(tx, ct);
+
+                        return new ApplyTransactionResultDto
+                        {
+                            TransactionId = txId,
+                            Status = TransactionStatus.Failed,
+                            Success = false,
+                            FailedPolicyId = item.PolicyId,
                             Message = tx.FailureReason
                         };
                     }

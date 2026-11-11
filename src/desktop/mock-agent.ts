@@ -350,8 +350,8 @@ export class MockDesktopAgent implements DesktopIpcTransport {
           }
 
           const record = entry as Record<string, unknown>;
-          const policyId = typeof record.policyId === "string" ? record.policyId.trim() : "";
-          if (!policyId) {
+          const policyId = typeof record.policyId === "string" ? record.policyId : "";
+          if (!policyId.trim()) {
             return invalidPolicyRequest(
               envelope,
               "Item de política sem identificador válido (policyId). A solicitação foi rejeitada sem aplicar nenhuma política.",
@@ -359,7 +359,16 @@ export class MockDesktopAgent implements DesktopIpcTransport {
             ) as unknown as IpcResponse<T>;
           }
 
-          if (!MILESTONE_3_POLICIES.some((p) => p.id === policyId)) {
+          if (policyId.trim() !== policyId) {
+            return invalidPolicyRequest(
+              envelope,
+              `PolicyId '${policyId}' contém espaços nas extremidades. Use o identificador canônico do catálogo.`,
+              "INVALID_POLICY_REQUEST"
+            ) as unknown as IpcResponse<T>;
+          }
+
+          const canonicalPolicy = MILESTONE_3_POLICIES.find((p) => p.id.toLowerCase() === policyId.toLowerCase());
+          if (!canonicalPolicy) {
             return invalidPolicyRequest(
               envelope,
               `Política desconhecida no catálogo: '${policyId}'. A solicitação foi rejeitada sem aplicar nenhuma política.`,
@@ -408,7 +417,7 @@ export class MockDesktopAgent implements DesktopIpcTransport {
             ) as unknown as IpcResponse<T>;
           }
 
-          policies.push({ policyId, desiredState: desired });
+          policies.push({ policyId: canonicalPolicy.id, desiredState: desired });
         }
 
         for (const item of policies) {

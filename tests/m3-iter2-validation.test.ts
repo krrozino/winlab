@@ -207,6 +207,64 @@ test("case-insensitive supported names remain accepted and normalized", async ()
   assert.equal(sounds.desiredState, "NotConfigured");
 });
 
+test("composed enum names are rejected, never parsed into a valid desired state (mock/real parity)", async () => {
+  const composedValues = ["Blocked,NotConfigured", "NotConfigured,Blocked", "Blocked,Blocked"];
+
+  for (const desired of composedValues) {
+    const agent = new MockDesktopAgent();
+    const res = await agent.handleRequest(
+      applyEnvelope(`req-composed-${Math.random()}`, [
+        { policyId: "personalization.wallpaper", desiredState: desired }
+      ])
+    );
+
+    assert.equal(res.success, false, `composed desiredState '${desired}' must be rejected`);
+    assert.equal(res.errorCode, "INVALID_POLICY_REQUEST");
+
+    const states = await queryStates(agent);
+    assert.equal(states.appliedCount, 0, `no policy may be applied for composed desiredState '${desired}'`);
+    assert.equal(states.notConfiguredCount, 5);
+  }
+});
+
+test("padded policyId is rejected without silent trimming (mock/real parity)", async () => {
+  const paddedIds = [" personalization.wallpaper", "personalization.wallpaper ", "\tpersonalization.wallpaper"];
+
+  for (const policyId of paddedIds) {
+    const agent = new MockDesktopAgent();
+    const res = await agent.handleRequest(
+      applyEnvelope(`req-padded-${Math.random()}`, [
+        { policyId, desiredState: "Blocked" }
+      ])
+    );
+
+    assert.equal(res.success, false, `padded policyId '${policyId}' must be rejected`);
+    assert.equal(res.errorCode, "INVALID_POLICY_REQUEST");
+    assert.match(res.error ?? "", /espaços nas extremidades/);
+
+    const states = await queryStates(agent);
+    assert.equal(states.appliedCount, 0, `no policy may be applied for padded policyId '${policyId}'`);
+    assert.equal(states.notConfiguredCount, 5);
+  }
+});
+
+test("padded desiredState with otherwise valid name is rejected (mock/real parity)", async () => {
+  const agent = new MockDesktopAgent();
+
+  const res = await agent.handleRequest(
+    applyEnvelope("req-padded-desired-1", [
+      { policyId: "personalization.wallpaper", desiredState: "Blocked " }
+    ])
+  );
+
+  assert.equal(res.success, false);
+  assert.equal(res.errorCode, "INVALID_POLICY_REQUEST");
+
+  const states = await queryStates(agent);
+  assert.equal(states.appliedCount, 0);
+  assert.equal(states.notConfiguredCount, 5);
+});
+
 test("valid request still commits after rejected attempts (no poisoned state)", async () => {
   const agent = new MockDesktopAgent();
 

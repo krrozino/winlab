@@ -94,3 +94,45 @@
 
 - Validação de WPF nativo, instalador, UAC e execução real em VM Windows permanece como **gate independente** — não executada (ambiente Linux). Os testes de sanitização rodam em Linux; a semântica é independente de SO por construção, mas **nenhum teste Windows nativo foi executado**.
 - Nenhum registro real, `-Apply`, deploy ou merge foi executado.
+
+# Rodada 3 — Remediation pós-segunda revisão independente da PR #25 (2026-11-11)
+
+## 12. Resolução dos cinco achados da segunda revisão
+
+| # | Achado | Resolução | Evidência |
+|---|--------|-----------|-----------|
+| 1 | `PolicyApplyItemDto.DesiredState` inicializado com `"Blocked"`: campo omitido no JSON virava ordem válida de bloqueio | Default substituído por `string.Empty` (`TransactionModels.cs:193`); `TryResolveDesiredState` rejeita nulo/vazio/whitespace. Nenhum caminho recoloca `"Blocked"` (verificado por grep) | Testes de desserialização JSON real (`JsonSerializer.Deserialize<ApplyTransactionRequestDto>`): omitido, `null`, vazio, e lista válida+sem DesiredState → rejeitados, zero mutações, 1 registro Failed, nenhum Committed |
+| 2 | `Enum.TryParse` aceitava compostos por vírgula (`"Blocked,NotConfigured"` → 1\|0 = Blocked) | Substituído por comparação explícita com `ExecutableDesiredStateNames` (`NotConfigured`, `Blocked`), `StringComparison.OrdinalIgnoreCase`; rejeita compostos, numéricos, padding, estados operacionais, desconhecidos e `Allowed`. `Enum.IsDefined` não é usado como validação | `TransactionEngine.cs` (`TryResolveDesiredState`); testes C# (3 compostos) + TS (3 compostos) — paridade |
+| 3 | Nova aplicação com `TransactionId` já persistido sobrescrevia o arquivo anterior, destruindo baseline e rollback plan (**prioridade máxima**) | Collision guard em `ApplyTransactionAsync`: após sanitizar, se o arquivo do ID já existe → falha controlada sem tocar o registro anterior. Atualizações legítimas de status passam por `SaveTransactionAsync` (sem guard); rollback usa `LoadTransactionAsync` (não afetado) | Teste de colisão em 7 passos: transação válida com `Baseline.Entries`/`RollbackPlan` não vazios → requisição reutilizando o ID → falha controlada → arquivo original **byte-idêntico** (`Assert.Equal` de bytes) → baseline preservado → rollback funcional restaura estado. Colisão via sanitização (`sub/dir/escape` ≡ `sub_dir_escape`) também coberta |
+| 4 | Paridade de PolicyId: mock fazia `.trim()` silencioso; catálogo C# era case-insensitive sobre o valor original | Regra única documentada: **identificadores canônicos** — padding rejeitado nos dois lados; matching case-insensitive consistente com `StringComparer.OrdinalIgnoreCase` do catálogo; mock grava `canonicalPolicy.id` | `TransactionEngine.cs` (bloco de padding), `mock-agent.ts` (sem trim silencioso, rejeita padding); testes C# (`PaddedPolicyId`) + TS (3 variantes de padding) |
+| 5 | `AssertZeroMutations` verificava caminho errado para sounds (ActiveDesktop em vez de `Software\Policies\Microsoft\Windows\Personalization`) e não cobria mouse_pointers nem HKLM | Corrigido com os caminhos reais do catálogo: wallpaper → ActiveDesktop, sounds/mouse_pointers → Personalization (HKU), browser → HKLM Chrome/Edge; asserções reforçadas nos testes de lista nula/vazia (`AssertZeroMutations` + `AssertNoTransactionFiles`) | `AdversarialTransactionEngineTests.cs` (`AssertZeroMutations`, seção 7 reforçada) |
+
+## 13. Contrato operacional do M3 para DesiredState
+
+- **Executáveis no M3:** `NotConfigured` e `Blocked` (case-insensitive, sem padding, sem representação numérica).
+- **Reservado/não-executável:** `Allowed` — retorna falha controlada `BLOCKED — CONTRACT DECISION REQUIRED`; jamais convertido silenciosamente. Estados operacionais (`Applied`, `Failed`, `Drifted`, `Pending*`, `Reverted`) **não** são intenções de aplicação e são rejeitados.
+- A diferença entre estados do contrato geral (`PolicyDesiredState`) e estados aceitos como comando do M3 está codificada em `ExecutableDesiredStateNames` (motor) e `SUPPORTED_DESIRED_STATES` (mock).
+
+## 14. Autorrevisão adversarial (Round 3)
+
+- Grep por `Enum.TryParse`/`Enum.IsDefined` em `desktop/src`: restantes apenas para `RegistryHiveType` (infra de teste) e `RegistryValueType` (restauração interna) — nenhum parsing de entrada de usuário de DesiredState.
+- Nenhum literal `"Blocked"` como default em models/engine; init do out param é `PolicyDesiredState.NotConfigured` (nunca default=Blocked).
+- Paridade mock×C# conferida: padding de PolicyId e de desiredState rejeitado antes do matching; matching case-insensitive idêntico.
+- Persistência parcial: falhas de validação persistem exatamente 1 registro Failed (ou nenhum, para lista nula/vazia) e nenhum Committed — verificado por `Assert.Single(GetFiles("*.json"))` / `AssertNoTransactionFiles`.
+- Risco residual documentado: guard de colisão é check-then-act (`File.Exists`); colisão simultânea entre **instâncias** distintas do engine no mesmo diretório tem janela TOCTOU. Escopo M3 (single-instance, lock por instância) não exige refatoração; atomicidade de escrita (temp+Move) preservada.
+
+## 15. Verificação da rodada 3 (Linux, .NET 10.0.201, Node 22)
+
+| Comando | Resultado |
+|---|---|
+| `dotnet test desktop/tests/WinLab.Tests/WinLab.Tests.csproj -c Release` | **PASS — 373/373** (rodada 2: 363; +10 novos casos) |
+| `npm run typecheck` | **PASS** |
+| `npm test` | **PASS — 113/113** (rodada 2: 110; +3 novos) |
+| `npm run build` | **PASS** |
+| `npm run build:desktop` | **PASS** (artefatos regenerados restaurados) |
+
+Novos testes C#: desserialização JSON com DesiredState ausente/nulo/vazio (3), lista válida+sem DesiredState sem aplicação parcial (1), enums compostos (3), PolicyId com padding (1), colisão de TransactionId com preservação byte-idêntica e rollback funcional (1), colisão via sanitização (1). Novos testes TS: enums compostos (mock/real parity), PolicyId com padding (3 variantes), desiredState com padding.
+
+## 16. Status dos gates (inalterado)
+
+- Gate M1 PASS, Gate M2 PASS, Gate M3 Iteration 1 FAIL (defeitos do Challenger), Gate M3 Iteration 2 — **aguardando nova revisão independente** desta rodada. Nenhum gate declarado aprovado nesta rodada. Homologação Windows (WPF/UAC/instalador) permanece gate independente não executado.
