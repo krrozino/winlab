@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import React from "react";
+import ReactDOMServer from "react-dom/server";
 
 import { IPC_CONSTANTS, IpcEnvelope, IpcResponse, MachineInventoryDto, PolicyStateSummaryDto } from "../src/desktop/contracts";
-import { MachineDataSession, PreflightSnapshotWithMessage, createProcessingCounter } from "../src/desktop/machine-data-session";
+import { ConnectionHandshakeState, MachineDataSession, PreflightSnapshotWithMessage, createProcessingCounter } from "../src/desktop/machine-data-session";
 import { MockDesktopAgent } from "../src/desktop/mock-agent";
+import { DemoBanner } from "../src/desktop/DemoBanner";
 import { OperatingMode } from "../src/lib/types";
 
 const ISO = "2026-11-11T12:00:00.000Z";
@@ -74,6 +77,8 @@ type Sender = <T>(action: string, payload?: unknown) => Promise<IpcResponse<T>>;
 function createHarness(sender?: Sender) {
   const state = {
     mode: "Demo" as OperatingMode,
+    connectionState: "connected" as ConnectionHandshakeState,
+    connectionHistory: [] as ConnectionHandshakeState[],
     inventory: null as MachineInventoryDto | null,
     policySummary: null as PolicyStateSummaryDto | null,
     preflight: null as PreflightSnapshotWithMessage | null,
@@ -96,6 +101,10 @@ function createHarness(sender?: Sender) {
   const session = new MachineDataSession(send, {
     onModeChange: (mode) => {
       state.mode = mode;
+    },
+    onConnectionState: (connection) => {
+      state.connectionState = connection;
+      state.connectionHistory.push(connection);
     },
     onInventory: (inventory) => {
       state.inventory = inventory;
@@ -301,6 +310,199 @@ test("three rapid toggles leave exactly one winner with consistent state", async
   assert.equal(state.preflight, preflight);
   assert.equal(state.isScanning, false);
   assert.equal(state.scanError, null);
+});
+
+test("connection handshake reports connecting then connected only after a validated mode.set", async () => {
+  const { state, transport, session } = createHarness();
+  const switching = session.switchMode("Real");
+
+  assert.equal(state.mode, "Real");
+  assert.equal(state.connectionState, "connecting");
+
+  transport.respond(IPC_CONSTANTS.ACTION_SET_MODE, { success: true, data: { mode: "Real" } });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_INVENTORY, { success: true, data: mockInventory(false) });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE, { success: true, data: policySummary });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_PREFLIGHT, { success: true, data: preflight });
+  await switching;
+
+  assert.deepEqual(state.connectionHistory, ["connecting", "connected"]);
+  assert.equal(state.connectionState, "connected");
+});
+
+test("mode.set failure never reports a confirmed REAL connection", async () => {
+  const { state, transport, session } = createHarness();
+  const switching = session.switchMode("Real");
+
+  transport.respond(IPC_CONSTANTS.ACTION_SET_MODE, { success: false, error: "Host rejeitou a alternância de modo." });
+  await switching;
+
+  assert.deepEqual(state.connectionHistory, ["connecting", "failed"]);
+  assert.equal(state.connectionState, "failed");
+  assert.equal(state.connectionHistory.includes("connected"), false);
+});
+
+test("divergent mode acknowledgement never reports a confirmed REAL connection", async () => {
+  const { state, transport, session } = createHarness();
+  const switching = session.switchMode("Real");
+
+  transport.respond(IPC_CONSTANTS.ACTION_SET_MODE, { success: true, data: { mode: "Demo" } });
+  await switching;
+
+  assert.deepEqual(state.connectionHistory, ["connecting", "failed"]);
+  assert.equal(state.connectionHistory.includes("connected"), false);
+});
+
+test("mode.set timeout exception never reports a confirmed REAL connection", async () => {
+  const failing: Sender = async () => {
+    throw new Error("Tempo limite esgotado (10000ms).");
+  };
+  const { state, session } = createHarness(failing);
+  await session.switchMode("Real");
+
+  assert.deepEqual(state.connectionHistory, ["connecting", "failed"]);
+  assert.equal(state.connectionHistory.includes("connected"), false);
+});
+
+test("Strict Mode effect replay: setup, cleanup and setup yield a fully working session", async () => {
+  const { state, transport } = createHarness();
+
+  const buildSession = () =>
+    new MachineDataSession(<T>(action: string, payload?: unknown) =>
+      transport.handleRequest<T>({
+        id: "req",
+        version: IPC_CONSTANTS.PROTOCOL_VERSION,
+        timestamp: ISO,
+        type: "query",
+        action,
+        payload
+      }),
+      {
+        onModeChange: (mode) => {
+          state.mode = mode;
+        },
+        onConnectionState: (connection) => {
+          state.connectionState = connection;
+          state.connectionHistory.push(connection);
+        },
+        onInventory: (inventory) => {
+          state.inventory = inventory;
+        },
+        onPolicySummary: (summary) => {
+          state.policySummary = summary;
+        },
+        onPreflight: (snapshot) => {
+          state.preflight = snapshot;
+        },
+        onScanError: (error) => {
+          state.scanError = error;
+        },
+        onScanning: (scanning) => {
+          state.isScanning = scanning;
+        }
+      }
+    );
+
+  const firstSession = buildSession();
+  void firstSession.loadInitial();
+  firstSession.dispose();
+
+  const secondSession = buildSession();
+  const secondLoad = secondSession.loadInitial();
+
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_INVENTORY, { success: true, data: mockInventory(true) });
+  await flush();
+  assert.equal(state.inventory === null, true, "the disposed session's late response must be dropped");
+
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_INVENTORY, { success: true, data: mockInventory(true) });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE, { success: true, data: policySummary });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_PREFLIGHT, { success: true, data: preflight });
+  await secondLoad;
+
+  assert.equal(state.inventory?.isMock, true, "the replayed session must load data normally");
+  assert.equal(state.policySummary, policySummary);
+  assert.equal(state.preflight, preflight);
+
+  const switching = secondSession.switchMode("Real");
+  transport.respond(IPC_CONSTANTS.ACTION_SET_MODE, { success: true, data: { mode: "Real" } });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_INVENTORY, { success: true, data: mockInventory(false) });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE, { success: true, data: policySummary });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_PREFLIGHT, { success: true, data: preflight });
+  await switching;
+
+  assert.equal(state.mode, "Real");
+  assert.equal(state.inventory?.isMock, undefined);
+  assert.equal(state.connectionState, "connected");
+});
+
+test("rapid toggles send each generation's queries only after its own mode.set acknowledgement", async () => {
+  const { state, transport, session } = createHarness();
+  const first = session.switchMode("Real");
+  const second = session.switchMode("Demo");
+  const third = session.switchMode("Real");
+
+  assert.deepEqual(transport.sent, [IPC_CONSTANTS.ACTION_SET_MODE, IPC_CONSTANTS.ACTION_SET_MODE, IPC_CONSTANTS.ACTION_SET_MODE], "no machine query may be sent before a mode.set acknowledgement");
+
+  transport.respond(IPC_CONSTANTS.ACTION_SET_MODE, { success: true, data: { mode: "Real" } });
+  await first;
+  transport.respond(IPC_CONSTANTS.ACTION_SET_MODE, { success: true, data: { mode: "Demo" } });
+  await second;
+  transport.respond(IPC_CONSTANTS.ACTION_SET_MODE, { success: true, data: { mode: "Real" } });
+  await flush();
+
+  assert.deepEqual(transport.sent.slice(3), [IPC_CONSTANTS.ACTION_QUERY_INVENTORY], "only the current generation queries the machine");
+
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_INVENTORY, { success: true, data: mockInventory(false) });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE, { success: true, data: policySummary });
+  await flush();
+  transport.respond(IPC_CONSTANTS.ACTION_QUERY_PREFLIGHT, { success: true, data: preflight });
+  await third;
+
+  assert.equal(state.mode, "Real");
+  assert.equal(state.inventory?.isMock, undefined);
+  assert.equal(state.connectionState, "connected");
+});
+
+test("DemoBanner never shows the connected REAL seal while connecting or on failure", () => {
+  const base = {
+    mode: "Real" as OperatingMode,
+    computerName: "REAL-PC",
+    isWebView2Available: true
+  };
+
+  const connected = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(DemoBanner, { ...base, connectionState: "connected" as ConnectionHandshakeState })
+  );
+  assert.match(connected, /CONECTADO AO WINDOWS/);
+
+  const connecting = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(DemoBanner, { ...base, connectionState: "connecting" as ConnectionHandshakeState })
+  );
+  assert.match(connecting, /CONECTANDO AO WINDOWS/);
+  assert.equal(connecting.includes("CONECTADO AO WINDOWS"), false, "pending handshake must not display the confirmed seal");
+
+  const failed = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(DemoBanner, { ...base, connectionState: "failed" as ConnectionHandshakeState })
+  );
+  assert.match(failed, /FALHA NA CONEXÃO AO WINDOWS/);
+  assert.equal(failed.includes("CONECTADO AO WINDOWS"), false, "failed handshake must never display the confirmed seal");
+  assert.equal(failed.includes("var(--success)"), false, "failed banner must not use the success color");
+
+  const omitted = ReactDOMServer.renderToStaticMarkup(React.createElement(DemoBanner, { ...base }));
+  assert.match(omitted, /CONECTADO AO WINDOWS/, "omitted connection state keeps backward-compatible connected behavior");
+
+  const demo = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(DemoBanner, { ...base, mode: "Demo" as OperatingMode, connectionState: "failed" as ConnectionHandshakeState })
+  );
+  assert.match(demo, /MODO DEMONSTRAÇÃO/);
 });
 
 test("processing counter stays true while any request is pending", () => {

@@ -9,8 +9,11 @@ export interface PreflightSnapshotWithMessage {
   readinessMessage: string;
 }
 
+export type ConnectionHandshakeState = "connecting" | "connected" | "failed";
+
 export interface MachineDataSessionCallbacks {
   onModeChange(mode: OperatingMode): void;
+  onConnectionState(state: ConnectionHandshakeState): void;
   onInventory(inventory: MachineInventoryDto | null): void;
   onPolicySummary(summary: PolicyStateSummaryDto | null): void;
   onPreflight(preflight: PreflightSnapshotWithMessage | null): void;
@@ -36,7 +39,14 @@ export class MachineDataSession {
   }
 
   async loadInitial(): Promise<void> {
-    await this.queryMachineData(this.generation);
+    const generation = this.generation;
+    try {
+      await this.queryMachineData(generation);
+    } catch (err) {
+      if (this.isCurrent(generation)) {
+        this.callbacks.onScanError((err as Error).message);
+      }
+    }
   }
 
   async switchMode(targetMode: OperatingMode): Promise<void> {
@@ -48,6 +58,7 @@ export class MachineDataSession {
     callbacks.onPreflight(null);
     callbacks.onScanError(null);
     callbacks.onModeChange(targetMode);
+    callbacks.onConnectionState("connecting");
     callbacks.onScanning(true);
 
     try {
@@ -55,13 +66,16 @@ export class MachineDataSession {
       if (!this.isCurrent(generation)) return;
 
       if (!setRes.success || typeof setRes.data?.mode !== "string" || setRes.data.mode.toLowerCase() !== targetMode.toLowerCase()) {
+        callbacks.onConnectionState("failed");
         callbacks.onScanError(setRes.error || `Falha ao alternar para o modo ${targetMode === "Real" ? "Computador Real" : "Demonstração"}.`);
         return;
       }
 
+      callbacks.onConnectionState("connected");
       await this.queryMachineData(generation);
     } catch (err) {
       if (this.isCurrent(generation)) {
+        callbacks.onConnectionState("failed");
         callbacks.onScanError((err as Error).message);
       }
     } finally {

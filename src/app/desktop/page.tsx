@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { createDesktopTransport, isWebView2Available } from "@/desktop/ipc-bridge";
 import {
@@ -19,7 +19,7 @@ import { Config, OperatingMode, PresetId } from "@/lib/types";
 import { DemoBanner } from "@/desktop/DemoBanner";
 import { DiagnosticReport } from "@/desktop/DiagnosticReport";
 import { FirstRunWizard } from "@/desktop/FirstRunWizard";
-import { MachineDataSession, PreflightSnapshotWithMessage, createProcessingCounter } from "@/desktop/machine-data-session";
+import { ConnectionHandshakeState, MachineDataSession, PreflightSnapshotWithMessage, createProcessingCounter } from "@/desktop/machine-data-session";
 
 interface IpcLogEntry {
   id: string;
@@ -56,6 +56,7 @@ export default function DesktopPage() {
   const [showWizard, setShowWizard] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [connectionState, setConnectionState] = useState<ConnectionHandshakeState>("connected");
 
   // Aba ativa da interface desktop
   const [activeTab, setActiveTab] = useState<
@@ -68,7 +69,7 @@ export default function DesktopPage() {
   const processingCounter = useMemo(() => createProcessingCounter(setIsProcessing), []);
 
   // Função central para envio de mensagens IPC tipadas
-  async function sendIpcMessage<T>(action: string, payload?: unknown): Promise<IpcResponse<T>> {
+  const sendIpcMessage = useCallback(async function sendIpcMessage<T>(action: string, payload?: unknown): Promise<IpcResponse<T>> {
     processingCounter.begin();
     const start = performance.now();
     const envelope: IpcEnvelope = {
@@ -106,28 +107,36 @@ export default function DesktopPage() {
     } finally {
       processingCounter.end();
     }
-  }
+  }, [transport, processingCounter]);
 
-  // Sessão de dados da máquina: invalida respostas de gerações anteriores
-  const session = useMemo(() => {
-    return new MachineDataSession(sendIpcMessage, {
+  // Sessão de dados da máquina: uma instância por ciclo de efeito, de modo que o
+  // replay de efeitos (React Strict Mode) recrie a sessão com geração nova.
+  const sessionRef = useRef<MachineDataSession | null>(null);
+
+  useEffect(() => {
+    const session = new MachineDataSession(sendIpcMessage, {
       onModeChange: setMode,
+      onConnectionState: setConnectionState,
       onInventory: setInventory,
       onPolicySummary: setPolicySummary,
       onPreflight: setPreflightData,
       onScanError: setScanError,
       onScanning: setIsScanning
     });
-  }, [transport]);
-
-  // Carrega dados iniciais via IPC; o cleanup invalida a geração ao desmontar
-  useEffect(() => {
+    sessionRef.current = session;
     void session.loadInitial();
-    return () => session.dispose();
-  }, [session]);
+    return () => {
+      session.dispose();
+      if (sessionRef.current === session) {
+        sessionRef.current = null;
+      }
+    };
+  }, [sendIpcMessage]);
 
   // Alternância entre Modo Demonstração e Modo Computador Real (Feature 16)
   async function handleToggleMode(targetMode: OperatingMode) {
+    const session = sessionRef.current;
+    if (!session) return;
     await session.switchMode(targetMode);
   }
 
@@ -210,6 +219,7 @@ export default function DesktopPage() {
         isWebView2Available={isNativeWebView2}
         onToggleMode={handleToggleMode}
         isScanning={isScanning}
+        connectionState={mode === "Real" ? connectionState : "connected"}
       />
 
       {/* Error Banner when Real Scan fails */}

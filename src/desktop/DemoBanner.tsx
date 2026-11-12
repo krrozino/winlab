@@ -2,6 +2,7 @@
 
 import React from "react";
 import { OperatingMode } from "@/lib/types";
+import { ConnectionHandshakeState } from "@/desktop/machine-data-session";
 
 export interface DemoBannerProps {
   mode: OperatingMode;
@@ -9,6 +10,7 @@ export interface DemoBannerProps {
   isWebView2Available: boolean;
   onToggleMode?: (targetMode: OperatingMode) => void;
   isScanning?: boolean;
+  connectionState?: ConnectionHandshakeState;
 }
 
 export function DemoBanner({
@@ -16,7 +18,8 @@ export function DemoBanner({
   computerName,
   isWebView2Available,
   onToggleMode,
-  isScanning = false
+  isScanning = false,
+  connectionState = "connected"
 }: DemoBannerProps) {
   if (mode === "Demo") {
     return (
@@ -77,6 +80,122 @@ export function DemoBanner({
             }
           >
             {isScanning ? "Conectando ao Windows..." : "Conectar ao Computador Real →"}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (connectionState === "connecting") {
+    return (
+      <div
+        role="status"
+        aria-label="Real Computer Mode Connecting"
+        style={{
+          background: "rgba(255, 122, 18, 0.12)",
+          border: "2px solid var(--accent-2)",
+          borderRadius: 10,
+          padding: "14px 18px",
+          marginBottom: 20,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 16
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 260 }}>
+          <span style={{ fontSize: 24, flexShrink: 0 }}>⏳</span>
+          <div>
+            <strong
+              style={{
+                color: "var(--accent-2)",
+                fontSize: 13,
+                letterSpacing: "0.04em",
+                display: "block",
+                textTransform: "uppercase"
+              }}
+            >
+              [MODO COMPUTADOR REAL — CONECTANDO AO WINDOWS…]
+            </strong>
+            <span style={{ color: "var(--muted)", fontSize: 12, display: "block", marginTop: 2 }}>
+              Aguardando confirmação do host nativo. Os dados desta máquina só serão exibidos após a confirmação da conexão.
+            </span>
+          </div>
+        </div>
+
+        {onToggleMode && (
+          <button
+            type="button"
+            onClick={() => onToggleMode("Demo")}
+            className="secondary"
+            style={{
+              fontSize: 12,
+              padding: "6px 14px",
+              whiteSpace: "nowrap",
+              cursor: "pointer"
+            }}
+            title="Cancelar a conexão e retornar ao ambiente isolado de demonstração"
+          >
+            Voltar para Modo Demo
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (connectionState === "failed") {
+    return (
+      <div
+        role="alert"
+        aria-label="Real Computer Mode Connection Failed"
+        style={{
+          background: "rgba(231, 76, 60, 0.12)",
+          border: "2px solid var(--danger)",
+          borderRadius: 10,
+          padding: "14px 18px",
+          marginBottom: 20,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 16
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 260 }}>
+          <span style={{ fontSize: 24, flexShrink: 0 }}>🔴</span>
+          <div>
+            <strong
+              style={{
+                color: "var(--danger)",
+                fontSize: 13,
+                letterSpacing: "0.04em",
+                display: "block",
+                textTransform: "uppercase"
+              }}
+            >
+              [MODO COMPUTADOR REAL — FALHA NA CONEXÃO AO WINDOWS]
+            </strong>
+            <span style={{ color: "var(--muted)", fontSize: 12, display: "block", marginTop: 2 }}>
+              O host nativo não confirmou a conexão. Nenhum dado desta máquina foi obtido e nenhum selo de conexão é exibido.
+            </span>
+          </div>
+        </div>
+
+        {onToggleMode && (
+          <button
+            type="button"
+            onClick={() => onToggleMode("Demo")}
+            className="secondary"
+            style={{
+              fontSize: 12,
+              padding: "6px 14px",
+              whiteSpace: "nowrap",
+              cursor: "pointer"
+            }}
+            title="Retornar ao ambiente isolado de demonstração com dados fictícios"
+          >
+            Voltar para Modo Demo
           </button>
         )}
       </div>
