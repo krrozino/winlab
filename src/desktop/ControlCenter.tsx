@@ -7,9 +7,10 @@ import { IPC_CONSTANTS } from "@/desktop/contracts";
 import { buildWinLabPackageFiles } from "@/lib/package-integrity";
 import { createZip } from "@/lib/zip";
 import { getConfigErrors } from "@/lib/validation";
+import { DEFAULT_NETWORK_SHARE, NetworkSharePlan, generateShareServerScript, generateShareClientScript, validateNetworkShare } from "@/lib/network-share";
 import "./control-center.css";
 
-type Section = "home" | "accounts" | "apps" | "internet" | "system" | "diagnostics";
+type Section = "home" | "accounts" | "apps" | "internet" | "system" | "network" | "diagnostics";
 type AccountRole = "standard" | "admin";
 
 interface Props {
@@ -32,6 +33,7 @@ const links: { id: Section; label: string; symbol: string }[] = [
   { id: "apps", label: "Aplicativos", symbol: "▦" },
   { id: "internet", label: "Internet e navegadores", symbol: "◎" },
   { id: "system", label: "Sistema", symbol: "⚙" },
+  { id: "network", label: "Rede e pastas", symbol: "▤" },
   { id: "diagnostics", label: "Diagnóstico", symbol: "◷" }
 ];
 
@@ -84,6 +86,9 @@ export function ControlCenter({
   const [sites, setSites] = useState(config.blockedUrls.join("\n"));
   const [policyStates, setPolicyStates] = useState<Record<string, boolean>>({});
   const [policyChecked, setPolicyChecked] = useState(false);
+  const [pendingPolicies, setPendingPolicies] = useState<Record<string, boolean>>({});
+  const [profileEdited, setProfileEdited] = useState(false);
+  const [network, setNetwork] = useState<NetworkSharePlan>(DEFAULT_NETWORK_SHARE);
 
   const realInventory = mode === "Real" && inventory?.isMock !== true ? inventory : null;
   const realConnected = native && mode === "Real" && realInventory !== null && !scanError;
@@ -94,6 +99,7 @@ export function ControlCenter({
 
   function update<K extends keyof Config>(key: K, value: Config[K]) {
     setConfig({ ...config, [key]: value });
+    setProfileEdited(true);
     setFeedback({ error: false, message: "Opção atualizada no perfil. Para políticas ainda não integradas, exporte o pacote de configuração." });
   }
 
@@ -141,29 +147,58 @@ export function ControlCenter({
       const next: Record<string, boolean> = {};
       response.data.items.forEach((item) => { next[item.id] = item.currentState === "Applied" || item.currentState === "Blocked"; });
       setPolicyStates(next);
+      setPendingPolicies({});
       setPolicyChecked(true);
       setMessage("Estados consultados no Windows.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Falha ao ler políticas.", true); }
     finally { setBusy(false); }
   }
 
-  async function applyNativePolicy(id: string, scope: string) {
-    if (!realConnected) return setMessage("Conecte ao Windows para aplicar políticas.", true);
-    if (scope === "user" && !selectedUser?.sid) return setMessage("Selecione uma conta comum existente antes de aplicar restrições pessoais.", true);
-    if (!policyChecked) return setMessage("Consulte primeiro o estado real das políticas.", true);
+  function stageNativePolicy(id: string) {
+    const current = Object.prototype.hasOwnProperty.call(pendingPolicies, id) ? pendingPolicies[id] : policyStates[id];
+    setPendingPolicies((prev) => {
+      const next = { ...prev, [id]: !current };
+      if (next[id] === policyStates[id]) delete next[id];
+      return next;
+    });
+    setMessage("Alteração adicionada. Confira as opções e clique em Aplicar alterações.");
+  }
+
+  async function applyNativeChanges() {
+    if (!realConnected || !policyChecked) return setMessage("Conecte e consulte os estados antes de aplicar.", true);
+    const items = Object.entries(pendingPolicies);
+    if (!items.length) return setMessage("Nenhuma política nativa pendente.");
+    const needsUser = items.some(([id]) => nativePolicies.find((p) => p.id === id)?.scope === "user");
+    if (needsUser && !selectedUser?.sid) return setMessage("Selecione uma conta comum antes de aplicar políticas do usuário.", true);
     setBusy(true);
     try {
-      const enable = !policyStates[id];
       const response = await sendIpc<ApplyTransactionResultDto>(IPC_CONSTANTS.ACTION_APPLY_TRANSACTION, {
-        targetUserSid: scope === "user" ? selectedUser?.sid : undefined,
-        targetUserName: scope === "user" ? selectedUser?.name : undefined,
-        policies: [{ policyId: id, desiredState: enable ? "Blocked" : "NotConfigured" }]
+        targetUserSid: needsUser ? selectedUser?.sid : undefined,
+        targetUserName: needsUser ? selectedUser?.name : undefined,
+        policies: items.map(([id, enabled]) => ({ policyId: id, desiredState: enabled ? "Blocked" : "NotConfigured" }))
       });
-      if (!response.success || !response.data?.success) throw new Error(response.error || response.data?.message || "A alteração não foi confirmada.");
-      setPolicyStates((current) => ({ ...current, [id]: enable }));
-      setMessage("Alteração confirmada: " + (enable ? "bloqueio aplicado." : "bloqueio removido."));
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Falha ao aplicar política.", true); }
+      if (!response.success || !response.data?.success) throw new Error(response.error || response.data?.message || "Falha ao aplicar alterações.");
+      setPolicyStates((current) => ({ ...current, ...pendingPolicies }));
+      setPendingPolicies({});
+      setMessage("Alterações nativas aplicadas. " + (profileEdited ? "As opções de perfil restantes ainda precisam ser executadas a partir do pacote exportado." : ""));
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Não foi possível aplicar as políticas.", true); }
     finally { setBusy(false); }
+  }
+
+  function downloadNetworkScript(kind: "server" | "client") {
+    const errors = validateNetworkShare(network);
+    if (errors.length) return setMessage(errors.join(" "), true);
+    try {
+      const content = kind === "server" ? generateShareServerScript(network) : generateShareClientScript(network);
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = kind === "server" ? "winlab-servidor-pasta-alunos.ps1" : "winlab-conectar-pasta-alunos.ps1";
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage(kind === "server" ? "Script do servidor gerado. Execute no computador servidor como administrador." : "Script das estações gerado. Execute em cada conta de aluno que usará a pasta.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Não foi possível gerar o script.", true); }
   }
 
   async function exportPackage() {
@@ -208,17 +243,17 @@ export function ControlCenter({
         <header className="wl-header">
           <div><span className="wl-overline">PAINEL DO COMPUTADOR</span><h1>{links.find((item) => item.id === section)?.label}</h1></div>
           <div className="wl-head-actions">
-            <span className={"wl-state " + (realConnected ? "online" : "offline")}>{realConnected ? "Computador conectado" : mode === "Demo" ? "Simulação · dados fictícios" : "Aguardando Windows"}</span>
-            <button className="wl-button secondary" onClick={() => onRefresh()} disabled={isScanning}>Atualizar</button>
+            <span className={"wl-state " + (realConnected ? "online" : "offline")}>{realConnected ? "Computador conectado" : !native ? "Versão web" : mode === "Demo" ? "Simulação" : "Aguardando Windows"}</span>
+            {native && <button className="wl-button secondary" onClick={() => onRefresh()} disabled={isScanning}>Atualizar</button>}
           </div>
         </header>
 
         {feedback && <div role={feedback.error ? "alert" : "status"} className={"wl-feedback " + (feedback.error ? "error" : "")}>{feedback.message}</div>}
         {scanError && <div role="alert" className="wl-feedback error">Não foi possível ler este computador: {scanError}</div>}
         {!realConnected && <div className="wl-connect">
-          <div><strong>{mode === "Demo" ? "Você está vendo uma demonstração" : "Sem inventário confirmado"}</strong><p>Dados de exemplo não são dados do seu PC. Para configurar contas e aplicar regras, conecte o WinLab ao Windows.</p></div>
-          <button type="button" className="wl-button primary" disabled={!native || isScanning} onClick={() => onChangeMode("Real")}>{isScanning ? "Conectando..." : "Conectar ao Windows"}</button>
-        </div>}
+          <div><strong>{!native ? "Configure sem instalar nada" : mode === "Demo" ? "Modo de demonstração" : "Sem inventário confirmado"}</strong><p>{!native ? "Escolha suas opções e exporte o pacote para aplicar no Windows. Para alterações diretas, utilize o Desktop ou, futuramente, um agente conectado." : "O modo de demonstração não altera seu computador. Conecte para configurar o Windows real."}</p></div>
+          {native ? <button type="button" className="wl-button primary" disabled={isScanning} onClick={() => onChangeMode("Real")}>{isScanning ? "Conectando..." : "Conectar ao Windows"}</button> : <button type="button" className="wl-button secondary" onClick={onAdvanced}>Configuração avançada</button>}
+        </div>
 
         {section === "home" && <>
           <section className="wl-welcome">
@@ -237,6 +272,7 @@ export function ControlCenter({
               <button onClick={() => setSection("apps")}><strong>Instalação de programas</strong><span>Instaladores e Microsoft Store →</span></button>
               <button onClick={() => setSection("internet")}><strong>Acesso à internet</strong><span>Sites e navegadores →</span></button>
               <button onClick={() => setSection("system")}><strong>Restrições do Windows</strong><span>USB, CMD e personalização →</span></button>
+              <button onClick={() => setSection("network")}><strong>Pasta compartilhada da escola</strong><span>Conectar as máquinas da rede →</span></button>
             </div>
           </section>
         </>}
