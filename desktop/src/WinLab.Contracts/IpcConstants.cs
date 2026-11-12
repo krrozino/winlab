@@ -21,6 +21,7 @@ namespace WinLab.Contracts
 
         // Ações de Criação de Baseline e Diagnóstico de Ambiente
         public const string ActionCreateBaseline = "baseline.create";
+        public const string ActionCreateLocalAccount = "accounts.create_local";
         public const string ActionGetEnvironment = "system.environment";
 
         // Ações de Política Declarativa e Transações (Milestone 3)
@@ -44,6 +45,7 @@ namespace WinLab.Contracts
             ActionPreviewPolicyDiff,
             ActionValidateConfig,
             ActionCreateBaseline,
+            ActionCreateLocalAccount,
             ActionGetEnvironment,
             ActionQueryPolicyCatalog,
             ActionQueryPolicyStates,
