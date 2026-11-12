@@ -77,6 +77,13 @@ namespace WinLab.Desktop.Services
                         });
                     }
 
+                    case IpcConstants.ActionCreateLocalAccount:
+                    {
+                        if (!OperatingSystem.IsWindows())
+                            return IpcResponse<object>.Fail(id, "Criação de contas disponível somente no Windows.", "PLATFORM_NOT_SUPPORTED");
+                        return await _executorClient.HandleRequestAsync(rawJson);
+                    }
+
                     case IpcConstants.ActionCreateBaseline:
                     {
                         // Se estiver em ambiente sem executor ou no Linux, cria snapshot in-process
