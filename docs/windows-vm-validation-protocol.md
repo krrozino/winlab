@@ -35,9 +35,11 @@ Artifacts published by `desktop-windows`:
 
 Goal: confirm `DispatcherAgentService._activeMode` behaves as last-writer-wins with no interleaving, and that the frontend generation guard absorbs out-of-order routing.
 
-1. Launch the installed app; confirm DEMO mode.
+> **Build requirement:** use an instrumented **Debug** build for this section. `MainWindow.xaml.cs` enables `AreDevToolsEnabled` only under `#if DEBUG` and force-disables it in Release builds (`MainWindow.xaml.cs:41-45`). Never patch or enable DevTools in a Release distribution; observe IPC via the Debug build's DevTools console or via safe test log output instead.
+
+1. Launch the Debug build; confirm DEMO mode.
 2. Toggle REAL, then DEMO, then REAL in rapid succession (faster than one IPC round-trip).
-3. In the WebView2 DevTools console, observe `mode.set` and query traffic.
+3. In the WebView2 DevTools console (Debug build only), observe `mode.set` and query traffic.
 4. Expected: each generation sends `mode.set` first, queries only after its own ack; no query response from a previous generation mutates the UI.
 5. Record the dispatcher log lines showing `_activeMode` transitions; a query routed before a `mode.set` may return the previous service's data and must be discarded by the frontend (generation check), not by the host.
 
@@ -45,17 +47,28 @@ Goal: confirm `DispatcherAgentService._activeMode` behaves as last-writer-wins w
 
 Goal: verify the UI never claims verified real data when `inventory.query` fails after a successful `mode.set`.
 
-1. Connect to REAL with the agent healthy; confirm the green seal.
-2. Force `inventory.query` failure (stop the scanner service / disconnect the agent transport while keeping the window open).
+> **Harness requirement:** there is no standalone scanner service to stop. `RealAgentService` invokes `IWindowsScanner` directly in-process (`RealAgentService.cs:20-25`, `:64`). Force the failure through an injectable test harness — a fault-injecting `IWindowsScanner` (or an instrumented Debug build that rejects `inventory.query` on demand) — without stopping the executor, killing the app, or mutating real policies.
+
+1. Connect to REAL with the harness scanner healthy; confirm the green seal.
+2. Make `inventory.query` fail via the injectable `IWindowsScanner` fixture while keeping the window open.
 3. Expected: `hasReadError` banner subtitle — "Conexão ao host nativo confirmada, porém a leitura dos dados desta máquina falhou. Nenhum dado real foi obtido ou verificado." — with the warning color; no claim of OS-sourced data.
 4. Screenshot required as evidence.
 
-## 5. `isMock=true` rejection in REAL mode (host side)
+## 5. `isMock=true` rejection in REAL mode (host side) — PENDING IMPLEMENTATION
 
-Goal: confirm the native host never accepts mock-flagged inventory as real.
+**Status: NOT implemented. Do not treat as guaranteed behavior.**
+
+Current state: `MachineDataSession.queryMachineData` (`machine-data-session.ts:88`) accepts any successful `inventory.query` payload without checking `isMock`. The PR #27 origin-integrity guard blocks **export** of mock-flagged data, but it does not prevent such data from being rendered in the UI as if it were real inventory.
+
+Pending work (requires its own issue/PR, out of scope here):
+
+1. Host-side or session-level rejection of `isMock: true` payloads while in REAL mode, before any UI exposure.
+2. The VM test below only becomes executable after that implementation exists.
+
+Test plan (once implemented):
 
 1. Inject an IPC `inventory.query` response with `isMock: true` while in REAL mode (test harness build).
-2. Expected: host-side refusal to treat the payload as real inventory; UI shows the origin inconsistency state from PR #27 (no REAL diagnostic export).
+2. Expected: the payload is refused before rendering; UI shows the origin inconsistency state from PR #27 and no REAL diagnostic export.
 
 ## 6. React Strict Mode + WebView2 teardown
 
@@ -70,6 +83,8 @@ Goal: confirm the native host never accepts mock-flagged inventory as real.
 2. Launch the installed app; confirm offline operation with networking disabled (no Next.js server dependency): inventory, policies, preflight, and Diagnostic Report all render.
 3. Confirm the green REAL seal only appears after a validated `mode.set` ack from the native host.
 4. Uninstall; confirm no leftover services or scheduled tasks.
+
+> The SHA256 sidecar produced by CI proves artifact integrity in transit, not authenticity: the installer is **not code-signed**, and an installation homologation (UAC flow, WebView2 runtime matrix, clean uninstall) remains pending per this protocol.
 
 ## 8. Interactive homologation — explicitly pending
 
