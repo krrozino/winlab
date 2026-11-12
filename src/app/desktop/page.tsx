@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { createDesktopTransport, isWebView2Available } from "@/desktop/ipc-bridge";
 import {
@@ -19,6 +19,7 @@ import { Config, OperatingMode, PresetId } from "@/lib/types";
 import { DemoBanner } from "@/desktop/DemoBanner";
 import { DiagnosticReport } from "@/desktop/DiagnosticReport";
 import { FirstRunWizard } from "@/desktop/FirstRunWizard";
+import { MachineDataSession, PreflightSnapshotWithMessage, createProcessingCounter } from "@/desktop/machine-data-session";
 
 interface IpcLogEntry {
   id: string;
@@ -43,13 +44,7 @@ export default function DesktopPage() {
   // Estado do inventário e políticas obtidos via IPC
   const [inventory, setInventory] = useState<MachineInventoryDto | null>(null);
   const [policySummary, setPolicySummary] = useState<PolicyStateSummaryDto | null>(null);
-  const [preflightData, setPreflightData] = useState<{
-    computerName: string;
-    status: string;
-    readinessScore: number;
-    summary: { pass: number; warn: number; block: number };
-    readinessMessage: string;
-  } | null>(null);
+  const [preflightData, setPreflightData] = useState<PreflightSnapshotWithMessage | null>(null);
 
   // Estado da configuração ativa
   const [config, setConfig] = useState<Config>(defaultConfig);
@@ -70,10 +65,11 @@ export default function DesktopPage() {
   // Log de mensagens IPC
   const [ipcLogs, setIpcLogs] = useState<IpcLogEntry[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const processingCounter = useMemo(() => createProcessingCounter(setIsProcessing), []);
 
   // Função central para envio de mensagens IPC tipadas
   async function sendIpcMessage<T>(action: string, payload?: unknown): Promise<IpcResponse<T>> {
-    setIsProcessing(true);
+    processingCounter.begin();
     const start = performance.now();
     const envelope: IpcEnvelope = {
       id: crypto.randomUUID(),
@@ -89,127 +85,50 @@ export default function DesktopPage() {
       }
     };
 
-    const response = (await transport.handleRequest<T>(envelope)) as IpcResponse<T>;
-    const durationMs = Math.round(performance.now() - start);
+    try {
+      const response = (await transport.handleRequest<T>(envelope)) as IpcResponse<T>;
+      const durationMs = Math.round(performance.now() - start);
 
-    setIpcLogs((prev) => [
-      {
-        id: envelope.id,
-        timestamp: new Date().toLocaleTimeString(),
-        action,
-        type: envelope.type,
-        success: response.success,
-        error: response.error,
-        durationMs
-      },
-      ...prev.slice(0, 19)
-    ]);
+      setIpcLogs((prev) => [
+        {
+          id: envelope.id,
+          timestamp: new Date().toLocaleTimeString(),
+          action,
+          type: envelope.type,
+          success: response.success,
+          error: response.error,
+          durationMs
+        },
+        ...prev.slice(0, 19)
+      ]);
 
-    setIsProcessing(false);
-    return response;
+      return response;
+    } finally {
+      processingCounter.end();
+    }
   }
 
-  // Carrega dados iniciais via IPC Mock
+  // Sessão de dados da máquina: invalida respostas de gerações anteriores
+  const session = useMemo(() => {
+    return new MachineDataSession(sendIpcMessage, {
+      onModeChange: setMode,
+      onInventory: setInventory,
+      onPolicySummary: setPolicySummary,
+      onPreflight: setPreflightData,
+      onScanError: setScanError,
+      onScanning: setIsScanning
+    });
+  }, [transport]);
+
+  // Carrega dados iniciais via IPC; o cleanup invalida a geração ao desmontar
   useEffect(() => {
-    async function loadInitialData() {
-      const invRes = await sendIpcMessage<MachineInventoryDto>(IPC_CONSTANTS.ACTION_QUERY_INVENTORY);
-      if (invRes.success && invRes.data) {
-        setInventory(invRes.data);
-      }
-
-      const polRes = await sendIpcMessage<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE);
-      if (polRes.success && polRes.data) {
-        setPolicySummary(polRes.data);
-      }
-
-      const preRes = await sendIpcMessage<{
-        computerName: string;
-        status: string;
-        readinessScore: number;
-        summary: { pass: number; warn: number; block: number };
-        readinessMessage: string;
-      }>(IPC_CONSTANTS.ACTION_QUERY_PREFLIGHT);
-      if (preRes.success && preRes.data) {
-        setPreflightData(preRes.data);
-      }
-    }
-
-    loadInitialData();
-  }, []);
+    void session.loadInitial();
+    return () => session.dispose();
+  }, [session]);
 
   // Alternância entre Modo Demonstração e Modo Computador Real (Feature 16)
   async function handleToggleMode(targetMode: OperatingMode) {
-    if (targetMode === "Real") {
-      // Invariante de Purga (Zero-Masquerade): limpa dados mock de forma síncrona
-      setInventory(null);
-      setPolicySummary(null);
-      setPreflightData(null);
-      setScanError(null);
-      setMode("Real");
-
-      setIsScanning(true);
-      try {
-        await sendIpcMessage("mode.set", { mode: "Real" });
-        const res = await sendIpcMessage<MachineInventoryDto>(IPC_CONSTANTS.ACTION_QUERY_INVENTORY);
-        if (res.success && res.data) {
-          setInventory(res.data);
-        } else {
-          setScanError(res.error || "Falha ao escanear o computador real.");
-        }
-
-        const polRes = await sendIpcMessage<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE);
-        if (polRes.success && polRes.data) {
-          setPolicySummary(polRes.data);
-        }
-
-        const preRes = await sendIpcMessage<{
-          computerName: string;
-          status: string;
-          readinessScore: number;
-          summary: { pass: number; warn: number; block: number };
-          readinessMessage: string;
-        }>(IPC_CONSTANTS.ACTION_QUERY_PREFLIGHT);
-        if (preRes.success && preRes.data) {
-          setPreflightData(preRes.data);
-        }
-      } catch (err) {
-        setScanError((err as Error).message);
-      } finally {
-        setIsScanning(false);
-      }
-    } else {
-      // Retorno ao Modo Demo
-      setInventory(null);
-      setPolicySummary(null);
-      setPreflightData(null);
-      setScanError(null);
-      setMode("Demo");
-
-      setIsScanning(true);
-      try {
-        await sendIpcMessage("mode.set", { mode: "Demo" });
-        const invRes = await sendIpcMessage<MachineInventoryDto>(IPC_CONSTANTS.ACTION_QUERY_INVENTORY);
-        if (invRes.success && invRes.data) {
-          setInventory(invRes.data);
-        }
-        const polRes = await sendIpcMessage<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE);
-        if (polRes.success && polRes.data) {
-          setPolicySummary(polRes.data);
-        }
-        const preRes = await sendIpcMessage<{
-          computerName: string;
-          status: string;
-          readinessScore: number;
-          summary: { pass: number; warn: number; block: number };
-          readinessMessage: string;
-        }>(IPC_CONSTANTS.ACTION_QUERY_PREFLIGHT);
-        if (preRes.success && preRes.data) {
-          setPreflightData(preRes.data);
-        }
-      } finally {
-        setIsScanning(false);
-      }
-    }
+    await session.switchMode(targetMode);
   }
 
   // Seleciona um preset
