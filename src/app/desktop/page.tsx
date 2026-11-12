@@ -220,6 +220,7 @@ export default function DesktopPage() {
         onToggleMode={handleToggleMode}
         isScanning={isScanning}
         connectionState={mode === "Real" ? connectionState : "connected"}
+        hasReadError={mode === "Real" && !!scanError}
       />
 
       {/* Error Banner when Real Scan fails */}

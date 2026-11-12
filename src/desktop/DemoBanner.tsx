@@ -11,6 +11,7 @@ export interface DemoBannerProps {
   onToggleMode?: (targetMode: OperatingMode) => void;
   isScanning?: boolean;
   connectionState?: ConnectionHandshakeState;
+  hasReadError?: boolean;
 }
 
 export function DemoBanner({
@@ -19,7 +20,8 @@ export function DemoBanner({
   isWebView2Available,
   onToggleMode,
   isScanning = false,
-  connectionState = "connected"
+  connectionState = "connected",
+  hasReadError = false
 }: DemoBannerProps) {
   if (mode === "Demo") {
     return (
@@ -233,8 +235,10 @@ export function DemoBanner({
           >
             [MODO COMPUTADOR REAL — CONECTADO AO WINDOWS: {computerName ?? "ESTAÇÃO LOCAL"}]
           </strong>
-          <span style={{ color: "var(--muted)", fontSize: 12, display: "block", marginTop: 2 }}>
-            Dados de hardware, contas locais e aplicativos obtidos diretamente do sistema operacional via IPC nativo.
+          <span style={{ color: hasReadError ? "var(--warning)" : "var(--muted)", fontSize: 12, display: "block", marginTop: 2 }}>
+            {hasReadError
+              ? "Conexão ao host nativo confirmada, porém a leitura dos dados desta máquina falhou. Nenhum dado real foi obtido ou verificado."
+              : "Dados de hardware, contas locais e aplicativos obtidos diretamente do sistema operacional via IPC nativo."}
           </span>
         </div>
       </div>
