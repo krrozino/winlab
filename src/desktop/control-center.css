@@ -69,3 +69,9 @@
 .wl-external:hover{text-decoration:underline;color:#fff}
 @media(max-width:980px){.wl-shell{grid-template-columns:210px minmax(0,1fr)}.wl-main{padding:25px}.wl-nav{font-size:12px;gap:8px}.wl-welcome{padding:26px}.wl-account-form .wl-fields{grid-template-columns:1fr 1fr}}
 @media(max-width:720px){.wl-shell{display:block}.wl-side{position:relative;border-right:0;border-bottom:1px solid var(--wl-border);padding:14px}.wl-logo{padding-bottom:10px}.wl-side-label{display:none}.wl-side nav{display:flex;overflow-x:auto;gap:8px;padding:6px 0}.wl-nav{flex:0 0 auto;width:auto;padding:9px 12px}.wl-side-bottom{display:none}.wl-main{padding:24px 16px}.wl-welcome,.wl-connect,.wl-export{align-items:flex-start;flex-direction:column}.wl-stats{grid-template-columns:1fr}.wl-shortcuts,.wl-fields,.wl-account-form .wl-fields,.wl-diagnostics{grid-template-columns:1fr}.wl-card{padding:18px}.wl-card-title{flex-direction:column}.wl-role-choice{grid-template-columns:1fr}}
+
+.wl-apply-row{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid #334250;padding-top:19px;margin-top:8px;color:#a9b7c4;font-size:12px}
+.wl-network-steps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;margin-bottom:16px}
+.wl-network-steps>div{display:flex;flex-direction:column;align-items:flex-start;gap:10px;background:#101923;border:1px solid #344554;border-radius:12px;padding:20px}
+.wl-network-steps strong{font-size:14px}.wl-network-steps p{margin:0 0 10px;line-height:1.6}
+@media(max-width:720px){.wl-network-steps{grid-template-columns:1fr}.wl-apply-row{align-items:flex-start;flex-direction:column}}
