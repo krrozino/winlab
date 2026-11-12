@@ -328,13 +328,39 @@ export function ControlCenter({
             <button className="wl-button secondary" onClick={() => { setConfig({ ...config, browserUrlMode: "BlockList", blockedUrls: sites.split(/\r?\n/).map((x) => x.trim()).filter(Boolean) }); setMessage("Lista salva no perfil. Exporte o pacote para utilizá-la."); }}>Salvar lista no perfil</button>
           </section>}
           <section className="wl-card">
-            <div className="wl-card-title"><div><h2>Aplicação direta no Windows</h2><p>Essas cinco políticas já possuem executor nativo. Leia o estado real antes de alterá-las.</p></div><button className="wl-button secondary" disabled={busy || !realConnected} onClick={queryNativePolicies}>Consultar estados</button></div>
+            <div className="wl-card-title"><div><h2>Políticas aplicáveis diretamente</h2><p>Selecione as alterações abaixo e clique uma única vez em Aplicar alterações. Algumas opções gerais acima ainda precisam do pacote exportado.</p></div><button className="wl-button secondary" disabled={busy || !realConnected} onClick={queryNativePolicies}>Consultar estados</button></div>
             {nativePolicies.filter((p) => (section === "internet" ? p.scope === "machine" : section === "system" ? p.scope === "user" : false)).map((p) =>
-              <div className="wl-setting" key={p.id}><div><strong>{p.label}</strong><p>{!policyChecked ? "Estado ainda não consultado" : policyStates[p.id] ? "Bloqueio aplicado no Windows" : "Não bloqueado"}</p></div><button className="wl-button secondary" disabled={busy || !realConnected || !policyChecked} onClick={() => applyNativePolicy(p.id, p.scope)}>{!policyChecked ? "Consultar" : policyStates[p.id] ? "Desativar" : "Ativar"}</button></div>
+              <div className="wl-setting" key={p.id}><div><strong>{p.label}</strong><p>{!policyChecked ? "Estado ainda não consultado" : Object.prototype.hasOwnProperty.call(pendingPolicies, p.id) ? "Alteração selecionada · ainda não aplicada" : policyStates[p.id] ? "Bloqueio aplicado no Windows" : "Não bloqueado"}</p></div><Switch checked={Object.prototype.hasOwnProperty.call(pendingPolicies, p.id) ? pendingPolicies[p.id] : (policyStates[p.id] || false)} label={p.label} onChange={() => stageNativePolicy(p.id)} /></div>
             )}
-            {section === "apps" && <p className="wl-muted">O bloqueio de instaladores e da Store ainda é gerado em pacote, não aplicado diretamente pelo executor. Não é possível prometer “solicitar senha” para toda instalação sem configurar as políticas correspondentes do Windows.</p>}
+            {section === "apps" && <p className="wl-muted">Instaladores e Microsoft Store ainda são configurados por pacote. O UAC sozinho não exige senha para toda instalação.</p>}
+            {nativePolicies.some((p) => section === "internet" ? p.scope === "machine" : section === "system" ? p.scope === "user" : false) &&
+              <div className="wl-apply-row"><span>{Object.keys(pendingPolicies).length} alteração(ões) nativa(s) selecionada(s)</span><button className="wl-button primary" disabled={busy || !realConnected || !policyChecked || Object.keys(pendingPolicies).length === 0} onClick={applyNativeChanges}>{busy ? "Aplicando..." : "Aplicar alterações"}</button></div>}
           </section>
           <section className="wl-export"><div><strong>Salvar e reutilizar configurações</strong><p>Gera scripts e um arquivo de configuração. A exportação não altera o computador.</p></div><button className="wl-button primary" disabled={busy} onClick={exportPackage}>Exportar pacote</button></section>
+        </>}
+
+        {section === "network" && <>
+          <section className="wl-welcome">
+            <div><span className="wl-overline">REDE LOCAL · SMB</span><h2>Uma pasta para todos os alunos.</h2><p>Escolha um computador como servidor. Os outros computadores poderão acessar a mesma pasta pela rede da escola.</p></div>
+          </section>
+          <section className="wl-card">
+            <div className="wl-card-title"><div><h2>Configuração da rede</h2><p>O servidor precisa permanecer ligado e acessível. As máquinas devem estar na mesma rede local e ter credenciais autorizadas para acessar a pasta.</p></div></div>
+            <div className="wl-fields">
+              <label>Nome do computador servidor<input value={network.server} placeholder="PC-SERVIDOR" onChange={(event) => setNetwork({ ...network, server: event.target.value })} /></label>
+              <label>Nome da pasta compartilhada<input value={network.shareName} placeholder="Alunos" onChange={(event) => setNetwork({ ...network, shareName: event.target.value })} /></label>
+              <label>Pasta local no servidor<input value={network.rootPath} placeholder={"C:\\WinLab\\Alunos"} onChange={(event) => setNetwork({ ...network, rootPath: event.target.value })} /></label>
+              <label>Letra da unidade nos computadores<select value={network.driveLetter} onChange={(event) => setNetwork({ ...network, driveLetter: event.target.value })}>{["Z","Y","X","W","V","U","T","S","R","Q","P","O","N","M","L","K","J","I","H","G","F","E","D"].map((letter) => <option value={letter} key={letter}>{letter}:</option>)}</select></label>
+            </div>
+            {network.server && <p className="wl-muted">Caminho na rede: \\{network.server}\\{network.shareName} · Unidade {network.driveLetter.toUpperCase()}:</p>}
+          </section>
+          <section className="wl-card">
+            <div className="wl-card-title"><div><h2>Preparar servidor e estações</h2><p>Nesta primeira etapa, o WinLab gera os procedimentos de configuração; não cria ou conecta pastas automaticamente.</p></div></div>
+            <div className="wl-network-steps">
+              <div><strong>1. Preparar o computador servidor</strong><p>Cria o compartilhamento e permite gravação aos usuários autenticados. Execute apenas na máquina servidora, com autorização administrativa.</p><button className="wl-button secondary" onClick={() => downloadNetworkScript("server")}>Gerar configuração do servidor</button></div>
+              <div><strong>2. Conectar os computadores dos alunos</strong><p>Mapeia a pasta compartilhada como unidade de rede. Execute na sessão do usuário que utilizará os arquivos, em cada estação.</p><button className="wl-button primary" onClick={() => downloadNetworkScript("client")}>Gerar configuração das estações</button></div>
+            </div>
+            <p className="wl-muted">Esta pasta é coletiva: alunos autenticados com acesso poderão consultar e alterar arquivos uns dos outros. Pastas privadas e implantação remota em grupo serão adicionadas com o agente de rede.</p>
+          </section>
         </>}
 
         {section === "diagnostics" && <>
@@ -347,11 +373,11 @@ export function ControlCenter({
             </div>
           </section>
           <section className="wl-card"><div className="wl-card-title"><div><h2>Ambiente de demonstração</h2><p>Serve para testar menus e fluxos sem modificar contas nem políticas. Não representa o computador físico.</p></div></div>
-            <button className="wl-button secondary" onClick={() => onChangeMode(mode === "Demo" ? "Real" : "Demo")}>{mode === "Demo" ? "Voltar ao computador real" : "Entrar em simulação"}</button>
+            {native && <button className="wl-button secondary" onClick={() => onChangeMode(mode === "Demo" ? "Real" : "Demo")}>{mode === "Demo" ? "Voltar ao computador real" : "Entrar em simulação"}</button>}
           </section>
         </>}
 
-        <footer className="wl-footer"><span>WinLab Desktop · Administração local</span><button className="wl-external" onClick={() => window.open("https://winlab-krrozino-s-projects.vercel.app/", "_blank", "noopener,noreferrer")}>Abrir versão web no navegador ↗</button></footer>
+        <footer className="wl-footer"><span>WinLab · {native ? "Desktop" : "Web"} · Administração de computadores</span>{native ? <button className="wl-external" onClick={() => window.open("https://winlab-krrozino-s-projects.vercel.app/", "_blank", "noopener,noreferrer")}>Abrir versão web no navegador ↗</button> : <button className="wl-external" onClick={onAdvanced}>Configuração avançada ↗</button>}</footer>
       </div>
     </div>
   );
