@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Diagnostics;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
 using WinLab.Desktop.Bridge;
@@ -48,7 +49,7 @@ namespace WinLab.Desktop
 
                 // Restrição de navegação: cancela qualquer navegação fora da origem autorizada
                 WebView.CoreWebView2.NavigationStarting += CoreWebView2_NavigationStarting;
-                WebView.CoreWebView2.NewWindowRequested += (s, args) => args.Handled = true;
+                WebView.CoreWebView2.NewWindowRequested += CoreWebView2_NewWindowRequested;
 
                 // Inicializa ponte IPC
                 _bridge = new WebViewBridge(WebView.CoreWebView2, _agentService);
@@ -84,7 +85,7 @@ namespace WinLab.Desktop
 #endif
                 }
 
-                StatusText.Text = "WinLab Desktop ativo. Conectado ao Mock Agent (Shell Não-Privilegiado).";
+                StatusText.Text = "WinLab pronto. Conectando aos dados deste computador...";
             }
             catch (Exception ex)
             {
@@ -95,6 +96,25 @@ namespace WinLab.Desktop
                     MessageBoxButton.OK,
                     MessageBoxImage.Error
                 );
+            }
+        }
+
+        private void CoreWebView2_NewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs args)
+        {
+            // O configurador web abre no navegador padrão, jamais em outra página interna.
+            args.Handled = true;
+            if (!Uri.TryCreate(args.Uri, UriKind.Absolute, out var url) ||
+                url.Scheme != Uri.UriSchemeHttps ||
+                !string.Equals(url.Host, "winlab-krrozino-s-projects.vercel.app", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(url.AbsoluteUri) { UseShellExecute = true });
+            }
+            catch (Exception)
+            {
+                StatusText.Text = "Não foi possível abrir o navegador padrão.";
             }
         }
 
