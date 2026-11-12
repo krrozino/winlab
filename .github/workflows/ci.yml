@@ -194,6 +194,27 @@ jobs:
             Write-Host "Installer OK: $($installer.Name) ($($installer.Length) bytes), SHA256: $hash"
           }
 
+      - name: Package Auto-Updatable Desktop
+        shell: pwsh
+        run: |
+          dotnet tool install --tool-path .tools vpk --version 1.2.161
+          .\\.tools\\vpk.exe pack --packId WinLab.Desktop --packTitle "WinLab" --packVersion 0.9.1 --packDir artifacts/publish/desktop --mainExe WinLab.Desktop.exe --runtime win-x64 --outputDir artifacts/velopack --delta none
+          $installer = Get-ChildItem "artifacts/velopack/*-Setup.exe" -ErrorAction SilentlyContinue
+          $feed = Get-ChildItem "artifacts/velopack/releases.*.json" -ErrorAction SilentlyContinue
+          $package = Get-ChildItem "artifacts/velopack/*-full.nupkg" -ErrorAction SilentlyContinue
+          if (-not $installer -or -not $feed -or -not $package) {
+            Write-Error "Velopack installer, feed or full update package missing"
+            exit 1
+          }
+          Write-Host "Auto-update package ready: $($installer[0].Name)"
+
+      - name: Upload Auto-Updatable Windows Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinLab-AutoUpdate-Installer-x64
+          if-no-files-found: error
+          path: artifacts/velopack/
+
       - name: Upload Published Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
