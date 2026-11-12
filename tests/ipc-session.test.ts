@@ -505,6 +505,41 @@ test("DemoBanner never shows the connected REAL seal while connecting or on fail
   assert.match(demo, /MODO DEMONSTRAÇÃO/);
 });
 
+test("DemoBanner distinguishes a confirmed connection from verified data when the machine read fails", () => {
+  const base = {
+    mode: "Real" as OperatingMode,
+    computerName: "REAL-PC",
+    isWebView2Available: true,
+    connectionState: "connected" as ConnectionHandshakeState
+  };
+
+  const withError = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(DemoBanner, { ...base, hasReadError: true })
+  );
+  assert.match(withError, /CONECTADO AO WINDOWS/, "connection confirmation itself remains visible");
+  assert.match(withError, /leitura dos dados desta m\u00e1quina falhou/);
+  assert.match(withError, /Nenhum dado real foi obtido ou verificado/, "failed read must disclaim verified real data");
+  assert.equal(
+    withError.includes("obtidos diretamente do sistema operacional"),
+    false,
+    "failed read must not claim data was obtained directly from the OS"
+  );
+
+  const withoutError = ReactDOMServer.renderToStaticMarkup(
+    React.createElement(DemoBanner, { ...base, hasReadError: false })
+  );
+  assert.match(withoutError, /CONECTADO AO WINDOWS/);
+  assert.match(withoutError, /obtidos diretamente do sistema operacional/);
+  assert.equal(
+    withoutError.includes("leitura dos dados desta m\u00e1quina falhou"),
+    false,
+    "successful read keeps the standard subtitle"
+  );
+
+  const omitted = ReactDOMServer.renderToStaticMarkup(React.createElement(DemoBanner, { ...base }));
+  assert.match(omitted, /obtidos diretamente do sistema operacional/, "omitted hasReadError keeps backward-compatible subtitle");
+});
+
 test("processing counter stays true while any request is pending", () => {
   let processing = false;
   const counter = createProcessingCounter((value) => {

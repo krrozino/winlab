@@ -2,9 +2,13 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - 'feat/**'
+      - 'vibe/**'
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -29,7 +33,7 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Tests
         run: npm test
@@ -55,7 +59,7 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Generate representative WinLab scripts
         run: npm run fixtures
@@ -71,7 +75,7 @@ jobs:
   desktop-windows:
     name: WinLab Desktop on Windows (.NET 10 & WPF)
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -88,11 +92,31 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+
+      - name: Tests
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Export Desktop Static Assets
-        shell: bash
+        shell: pwsh
         run: npm run build:desktop
+
+      - name: Validate Offline Assets Before .NET Build
+        shell: pwsh
+        run: |
+          $entry = "desktop/src/WinLab.Desktop/wwwroot/desktop/index.html"
+          if (-not (Test-Path $entry)) {
+            Write-Error "Missing offline entry point: $entry"
+            exit 1
+          }
+          if ((Get-Item $entry).Length -le 0) {
+            Write-Error "Offline entry point is empty: $entry"
+            exit 1
+          }
+          Write-Host "Offline entry point OK: $entry ($((Get-Item $entry).Length) bytes)"
 
       - name: Restore .NET Solution Dependencies
         run: dotnet restore desktop/WinLab.sln
@@ -106,23 +130,68 @@ jobs:
       - name: Publish Self-Contained Desktop Application
         run: dotnet publish desktop/src/WinLab.Desktop/WinLab.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/publish/desktop
 
+      - name: Validate Published Artifacts
+        shell: pwsh
+        run: |
+          $exe = "artifacts/publish/desktop/WinLab.Desktop.exe"
+          $entry = "artifacts/publish/desktop/wwwroot/desktop/index.html"
+          if (-not (Test-Path $exe)) {
+            Write-Error "Missing published executable: $exe"
+            exit 1
+          }
+          if ((Get-Item $exe).Length -le 0) {
+            Write-Error "Published executable is empty: $exe"
+            exit 1
+          }
+          if (-not (Test-Path $entry)) {
+            Write-Error "Published package is missing offline assets: $entry"
+            exit 1
+          }
+          if ((Get-Item $entry).Length -le 0) {
+            Write-Error "Published offline entry point is empty: $entry"
+            exit 1
+          }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          Set-Content -Path "$exe.sha256" -Value $hash
+          Write-Host "Published executable OK ($((Get-Item $exe).Length) bytes), SHA256: $hash"
+
       - name: Compile Inno Setup Installer
         shell: pwsh
         run: |
           choco install innosetup --no-progress -y
           iscc desktop\packaging\winlab.iss
 
+      - name: Validate Installer Artifact
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem "artifacts/installers/*.exe" -ErrorAction SilentlyContinue
+          if (-not $installers -or $installers.Count -eq 0) {
+            Write-Error "No installer produced under artifacts/installers/"
+            exit 1
+          }
+          foreach ($installer in $installers) {
+            if ($installer.Length -le 0) {
+              Write-Error "Installer is empty: $($installer.FullName)"
+              exit 1
+            }
+            $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash
+            Set-Content -Path "$($installer.FullName).sha256" -Value $hash
+            Write-Host "Installer OK: $($installer.Name) ($($installer.Length) bytes), SHA256: $hash"
+          }
+
       - name: Upload Published Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
           name: winlab-desktop-win-x64
-          path: artifacts/publish/desktop/
+          path: |
+            artifacts/publish/desktop/
+            artifacts/publish/desktop/WinLab.Desktop.exe.sha256
 
       - name: Upload Installer Artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: WinLab-Desktop-Installer-x64
-          path: artifacts/installers/*.exe
-
-
+          path: |
+            artifacts/installers/*.exe
+            artifacts/installers/*.exe.sha256
