@@ -253,7 +253,7 @@ export function ControlCenter({
         {!realConnected && <div className="wl-connect">
           <div><strong>{!native ? "Configure sem instalar nada" : mode === "Demo" ? "Modo de demonstração" : "Sem inventário confirmado"}</strong><p>{!native ? "Escolha suas opções e exporte o pacote para aplicar no Windows. Para alterações diretas, utilize o Desktop ou, futuramente, um agente conectado." : "O modo de demonstração não altera seu computador. Conecte para configurar o Windows real."}</p></div>
           {native ? <button type="button" className="wl-button primary" disabled={isScanning} onClick={() => onChangeMode("Real")}>{isScanning ? "Conectando..." : "Conectar ao Windows"}</button> : <button type="button" className="wl-button secondary" onClick={onAdvanced}>Configuração avançada</button>}
-        </div>
+        </div>}
 
         {section === "home" && <>
           <section className="wl-welcome">
