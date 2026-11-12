@@ -1,0 +1,66 @@
+name: Publish WinLab Desktop updates
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish-desktop:
+    name: Package and publish stable desktop release
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout tagged code
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Use .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install web dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Export WinLab interface for offline desktop
+        run: npm run build:desktop
+
+      - name: Test web and IPC contracts
+        run: npm test
+
+      - name: Publish Windows desktop
+        run: dotnet publish desktop/src/WinLab.Desktop/WinLab.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/publish/desktop
+
+      - name: Publish elevated helper
+        run: dotnet publish desktop/src/WinLab.Executor/WinLab.Executor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/publish/desktop
+
+      - name: Package WinLab for automatic updates
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^desktop-v([0-9]+\.[0-9]+\.[0-9]+)$') {
+            throw "Tag de atualização inválida: $env:GITHUB_REF_NAME"
+          }
+          $version = $Matches[1]
+          dotnet tool install --tool-path .tools vpk --version 1.2.161
+          .\.tools\vpk.exe pack --packId WinLab.Desktop --packTitle "WinLab" --packVersion $version --packDir artifacts/publish/desktop --mainExe WinLab.Desktop.exe --runtime win-x64 --outputDir artifacts/velopack --delta none
+          if (-not (Test-Path "artifacts/velopack/releases.win.json")) {
+            throw "Feed de atualização ausente"
+          }
+
+      - name: Publish GitHub Release and update feed
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $files = @(Get-ChildItem "artifacts/velopack" -File | Select-Object -ExpandProperty FullName)
+          if ($files.Count -lt 3) { throw "Pacote de atualização incompleto" }
+          gh release create "$env:GITHUB_REF_NAME" $files --repo "${{ github.repository }}" --verify-tag --title "WinLab Desktop $env:GITHUB_REF_NAME" --notes "Versão estável para instalação e atualizações automáticas no Windows."
