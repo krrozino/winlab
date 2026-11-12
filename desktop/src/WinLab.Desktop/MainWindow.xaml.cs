@@ -86,6 +86,7 @@ namespace WinLab.Desktop
                 }
 
                 StatusText.Text = "WinLab pronto. Conectando aos dados deste computador...";
+                DesktopUpdateService.Start();
             }
             catch (Exception ex)
             {
