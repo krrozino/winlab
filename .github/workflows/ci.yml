@@ -130,10 +130,14 @@ jobs:
       - name: Publish Self-Contained Desktop Application
         run: dotnet publish desktop/src/WinLab.Desktop/WinLab.Desktop.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/publish/desktop
 
+      - name: Publish Elevated Executor Helper
+        run: dotnet publish desktop/src/WinLab.Executor/WinLab.Executor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/publish/desktop
+
       - name: Validate Published Artifacts
         shell: pwsh
         run: |
           $exe = "artifacts/publish/desktop/WinLab.Desktop.exe"
+          $helper = "artifacts/publish/desktop/WinLab.Executor.exe"
           $entry = "artifacts/publish/desktop/wwwroot/desktop/index.html"
           if (-not (Test-Path $exe)) {
             Write-Error "Missing published executable: $exe"
@@ -141,6 +145,14 @@ jobs:
           }
           if ((Get-Item $exe).Length -le 0) {
             Write-Error "Published executable is empty: $exe"
+            exit 1
+          }
+          if (-not (Test-Path $helper)) {
+            Write-Error "Missing elevated executor helper: $helper"
+            exit 1
+          }
+          if ((Get-Item $helper).Length -le 0) {
+            Write-Error "Elevated executor helper is empty: $helper"
             exit 1
           }
           if (-not (Test-Path $entry)) {
@@ -154,6 +166,9 @@ jobs:
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
           Set-Content -Path "$exe.sha256" -Value $hash
           Write-Host "Published executable OK ($((Get-Item $exe).Length) bytes), SHA256: $hash"
+          $helperHash = (Get-FileHash $helper -Algorithm SHA256).Hash
+          Set-Content -Path "$helper.sha256" -Value $helperHash
+          Write-Host "Elevated executor helper OK ($((Get-Item $helper).Length) bytes), SHA256: $helperHash"
 
       - name: Compile Inno Setup Installer
         shell: pwsh
