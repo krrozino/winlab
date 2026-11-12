@@ -166,7 +166,8 @@ export class WebViewIpcBridge implements DesktopIpcTransport {
  */
 export function createDesktopTransport(): DesktopIpcTransport {
   if (isWebView2Available()) {
-    return new WebViewIpcBridge();
+    // A autorização UAC pode levar até 45s: o IPC não deve expirar antes do Windows.
+    return new WebViewIpcBridge(70000);
   }
   return new MockDesktopAgent();
 }
