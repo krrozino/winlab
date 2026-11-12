@@ -8,6 +8,7 @@
     <LangVersion>12</LangVersion>
     <RootNamespace>WinLab.Desktop</RootNamespace>
     <AssemblyName>WinLab.Desktop</AssemblyName>
+    <Version>0.9.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <StartupObject>WinLab.Desktop.App</StartupObject>
   </PropertyGroup>
