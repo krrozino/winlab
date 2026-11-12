@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { createDesktopTransport, isWebView2Available } from "@/desktop/ipc-bridge";
 import {
   DesktopIpcTransport,
@@ -19,6 +18,7 @@ import { Config, OperatingMode, PresetId } from "@/lib/types";
 import { DemoBanner } from "@/desktop/DemoBanner";
 import { DiagnosticReport } from "@/desktop/DiagnosticReport";
 import { FirstRunWizard } from "@/desktop/FirstRunWizard";
+import { ControlCenter } from "@/desktop/ControlCenter";
 import { ConnectionHandshakeState, MachineDataSession, PreflightSnapshotWithMessage, createProcessingCounter } from "@/desktop/machine-data-session";
 
 interface IpcLogEntry {
@@ -54,6 +54,7 @@ export default function DesktopPage() {
   // Modo de operação (Demo vs Real) e Assistente Inicial
   const [mode, setMode] = useState<OperatingMode>("Demo");
   const [showWizard, setShowWizard] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionHandshakeState>("connected");
@@ -124,7 +125,8 @@ export default function DesktopPage() {
       onScanning: setIsScanning
     });
     sessionRef.current = session;
-    void session.loadInitial();
+    // No executável nativo, o computador real é o padrão. No navegador, mantém a demonstração.
+    void (isWebView2Available() ? session.switchMode("Real") : session.loadInitial());
     return () => {
       session.dispose();
       if (sessionRef.current === session) {
@@ -210,8 +212,27 @@ export default function DesktopPage() {
     }
   }
 
+  if (!showAdvanced) {
+    return (
+      <ControlCenter
+        mode={mode}
+        native={isNativeWebView2}
+        inventory={inventory}
+        config={config}
+        setConfig={setConfig}
+        scanError={scanError}
+        isScanning={isScanning}
+        onChangeMode={handleToggleMode}
+        onRefresh={() => sessionRef.current?.switchMode(mode)}
+        onAdvanced={() => setShowAdvanced(true)}
+        sendIpc={sendIpcMessage}
+      />
+    );
+  }
+
   return (
     <main style={{ maxWidth: 1240, margin: "0 auto", padding: "24px 20px 80px" }}>
+      <button type="button" className="secondary" onClick={() => setShowAdvanced(false)} style={{ marginBottom: 16 }}>← Voltar ao painel simples</button>
       {/* Persistent Demonstration Banner vs Real Machine Live Status (Feature 16) */}
       <DemoBanner
         mode={mode}
@@ -320,19 +341,9 @@ export default function DesktopPage() {
           >
             🧙 {showWizard ? "Fechar Assistente" : "Assistente Inicial"}
           </button>
-          <Link
-            href="/"
-            className="secondary"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              textDecoration: "none",
-              fontSize: 13
-            }}
-          >
-            ← Voltar ao Configurador Web
-          </Link>
+          <button type="button" className="secondary" style={{ fontSize: 13 }} onClick={() => window.open("https://winlab-krrozino-s-projects.vercel.app/", "_blank", "noopener,noreferrer")}>
+            Abrir versão web no navegador ↗
+          </button>
         </div>
       </div>
 

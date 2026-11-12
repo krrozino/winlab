@@ -30,8 +30,8 @@ test("CI artifact uploads must fail when no files are produced", () => {
   const occurrences = workflow.split("if-no-files-found: error").length - 1;
   assert.equal(
     occurrences,
-    2,
-    "both the desktop publish and the installer uploads must fail on missing files"
+    3,
+    "desktop publish, legacy installer, and auto-update package uploads must fail on missing files"
   );
 });
 
@@ -96,4 +96,14 @@ test("the helper location the Desktop probes must match the distributed location
   assert.match(executorClient, /Path\.Combine\(AppDomain\.CurrentDomain\.BaseDirectory, "WinLab\.Executor\.exe"\)/, "the Desktop must probe the helper at the installation root");
   const appDir = installerScript.match(/DefaultDirName=\{autopf\}\\WinLab/);
   assert.notEqual(appDir, null, "the installer must use a fixed installation root so BaseDirectory is predictable");
+});
+
+test("Velopack auto-update package is built before its upload", () => {
+  const pack = workflow.indexOf("Package Auto-Updatable Desktop");
+  const upload = workflow.indexOf("Upload Auto-Updatable Windows Installer");
+  assert.ok(pack >= 0 && upload > pack);
+  const block = workflow.slice(pack, upload);
+  assert.match(block, /vpk\.exe pack/);
+  assert.match(block, /releases\.\*\.json/);
+  assert.match(block, /full\.nupkg/);
 });

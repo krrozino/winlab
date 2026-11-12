@@ -181,6 +181,36 @@ namespace WinLab.Executor
                         return JsonSerializer.Serialize(resp);
                     }
 
+                    case IpcConstants.ActionCreateLocalAccount:
+                    {
+                        if (!OperatingSystem.IsWindows() || !IsCurrentProcessElevated())
+                            return JsonSerializer.Serialize(IpcResponse<object>.Fail(id,
+                                "É necessária autorização administrativa do Windows.", "ADMIN_REQUIRED"));
+
+                        if (!root.TryGetProperty("payload", out var accountPayload) ||
+                            accountPayload.ValueKind != JsonValueKind.Object ||
+                            !accountPayload.TryGetProperty("name", out var nameElement) ||
+                            nameElement.ValueKind != JsonValueKind.String ||
+                            !accountPayload.TryGetProperty("password", out var passwordElement) ||
+                            passwordElement.ValueKind != JsonValueKind.String ||
+                            !accountPayload.TryGetProperty("isAdmin", out var roleElement) ||
+                            (roleElement.ValueKind != JsonValueKind.True && roleElement.ValueKind != JsonValueKind.False))
+                        {
+                            return JsonSerializer.Serialize(IpcResponse<object>.Fail(id,
+                                "Informe nome, senha e tipo de conta válidos.", "INVALID_ACCOUNT_REQUEST"));
+                        }
+
+                        string name = nameElement.GetString() ?? string.Empty;
+                        string password = passwordElement.GetString() ?? string.Empty;
+                        bool isAdmin = roleElement.GetBoolean();
+                        var result = Services.LocalAccountProvisioner.Create(name, password, isAdmin);
+                        if (!result.Success)
+                            return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, result.Message, "ACCOUNT_CREATE_FAILED"));
+
+                        return JsonSerializer.Serialize(IpcResponse<object>.Ok(id,
+                            new { name, role = isAdmin ? "Administrator" : "Standard", message = result.Message }));
+                    }
+
                     case IpcConstants.ActionCreateBaseline:
                     {
                         string txId = Guid.NewGuid().ToString();

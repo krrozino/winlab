@@ -77,6 +77,13 @@ namespace WinLab.Desktop.Services
                         });
                     }
 
+                    case IpcConstants.ActionCreateLocalAccount:
+                    {
+                        if (!OperatingSystem.IsWindows())
+                            return IpcResponse<object>.Fail(id, "Criação de contas disponível somente no Windows.", "PLATFORM_NOT_SUPPORTED");
+                        return await _executorClient.HandleRequestAsync(rawJson);
+                    }
+
                     case IpcConstants.ActionCreateBaseline:
                     {
                         // Se estiver em ambiente sem executor ou no Linux, cria snapshot in-process
@@ -114,10 +121,10 @@ namespace WinLab.Desktop.Services
                         return IpcResponse<object>.Ok(id, new
                         {
                             computerName = Environment.MachineName,
-                            status = "PASS",
-                            readinessScore = 100,
-                            summary = new { pass = 10, warn = 0, block = 0 },
-                            readinessMessage = "Estação pronta para configuração em modo audit."
+                            status = "UNVERIFIED",
+                            readinessScore = 0,
+                            summary = new { pass = 0, warn = 0, block = 0 },
+                            readinessMessage = "Prontidão ainda não verificada. Inventário não equivale a preflight."
                         });
                     }
 

@@ -8,7 +8,9 @@
     <LangVersion>12</LangVersion>
     <RootNamespace>WinLab.Desktop</RootNamespace>
     <AssemblyName>WinLab.Desktop</AssemblyName>
+    <Version>0.9.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <StartupObject>WinLab.Desktop.App</StartupObject>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,6 +20,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2849.39" />
+    <PackageReference Include="Velopack" Version="1.2.161" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
   </ItemGroup>
 
   <ItemGroup>
