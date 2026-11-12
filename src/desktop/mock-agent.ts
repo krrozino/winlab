@@ -139,6 +139,7 @@ export function validateEnvelopeSchema(envelope: unknown): { isValid: boolean; e
 export class MockDesktopAgent implements DesktopIpcTransport {
   public readonly isRunning = true;
   public readonly mode = "Unprivileged Mock (In-Memory Development)";
+  private activeMode: "Demo" | "Real" = "Demo";
   private readonly policyStates: Map<string, PolicyDesiredState> = new Map();
   private readonly transactions: Map<string, any> = new Map();
 
@@ -178,6 +179,17 @@ export class MockDesktopAgent implements DesktopIpcTransport {
     }
 
     switch (envelope.action) {
+      case IPC_CONSTANTS.ACTION_SET_MODE: {
+        const requested = (envelope.payload as { mode?: unknown } | undefined)?.mode;
+        this.activeMode = typeof requested === "string" && requested.toLowerCase() === "real" ? "Real" : "Demo";
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: { mode: this.activeMode } as unknown as T
+        };
+      }
+
       case IPC_CONSTANTS.ACTION_QUERY_INVENTORY:
         return {
           id: crypto.randomUUID(),
