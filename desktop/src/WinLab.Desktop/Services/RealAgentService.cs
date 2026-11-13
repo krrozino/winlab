@@ -106,10 +106,17 @@ namespace WinLab.Desktop.Services
 
                     case IpcConstants.ActionQueryPolicyState:
                     {
-                        // Delegate to ActionQueryPolicyStates for consistency
+                        // Convert singular to plural for consistency with executor
                         if (OperatingSystem.IsWindows())
                         {
-                            return await _executorClient.HandleRequestAsync(rawJson);
+                            // Modify the action in the JSON payload to match executor's expected action
+                            var jsonDoc = JsonDocument.Parse(rawJson);
+                            using (jsonDoc)
+                            {
+                                var root = jsonDoc.RootElement;
+                                var modifiedJson = ModifyActionInJson(rawJson, IpcConstants.ActionQueryPolicyStates);
+                                return await _executorClient.HandleRequestAsync(modifiedJson);
+                            }
                         }
                         var catalog = new WinLab.Contracts.Policies.PolicyCatalog();
                         var items = catalog.GetAllPolicies().Select(p => new PolicyItemDto
@@ -275,6 +282,30 @@ namespace WinLab.Desktop.Services
                     default:
                         return IpcResponse<object>.Fail(id, $"Unhandled action: {action}", "UNHANDLED_ACTION");
                 }
+            }
+        }
+
+        private static string ModifyActionInJson(string json, string newAction)
+        {
+            var doc = JsonDocument.Parse(json);
+            using (doc)
+            {
+                var root = doc.RootElement;
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                
+                // Create a new JSON object with the modified action
+                var jsonObject = new JsonObject
+                {
+                    ["id"] = root.GetProperty("id"),
+                    ["version"] = root.GetProperty("version"),
+                    ["timestamp"] = root.GetProperty("timestamp"),
+                    ["type"] = root.GetProperty("type"),
+                    ["action"] = JsonDocument.Parse($"\"{newAction}\"").RootElement,
+                    ["payload"] = root.TryGetProperty("payload", out var payload) ? payload : JsonDocument.Parse("null").RootElement,
+                    ["securityContext"] = root.TryGetProperty("securityContext", out var securityContext) ? securityContext : JsonDocument.Parse("{}").RootElement
+                };
+                
+                return JsonSerializer.Serialize(jsonObject, options);
             }
         }
     }

@@ -176,9 +176,22 @@ export function DesktopControlCenter({
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ error: boolean; message: string } | null>(null);
   const [pendingPolicies, setPendingPolicies] = useState<Record<string, boolean>>({});
+  const [selectedUserSid, setSelectedUserSid] = useState<string | null>(null);
+  const [showReviewModal, setShowReviewModal] = useState(false);
 
   // Check if we have real connection to Windows
   const realConnected = native && mode === "Real" && inventory?.isMock !== true && !scanError;
+  
+  // Get non-admin users for policy targeting (only when we have inventory)
+  const nonAdminUsers = inventory?.localUsers?.filter(u => !u.isAdmin && u.enabled && u.sid) || [];
+  
+  // Check if we have user-scoped policies in pending changes
+  const hasUserScopedPolicies = policyStates?.some(p => 
+    p.scope === "User" && pendingPolicies[p.id] !== undefined
+  ) || false;
+  
+  // Check if we can apply (no user-scoped policies or user selected)
+  const canApply = !hasUserScopedPolicies || selectedUserSid !== null;
   
   // Get section title for display
   const sectionTitle = NAVIGATION_ITEMS.find(item => item.id === section)?.label || "Início";
@@ -216,10 +229,12 @@ export function DesktopControlCenter({
   const handleTogglePolicy = useCallback((policyId: string, enabled: boolean) => {
     setPendingPolicies(prev => {
       const newPending = { ...prev };
-      if (enabled) {
-        newPending[policyId] = true;
-      } else {
+      // Store the desired state (true = Blocked, false = NotConfigured)
+      // If already pending with the same state, remove it (toggle back to current state)
+      if (newPending[policyId] === enabled) {
         delete newPending[policyId];
+      } else {
+        newPending[policyId] = enabled;
       }
       return newPending;
     });
@@ -232,6 +247,15 @@ export function DesktopControlCenter({
       return;
     }
     
+    // Check if we have user-scoped policies without a selected user
+    if (hasUserScopedPolicies && !selectedUserSid) {
+      setFeedback({ 
+        error: true, 
+        message: "Selecione um usuário alvo para aplicar políticas de usuário." 
+      });
+      return;
+    }
+    
     if (Object.keys(pendingPolicies).length === 0) {
       setFeedback({ error: false, message: "Nenhuma alteração pendente para aplicar." });
       return;
@@ -239,6 +263,7 @@ export function DesktopControlCenter({
 
     setBusy(true);
     setFeedback(null);
+    setShowReviewModal(false);
 
     try {
       // Build the transaction payload
@@ -249,7 +274,10 @@ export function DesktopControlCenter({
 
       const response = await sendIpc<ApplyTransactionResultDto>(
         IPC_CONSTANTS.ACTION_APPLY_TRANSACTION,
-        { policies: policiesToApply }
+        { 
+          policies: policiesToApply,
+          targetUserSid: selectedUserSid // Only for user-scoped policies
+        }
       );
 
       if (response.success && response.data?.success) {
@@ -272,7 +300,7 @@ export function DesktopControlCenter({
     } finally {
       setBusy(false);
     }
-  }, [realConnected, pendingPolicies, sendIpc, onRefresh]);
+  }, [realConnected, pendingPolicies, selectedUserSid, hasUserScopedPolicies, sendIpc, onRefresh]);
 
   // Discard pending changes
   const discardPendingChanges = useCallback(() => {
@@ -395,6 +423,25 @@ export function DesktopControlCenter({
           </div>
         )}
 
+        {/* User Selection for User-Scoped Policies */}
+        {hasUserScopedPolicies && nonAdminUsers.length > 0 && (
+          <div className="wl-user-selector">
+            <label>Usuário alvo para políticas de usuário:</label>
+            <select
+              value={selectedUserSid || ""}
+              onChange={(e) => setSelectedUserSid(e.target.value)}
+              disabled={busy}
+            >
+              <option value="">Selecione um usuário...</option>
+              {nonAdminUsers.map(user => (
+                <option key={user.sid} value={user.sid}>
+                  {user.name} ({user.sid})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         {/* Action Bar - Apply/Discard */}
         {pendingCount > 0 && realConnected && (
           <div className="wl-action-bar">
@@ -414,11 +461,58 @@ export function DesktopControlCenter({
               <button
                 type="button"
                 className="wl-button primary"
-                onClick={applyPendingChanges}
-                disabled={busy}
+                onClick={() => setShowReviewModal(true)}
+                disabled={busy || !canApply}
+                title={!canApply ? "Selecione um usuário para políticas de usuário" : undefined}
               >
-                {busy ? "Aplicando..." : "Aplicar alterações"}
+                {busy ? "Aplicando..." : "Revisar e aplicar"}
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Review Modal */}
+        {showReviewModal && (
+          <div className="wl-modal-overlay" onClick={() => setShowReviewModal(false)}>
+            <div className="wl-modal" onClick={(e) => e.stopPropagation()}>
+              <h2>Revisar Alterações</h2>
+              <div className="wl-review-list">
+                {Object.entries(pendingPolicies).map(([policyId, enabled]) => {
+                  const policy = policyStates?.find(p => p.id === policyId);
+                  return (
+                    <div key={policyId} className="wl-review-item">
+                      <strong>{policy?.title || policyId}</strong>
+                      <span>
+                        {enabled ? "Ativar (Bloquear)" : "Desativar (Remover bloqueio)"}
+                      </span>
+                      {policy && (
+                        <small>
+                          {policy.requiresRestart && "Requer reinício"}
+                          {policy.requiresLogoff && !policy.requiresRestart && "Requer logoff"}
+                          {policy.requiresAppRestart && !policy.requiresRestart && !policy.requiresLogoff && "Requer reiniciar apps"}
+                        </small>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="wl-modal-actions">
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => setShowReviewModal(false)}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="wl-button primary"
+                  onClick={applyPendingChanges}
+                  disabled={busy}
+                >
+                  {busy ? "Aplicando..." : "Confirmar e aplicar"}
+                </button>
+              </div>
             </div>
           </div>
         )}
