@@ -19,6 +19,7 @@ import { DemoBanner } from "@/desktop/DemoBanner";
 import { DiagnosticReport } from "@/desktop/DiagnosticReport";
 import { FirstRunWizard } from "@/desktop/FirstRunWizard";
 import { ControlCenter } from "@/desktop/ControlCenter";
+import { DesktopControlCenter } from "@/desktop/DesktopControlCenter";
 import { ConnectionHandshakeState, MachineDataSession, PreflightSnapshotWithMessage, createProcessingCounter } from "@/desktop/machine-data-session";
 
 interface IpcLogEntry {
@@ -213,6 +214,27 @@ export default function DesktopPage() {
   }
 
   if (!showAdvanced) {
+    // Use DesktopControlCenter for native Windows app, ControlCenter for web preview
+    const useDesktopInterface = isNativeWebView2 && mode === "Real";
+    
+    if (useDesktopInterface) {
+      return (
+        <DesktopControlCenter
+          mode={mode}
+          native={isNativeWebView2}
+          inventory={inventory}
+          policyStates={policySummary?.items || null}
+          config={config}
+          setConfig={setConfig}
+          scanError={scanError}
+          isScanning={isScanning}
+          onChangeMode={handleToggleMode}
+          onRefresh={() => sessionRef.current?.switchMode(mode)}
+          sendIpc={sendIpcMessage}
+        />
+      );
+    }
+    
     return (
       <ControlCenter
         mode={mode}
