@@ -125,9 +125,10 @@ function Section({ id, title, policies, pendingPolicies, onTogglePolicy }: Secti
     );
   }
 
-  const filteredPolicies = policies?.filter(p => p.category === title) || [];
+  // Get policies for this section (already filtered by category mapping)
+  const sectionPolicies = policies || [];
 
-  if (filteredPolicies.length === 0) {
+  if (sectionPolicies.length === 0) {
     return (
       <div className="wl-section-content">
         <p className="wl-empty-state">Nenhuma política disponível nesta categoria.</p>
@@ -139,10 +140,10 @@ function Section({ id, title, policies, pendingPolicies, onTogglePolicy }: Secti
     <div className="wl-section-content">
       <div className="wl-section-header">
         <h2>{title}</h2>
-        <span className="wl-policy-count">{filteredPolicies.length} políticas</span>
+        <span className="wl-policy-count">{sectionPolicies.length} política(s)</span>
       </div>
       <div className="wl-settings-list">
-        {filteredPolicies.map(policy => (
+        {sectionPolicies.map(policy => (
           <PolicySetting
             key={policy.id}
             policy={policy}
@@ -182,14 +183,32 @@ export function DesktopControlCenter({
   // Get section title for display
   const sectionTitle = NAVIGATION_ITEMS.find(item => item.id === section)?.label || "Início";
 
-  // Group policies by category for navigation
-  const policiesByCategory: Record<string, PolicyItemDto[]> = {};
+  // Map policy categories to navigation sections
+  const categoryToSection: Record<string, Section> = {
+    "Personalização": "system",
+    "Navegadores": "internet",
+    "Internet": "internet",
+    "Sistema": "system",
+    "Contas": "accounts",
+    "Aplicativos": "apps",
+    "Rede": "network"
+  };
+
+  // Group policies by section
+  const policiesBySection: Record<Section, PolicyItemDto[]> = {
+    home: [],
+    accounts: [],
+    apps: [],
+    internet: [],
+    system: [],
+    network: [],
+    diagnostics: []
+  };
+  
   if (policyStates) {
     policyStates.forEach(policy => {
-      if (!policiesByCategory[policy.category]) {
-        policiesByCategory[policy.category] = [];
-      }
-      policiesByCategory[policy.category].push(policy);
+      const section = categoryToSection[policy.category] || "system";
+      policiesBySection[section].push(policy);
     });
   }
 
@@ -364,7 +383,7 @@ export function DesktopControlCenter({
           <Section
             id={section}
             title={sectionTitle}
-            policies={policyStates}
+            policies={policiesBySection[section]}
             pendingPolicies={pendingPolicies}
             onTogglePolicy={handleTogglePolicy}
           />

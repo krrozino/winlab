@@ -52,6 +52,10 @@
 .wl-role-choice{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.wl-role-choice button{padding:14px 16px;text-align:left;display:grid;gap:6px;border:1px solid #314150;border-radius:9px;background:#111922;color:#e5ebf1;font-size:13px;font-weight:800}
 .wl-role-choice button.chosen{border-color:var(--wl-orange);background:#29241f}.wl-role-choice small{color:#9cabb9;font-size:11px;font-weight:400}
 .wl-account-form .wl-button{justify-self:start}.wl-muted{font-size:12px;color:#9cabb9;line-height:1.5}
+.wl-section-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
+.wl-section-header h2{font-size:18px;letter-spacing:-.4px;margin:0}
+.wl-policy-count{background:#1a2530;border:1px solid #34414e;border-radius:999px;padding:6px 11px;font-size:11px;color:#9cabb9;font-weight:700}
+.wl-empty-state{color:#71849a;font-size:13px;text-align:center;padding:40px 0}
 .wl-setting{display:flex;align-items:center;gap:20px;justify-content:space-between;padding:17px 0;border-top:1px solid #2b3540;min-width:0}
 .wl-setting:first-of-type{border-top:0}.wl-setting>div{min-width:0}
 .wl-setting strong{font-size:13px}.wl-setting p{margin:5px 0 0;max-width:620px}

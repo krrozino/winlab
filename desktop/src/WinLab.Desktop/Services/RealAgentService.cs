@@ -106,18 +106,46 @@ namespace WinLab.Desktop.Services
 
                     case IpcConstants.ActionQueryPolicyState:
                     {
-                        return IpcResponse<object>.Ok(id, new
+                        // Delegate to ActionQueryPolicyStates for consistency
+                        if (OperatingSystem.IsWindows())
                         {
-                            totalPolicies = 10,
-                            appliedCount = 0,
-                            notConfiguredCount = 10,
-                            pendingCount = 0,
-                            items = Array.Empty<object>()
+                            return await _executorClient.HandleRequestAsync(rawJson);
+                        }
+                        var catalog = new WinLab.Contracts.Policies.PolicyCatalog();
+                        var items = catalog.GetAllPolicies().Select(p => new PolicyItemDto
+                        {
+                            Id = p.PolicyId,
+                            Category = p.Category,
+                            Title = p.Title,
+                            Description = p.Description,
+                            Scope = p.Scope,
+                            Risk = p.Risk,
+                            CurrentState = PolicyState.NotConfigured,
+                            DesiredState = PolicyState.NotConfigured,
+                            ConfiguredState = PolicyState.NotConfigured,
+                            EffectiveState = PolicyEffectiveState.NotConfigured,
+                            RequiresLogoff = p.RequiresLogoff,
+                            RequiresRestart = p.RequiresRestart,
+                            RequiresAppRestart = p.RequiresAppRestart,
+                            Reversible = p.Reversible
+                        }).ToList();
+
+                        return IpcResponse<object>.Ok(id, new PolicyStateSummaryDto
+                        {
+                            TotalPolicies = items.Count,
+                            AppliedCount = 0,
+                            NotConfiguredCount = items.Count,
+                            PendingCount = 0,
+                            Items = items
                         });
                     }
 
                     case IpcConstants.ActionQueryPreflight:
                     {
+                        if (OperatingSystem.IsWindows())
+                        {
+                            return await _executorClient.HandleRequestAsync(rawJson);
+                        }
                         return IpcResponse<object>.Ok(id, new
                         {
                             computerName = Environment.MachineName,
