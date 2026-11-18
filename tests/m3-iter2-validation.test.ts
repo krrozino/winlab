@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 
 import { IPC_CONSTANTS, IpcEnvelope } from "../src/desktop/contracts";
 import { MockDesktopAgent } from "../src/desktop/mock-agent";
+import { MILESTONE_3_POLICIES } from "../src/lib/policies";
+
+const CATALOG_COUNT = MILESTONE_3_POLICIES.length;
 
 const VALID_USER = {
   targetUserName: "Aluno",
@@ -76,7 +79,7 @@ test("invalid DesiredState values are rejected with zero state mutations (mock/r
 
     const states = await queryStates(agent);
     assert.equal(states.appliedCount, 0, `no policy may be applied for ${JSON.stringify(desired)}`);
-    assert.equal(states.notConfiguredCount, 5);
+    assert.equal(states.notConfiguredCount, CATALOG_COUNT);
   }
 });
 
@@ -114,7 +117,7 @@ test("Allowed DesiredState is fail-closed pending contract decision (mock/real p
 
   const states = await queryStates(agent);
   assert.equal(states.appliedCount, 0);
-  assert.equal(states.notConfiguredCount, 5);
+  assert.equal(states.notConfiguredCount, CATALOG_COUNT);
 });
 
 test("missing, null, empty or malformed policies list is rejected without committing a transaction", async () => {
@@ -163,7 +166,7 @@ test("null or malformed policy items are rejected without partial application", 
 
     const states = await queryStates(agent);
     assert.equal(states.appliedCount, 0, `zero mutations expected for variant '${label}'`);
-    assert.equal(states.notConfiguredCount, 5);
+    assert.equal(states.notConfiguredCount, CATALOG_COUNT);
   }
 });
 
@@ -182,7 +185,7 @@ test("mixed list with valid first item and invalid second item applies nothing (
 
   const states = await queryStates(agent);
   assert.equal(states.appliedCount, 0, "first valid item must NOT be applied when a later item is invalid");
-  assert.equal(states.notConfiguredCount, 5);
+  assert.equal(states.notConfiguredCount, CATALOG_COUNT);
 });
 
 test("case-insensitive supported names remain accepted and normalized", async () => {
@@ -223,7 +226,7 @@ test("composed enum names are rejected, never parsed into a valid desired state 
 
     const states = await queryStates(agent);
     assert.equal(states.appliedCount, 0, `no policy may be applied for composed desiredState '${desired}'`);
-    assert.equal(states.notConfiguredCount, 5);
+    assert.equal(states.notConfiguredCount, CATALOG_COUNT);
   }
 });
 
@@ -244,7 +247,7 @@ test("padded policyId is rejected without silent trimming (mock/real parity)", a
 
     const states = await queryStates(agent);
     assert.equal(states.appliedCount, 0, `no policy may be applied for padded policyId '${policyId}'`);
-    assert.equal(states.notConfiguredCount, 5);
+    assert.equal(states.notConfiguredCount, CATALOG_COUNT);
   }
 });
 
@@ -262,7 +265,7 @@ test("padded desiredState with otherwise valid name is rejected (mock/real parit
 
   const states = await queryStates(agent);
   assert.equal(states.appliedCount, 0);
-  assert.equal(states.notConfiguredCount, 5);
+  assert.equal(states.notConfiguredCount, CATALOG_COUNT);
 });
 
 test("reused TransactionId is rejected without reapplying policies (mock/real parity)", async () => {
@@ -283,7 +286,7 @@ test("reused TransactionId is rejected without reapplying policies (mock/real pa
 
   const states = await queryStates(agent);
   assert.equal(states.appliedCount, 1, "second request must not apply its policy");
-  assert.equal(states.notConfiguredCount, 4);
+  assert.equal(states.notConfiguredCount, CATALOG_COUNT - 1);
 });
 
 test("valid request still commits after rejected attempts (no poisoned state)", async () => {

@@ -55,8 +55,13 @@ namespace WinLab.Contracts.Policies
             TargetProcesses = Array.Empty<string>();
         }
 
-        private (RegistryHiveType hive, string subKey) ResolveTargetHiveAndKey(string? targetUserSid, IUserHiveScope hiveScope)
+        private (RegistryHiveType hive, string subKey) ResolveTargetHiveAndKey(string? targetUserSid, IUserHiveScope? hiveScope)
         {
+            if (Scope == PolicyScope.Machine)
+            {
+                return (RegistryHiveType.LocalMachine, RelativeSubKeyPath);
+            }
+
             if (string.IsNullOrWhiteSpace(targetUserSid))
             {
                 return (RegistryHiveType.CurrentUser, RelativeSubKeyPath);
@@ -64,7 +69,7 @@ namespace WinLab.Contracts.Policies
 
             // Elevated or explicit SID execution: open under HKU\<SID>\<SubKey>
             string cleanSid = targetUserSid.Trim();
-            string root = string.IsNullOrWhiteSpace(hiveScope.RootPath) ? cleanSid : hiveScope.RootPath.Trim();
+            string root = hiveScope == null || string.IsNullOrWhiteSpace(hiveScope.RootPath) ? cleanSid : hiveScope.RootPath.Trim();
             if (root.Equals("Software", StringComparison.OrdinalIgnoreCase))
             {
                 return (RegistryHiveType.CurrentUser, RelativeSubKeyPath);
@@ -73,133 +78,149 @@ namespace WinLab.Contracts.Policies
             return (RegistryHiveType.Users, $@"{root}\{RelativeSubKeyPath}");
         }
 
+        private PolicyEffectiveState ComputeActiveEffectiveState()
+        {
+            if (RequiresRestart) return PolicyEffectiveState.PendingReboot;
+            if (RequiresLogoff) return PolicyEffectiveState.PendingLogoff;
+            return PolicyEffectiveState.Applied;
+        }
+
         public PolicyProbeResult Probe(string? targetUserSid, IRegistryService registry, IUserHiveManager hiveManager)
         {
-            using var hiveScope = hiveManager.OpenUserHive(targetUserSid);
-            if (!hiveScope.IsAvailable)
+            IUserHiveScope? hiveScope = null;
+            try
             {
-                if (hiveScope.ProfileStatus == UserProfileStatus.NotCreated)
+                if (Scope == PolicyScope.User)
+                {
+                    hiveScope = hiveManager.OpenUserHive(targetUserSid);
+                    if (!hiveScope.IsAvailable)
+                    {
+                        if (hiveScope.ProfileStatus == UserProfileStatus.NotCreated)
+                        {
+                            return new PolicyProbeResult
+                            {
+                                PolicyId = PolicyId,
+                                IsActive = false,
+                                EffectiveState = PolicyEffectiveState.PendingFirstLogon,
+                                DetailMessage = "Perfil do usuário ainda não inicializado no disco. Políticas serão aplicadas no primeiro logon.",
+                                TargetSid = targetUserSid,
+                                RequiresLogoff = RequiresLogoff,
+                                RequiresRestart = RequiresRestart,
+                                RequiresAppRestart = RequiresAppRestart
+                            };
+                        }
+
+                        return new PolicyProbeResult
+                        {
+                            PolicyId = PolicyId,
+                            IsActive = false,
+                            EffectiveState = PolicyEffectiveState.Inconclusive,
+                            DetailMessage = hiveScope.ErrorMessage ?? "Hive do usuário inacessível.",
+                            TargetSid = targetUserSid,
+                            RequiresLogoff = RequiresLogoff,
+                            RequiresRestart = RequiresRestart,
+                            RequiresAppRestart = RequiresAppRestart
+                        };
+                    }
+                }
+
+                var (hive, subKey) = ResolveTargetHiveAndKey(targetUserSid, hiveScope);
+
+                object? rawValue;
+                RegistryValueType? kind;
+                try
+                {
+                    rawValue = registry.GetValue(hive, subKey, ValueName, null);
+                    kind = registry.GetValueKind(hive, subKey, ValueName);
+                }
+                catch (Exception ex)
                 {
                     return new PolicyProbeResult
                     {
                         PolicyId = PolicyId,
                         IsActive = false,
-                        EffectiveState = PolicyEffectiveState.PendingFirstLogon,
-                        DetailMessage = "Perfil do usuário ainda não inicializado no disco. Políticas serão aplicadas no primeiro logon.",
-                        TargetSid = targetUserSid,
+                        EffectiveState = PolicyEffectiveState.Inconclusive,
+                        DetailMessage = $"Falha ao consultar registro: {ex.Message}",
+                        TargetSid = Scope == PolicyScope.User ? targetUserSid : null,
                         RequiresLogoff = RequiresLogoff,
                         RequiresRestart = RequiresRestart,
                         RequiresAppRestart = RequiresAppRestart
                     };
                 }
 
+                bool isDwordType = (kind == null || kind == RegistryValueType.DWord) && !(rawValue is string) && !(rawValue is bool);
+
+                bool isActive = false;
+                if (rawValue != null && isDwordType)
+                {
+                    try
+                    {
+                        int val = Convert.ToInt32(rawValue);
+                        isActive = (val == EnforcedValue);
+                    }
+                    catch
+                    {
+                        isActive = false;
+                    }
+                }
+
+                PolicyEffectiveState state = isActive
+                    ? ComputeActiveEffectiveState()
+                    : PolicyEffectiveState.NotConfigured;
+
                 return new PolicyProbeResult
                 {
                     PolicyId = PolicyId,
-                    IsActive = false,
-                    EffectiveState = PolicyEffectiveState.Inconclusive,
-                    DetailMessage = hiveScope.ErrorMessage ?? "Hive do usuário inacessível.",
-                    TargetSid = targetUserSid,
+                    IsActive = isActive,
+                    LiveValue = rawValue,
+                    EffectiveState = state,
                     RequiresLogoff = RequiresLogoff,
                     RequiresRestart = RequiresRestart,
-                    RequiresAppRestart = RequiresAppRestart
+                    RequiresAppRestart = RequiresAppRestart,
+                    TargetSid = Scope == PolicyScope.User ? targetUserSid : null,
+                    DetailMessage = $"{hive}\\{subKey}\\{ValueName}={rawValue ?? "null"}",
+                    ProbedAtUtc = DateTime.UtcNow
                 };
             }
-
-            var (hive, subKey) = ResolveTargetHiveAndKey(targetUserSid, hiveScope);
-
-            object? rawValue;
-            RegistryValueType? kind;
-            try
+            finally
             {
-                rawValue = registry.GetValue(hive, subKey, ValueName, null);
-                kind = registry.GetValueKind(hive, subKey, ValueName);
+                hiveScope?.Dispose();
             }
-            catch (Exception ex)
-            {
-                return new PolicyProbeResult
-                {
-                    PolicyId = PolicyId,
-                    IsActive = false,
-                    EffectiveState = PolicyEffectiveState.Inconclusive,
-                    DetailMessage = $"Falha ao consultar registro de personalização: {ex.Message}",
-                    TargetSid = targetUserSid,
-                    RequiresLogoff = RequiresLogoff,
-                    RequiresRestart = RequiresRestart,
-                    RequiresAppRestart = RequiresAppRestart
-                };
-            }
-
-            bool isDwordType = (kind == null || kind == RegistryValueType.DWord) && !(rawValue is string) && !(rawValue is bool);
-
-            bool isActive = false;
-            if (rawValue != null && isDwordType)
-            {
-                try
-                {
-                    int val = Convert.ToInt32(rawValue);
-                    isActive = (val == EnforcedValue);
-                }
-                catch
-                {
-                    isActive = false;
-                }
-            }
-
-            PolicyEffectiveState state;
-            if (isActive)
-            {
-                state = RequiresLogoff ? PolicyEffectiveState.PendingLogoff : PolicyEffectiveState.Applied;
-            }
-            else
-            {
-                state = PolicyEffectiveState.NotConfigured;
-            }
-
-            return new PolicyProbeResult
-            {
-                PolicyId = PolicyId,
-                IsActive = isActive,
-                LiveValue = rawValue,
-                EffectiveState = state,
-                RequiresLogoff = RequiresLogoff,
-                RequiresRestart = RequiresRestart,
-                RequiresAppRestart = RequiresAppRestart,
-                TargetSid = targetUserSid,
-                ProbedAtUtc = DateTime.UtcNow
-            };
         }
 
         public PolicyApplyResult Apply(string? targetUserSid, PolicyDesiredState desiredState, IRegistryService registry, IUserHiveManager hiveManager)
         {
-            // Administrator Immunity Invariant
-            if (hiveManager.IsUserAdministrator(targetUserSid))
+            if (Scope == PolicyScope.User && hiveManager.IsUserAdministrator(targetUserSid))
             {
                 return new PolicyApplyResult
                 {
                     PolicyId = PolicyId,
                     Success = false,
-                    Error = "Violação de segurança: Não é permitido aplicar bloqueios de personalização à conta de administrador (imunidade de administrador).",
+                    Error = "Violação de segurança: Não é permitido aplicar bloqueios à conta de administrador (imunidade de administrador).",
                     EffectiveState = PolicyEffectiveState.Failed
                 };
             }
 
-            using var hiveScope = hiveManager.OpenUserHive(targetUserSid);
-            if (!hiveScope.IsAvailable)
-            {
-                return new PolicyApplyResult
-                {
-                    PolicyId = PolicyId,
-                    Success = false,
-                    Error = hiveScope.ErrorMessage ?? "Hive do usuário indisponível.",
-                    EffectiveState = PolicyEffectiveState.Failed
-                };
-            }
-
-            var (hive, subKey) = ResolveTargetHiveAndKey(targetUserSid, hiveScope);
-
+            IUserHiveScope? hiveScope = null;
             try
             {
+                if (Scope == PolicyScope.User)
+                {
+                    hiveScope = hiveManager.OpenUserHive(targetUserSid);
+                    if (!hiveScope.IsAvailable)
+                    {
+                        return new PolicyApplyResult
+                        {
+                            PolicyId = PolicyId,
+                            Success = false,
+                            Error = hiveScope.ErrorMessage ?? "Hive do usuário indisponível.",
+                            EffectiveState = PolicyEffectiveState.Failed
+                        };
+                    }
+                }
+
+                var (hive, subKey) = ResolveTargetHiveAndKey(targetUserSid, hiveScope);
+
                 if (desiredState == PolicyDesiredState.Blocked)
                 {
                     registry.SetValue(hive, subKey, ValueName, EnforcedValue, RegistryValueType.DWord);
@@ -207,7 +228,7 @@ namespace WinLab.Contracts.Policies
                     {
                         PolicyId = PolicyId,
                         Success = true,
-                        EffectiveState = RequiresLogoff ? PolicyEffectiveState.PendingLogoff : PolicyEffectiveState.Applied,
+                        EffectiveState = ComputeActiveEffectiveState(),
                         RequiresLogoff = RequiresLogoff,
                         RequiresRestart = RequiresRestart,
                         RequiresAppRestart = RequiresAppRestart
@@ -234,24 +255,32 @@ namespace WinLab.Contracts.Policies
                     EffectiveState = PolicyEffectiveState.Failed
                 };
             }
+            finally
+            {
+                hiveScope?.Dispose();
+            }
         }
 
         public PolicyRevertResult Revert(string? targetUserSid, IRegistryService registry, IUserHiveManager hiveManager)
         {
-            using var hiveScope = hiveManager.OpenUserHive(targetUserSid);
-            if (!hiveScope.IsAvailable)
-            {
-                return new PolicyRevertResult
-                {
-                    PolicyId = PolicyId,
-                    Success = false,
-                    Error = hiveScope.ErrorMessage ?? "Hive do usuário indisponível.",
-                    EffectiveState = PolicyEffectiveState.Failed
-                };
-            }
-
+            IUserHiveScope? hiveScope = null;
             try
             {
+                if (Scope == PolicyScope.User)
+                {
+                    hiveScope = hiveManager.OpenUserHive(targetUserSid);
+                    if (!hiveScope.IsAvailable)
+                    {
+                        return new PolicyRevertResult
+                        {
+                            PolicyId = PolicyId,
+                            Success = false,
+                            Error = hiveScope.ErrorMessage ?? "Hive do usuário indisponível.",
+                            EffectiveState = PolicyEffectiveState.Failed
+                        };
+                    }
+                }
+
                 var (hive, subKey) = ResolveTargetHiveAndKey(targetUserSid, hiveScope);
                 registry.DeleteValue(hive, subKey, ValueName);
 
@@ -271,6 +300,10 @@ namespace WinLab.Contracts.Policies
                     Error = $"Falha ao reverter registro: {ex.Message}",
                     EffectiveState = PolicyEffectiveState.Failed
                 };
+            }
+            finally
+            {
+                hiveScope?.Dispose();
             }
         }
     }

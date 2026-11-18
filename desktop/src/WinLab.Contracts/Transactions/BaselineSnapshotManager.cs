@@ -28,38 +28,54 @@ namespace WinLab.Contracts.Transactions
 
             var rollbackSteps = new List<RollbackStepDto>();
 
-            using var hiveScope = _hiveManager.OpenUserHive(targetUserSid);
+            var policyList = new List<IPolicyHandler>(policies);
+            bool needsUserHive = policyList.Exists(p => p.Scope == PolicyScope.User);
+            IUserHiveScope? hiveScope = null;
 
-            foreach (var policy in policies)
+            try
             {
-                if (policy is RegistryDWordPolicyHandler dwordPolicy)
+                if (needsUserHive)
                 {
-                    var (hive, subKey) = ResolveTargetKey(dwordPolicy.RelativeSubKeyPath, targetUserSid, hiveScope);
-                    var entry = CaptureEntry(dwordPolicy.PolicyId, hive, subKey, dwordPolicy.ValueName);
-                    snapshot.Entries.Add(entry);
-
-                    rollbackSteps.Add(CreateRollbackStep(entry));
+                    hiveScope = _hiveManager.OpenUserHive(targetUserSid);
                 }
-                else if (policy is DualBrowserPolicyHandler browserPolicy)
+
+                foreach (var policy in policyList)
                 {
-                    // Chrome entry
-                    var chromeEntry = CaptureEntry(
-                        browserPolicy.PolicyId,
-                        RegistryHiveType.LocalMachine,
-                        browserPolicy.ChromeSubKey,
-                        browserPolicy.ChromeValueName);
-                    snapshot.Entries.Add(chromeEntry);
-                    rollbackSteps.Add(CreateRollbackStep(chromeEntry));
+                    if (policy is RegistryDWordPolicyHandler dwordPolicy)
+                    {
+                        var (hive, subKey) = dwordPolicy.Scope == PolicyScope.Machine
+                            ? (RegistryHiveType.LocalMachine, dwordPolicy.RelativeSubKeyPath)
+                            : ResolveTargetKey(dwordPolicy.RelativeSubKeyPath, targetUserSid, hiveScope);
+                        var entry = CaptureEntry(dwordPolicy.PolicyId, hive, subKey, dwordPolicy.ValueName);
+                        snapshot.Entries.Add(entry);
 
-                    // Edge entry
-                    var edgeEntry = CaptureEntry(
-                        browserPolicy.PolicyId,
-                        RegistryHiveType.LocalMachine,
-                        browserPolicy.EdgeSubKey,
-                        browserPolicy.EdgeValueName);
-                    snapshot.Entries.Add(edgeEntry);
-                    rollbackSteps.Add(CreateRollbackStep(edgeEntry));
+                        rollbackSteps.Add(CreateRollbackStep(entry));
+                    }
+                    else if (policy is DualBrowserPolicyHandler browserPolicy)
+                    {
+                        // Chrome entry
+                        var chromeEntry = CaptureEntry(
+                            browserPolicy.PolicyId,
+                            RegistryHiveType.LocalMachine,
+                            browserPolicy.ChromeSubKey,
+                            browserPolicy.ChromeValueName);
+                        snapshot.Entries.Add(chromeEntry);
+                        rollbackSteps.Add(CreateRollbackStep(chromeEntry));
+
+                        // Edge entry
+                        var edgeEntry = CaptureEntry(
+                            browserPolicy.PolicyId,
+                            RegistryHiveType.LocalMachine,
+                            browserPolicy.EdgeSubKey,
+                            browserPolicy.EdgeValueName);
+                        snapshot.Entries.Add(edgeEntry);
+                        rollbackSteps.Add(CreateRollbackStep(edgeEntry));
+                    }
                 }
+            }
+            finally
+            {
+                hiveScope?.Dispose();
             }
 
             // Invert the rollback steps so they execute in strict reverse order of application
@@ -155,14 +171,14 @@ namespace WinLab.Contracts.Transactions
         private static (RegistryHiveType hive, string subKey) ResolveTargetKey(
             string relativeSubKey,
             string? targetUserSid,
-            IUserHiveScope hiveScope)
+            IUserHiveScope? hiveScope)
         {
             if (string.IsNullOrWhiteSpace(targetUserSid))
             {
                 return (RegistryHiveType.CurrentUser, relativeSubKey.Trim('\\'));
             }
 
-            string root = string.IsNullOrWhiteSpace(hiveScope.RootPath) ? targetUserSid : hiveScope.RootPath;
+            string root = hiveScope == null || string.IsNullOrWhiteSpace(hiveScope.RootPath) ? targetUserSid : hiveScope.RootPath;
             if (root.Equals("Software", StringComparison.OrdinalIgnoreCase))
             {
                 return (RegistryHiveType.CurrentUser, relativeSubKey.Trim('\\'));

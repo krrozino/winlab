@@ -174,6 +174,7 @@ const CATEGORY_TO_SECTION: Record<string, Section> = {
   Contas: "accounts",
   "Contas Locais": "accounts",
   Storage: "system",
+  Armazenamento: "system",
   "Armazenamento e USB": "system",
   "Controle de Aplicativos": "apps",
   Aplicativos: "apps",
@@ -759,9 +760,16 @@ export function DesktopControlCenter({
       const desiredMap: Record<string, boolean> = {
         "browser.chrome.incognito": presetCfg.blockChromeIncognito,
         "browser.chrome.guest": presetCfg.blockChromeGuest,
+        "browser.password_manager": presetCfg.blockChromePasswordManager,
+        "browser.developer_tools": presetId === "kiosk" || presetCfg.blockChromeExtensions,
         "personalization.wallpaper": presetCfg.blockWallpaper,
         "personalization.sounds": presetCfg.blockSoundScheme,
-        "personalization.mouse_pointers": presetCfg.blockMousePointers
+        "personalization.mouse_pointers": presetCfg.blockMousePointers,
+        "system.disable_cmd": presetCfg.blockCmd,
+        "system.disable_regedit": presetCfg.blockRegedit,
+        "system.restrict_control_panel": !presetCfg.allowLocalAccountManagement,
+        "storage.usb_write_protect": presetCfg.blockUsbWrite,
+        "apps.disable_microsoft_store": presetCfg.blockStoreApps
       };
 
       const nextPending: Record<string, boolean> = {};
