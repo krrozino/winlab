@@ -6,15 +6,20 @@ import type {
   ApplyTransactionResultDto,
   IpcResponse,
   MachineInventoryDto,
+  NetworkShareEnvironmentDto,
   PolicyItemDto,
   PolicyStateSummaryDto,
-  RollbackResultDto
+  RollbackResultDto,
+  UpdateStatusDto
 } from "@/desktop/contracts";
 import { IPC_CONSTANTS } from "@/desktop/contracts";
 import type { PreflightSnapshotWithMessage } from "@/desktop/machine-data-session";
 import {
+  SavedPolicyProfile,
   buildValidatedTransactionRequest,
+  computePolicyDriftSummary,
   computePolicyVisualModel,
+  computeSavedProfileDiff,
   getEligibleTargetUsers,
   isPolicyCurrentlyEnabled,
   togglePolicyPendingState,
@@ -289,11 +294,34 @@ export function DesktopControlCenter({
   const [accountPassword, setAccountPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
 
-  // Rede SMB
+  // Rede SMB, canal de atualização e perfis locais salvos (sem credenciais)
   const [network, setNetwork] = useState<NetworkSharePlan>(DEFAULT_NETWORK_SHARE);
   const [networkStudentAccounts, setNetworkStudentAccounts] = useState<string>(
     config.studentUser || "Aluno"
   );
+  const [networkEnvironment, setNetworkEnvironment] = useState<NetworkShareEnvironmentDto | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatusDto | null>(null);
+  const [savedProfiles, setSavedProfiles] = useState<SavedPolicyProfile[]>([]);
+  const [newProfileName, setNewProfileName] = useState<string>("");
+
+  // Carrega perfis salvos localmente no navegador/WebView2 (jamais armazena senhas)
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("winlab:desktop:saved-profiles:v1");
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setSavedProfiles(
+          parsed.filter(
+            (item): item is SavedPolicyProfile =>
+              Boolean(item && typeof item.id === "string" && typeof item.name === "string" && item.policies && typeof item.policies === "object")
+          )
+        );
+      }
+    } catch {
+      // Ignora armazenamento corrompido
+    }
+  }, []);
 
   // Sincroniza estados vindos da sessão
   useEffect(() => {
@@ -328,6 +356,105 @@ export function DesktopControlCenter({
   const realConnected = native && mode === "Real" && inventory?.isMock !== true && !scanError;
   const demoConnected = mode === "Demo" && inventory !== null && !scanError;
   const canOperateAgent = realConnected || demoConnected;
+
+  const refreshSystemDiagnostics = useCallback(async () => {
+    if (!canOperateAgent) {
+      setNetworkEnvironment(null);
+      setUpdateStatus(null);
+      return;
+    }
+    const [updateRes, netRes] = await Promise.all([
+      sendIpc<UpdateStatusDto>(IPC_CONSTANTS.ACTION_QUERY_UPDATE_STATUS),
+      sendIpc<NetworkShareEnvironmentDto>(IPC_CONSTANTS.ACTION_QUERY_NETWORK_SHARES)
+    ]);
+    if (updateRes.success && updateRes.data) {
+      setUpdateStatus(updateRes.data);
+    }
+    if (netRes.success && netRes.data) {
+      // Garante zero vazamento de dados simulados quando em modo Real
+      if (mode === "Real" && netRes.data.isMock) {
+        setNetworkEnvironment(null);
+      } else {
+        setNetworkEnvironment(netRes.data);
+      }
+    }
+  }, [canOperateAgent, mode, sendIpc]);
+
+  useEffect(() => {
+    setNetworkEnvironment(null);
+    setUpdateStatus(null);
+    if (canOperateAgent) {
+      void refreshSystemDiagnostics();
+    }
+  }, [canOperateAgent, mode, refreshSystemDiagnostics]);
+
+  const driftSummary = useMemo(
+    () => computePolicyDriftSummary(displayPolicies),
+    [displayPolicies]
+  );
+
+  const handleSaveCurrentProfile = useCallback(() => {
+    if (!displayPolicies || displayPolicies.length === 0) {
+      setFeedback({
+        tone: "error",
+        message: "Carregue as políticas da estação antes de salvar um perfil local."
+      });
+      return;
+    }
+    const trimmed = newProfileName.trim() || config.profileName.trim() || "Perfil Personalizado";
+    const snapshot: Record<string, boolean> = {};
+    for (const p of displayPolicies) {
+      snapshot[p.id] =
+        pendingPolicies[p.id] !== undefined ? pendingPolicies[p.id] : isPolicyCurrentlyEnabled(p);
+    }
+    const entry: SavedPolicyProfile = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: trimmed,
+      savedAt: new Date().toISOString(),
+      policies: snapshot
+    };
+    const next = [entry, ...savedProfiles.filter((s) => s.name.toLowerCase() !== trimmed.toLowerCase())].slice(0, 12);
+    setSavedProfiles(next);
+    setNewProfileName("");
+    try {
+      window.localStorage.setItem("winlab:desktop:saved-profiles:v1", JSON.stringify(next));
+    } catch {
+      // Ignora quota
+    }
+    setFeedback({
+      tone: "success",
+      message: `Perfil "${trimmed}" salvo localmente (nenhuma credencial armazenada).`
+    });
+  }, [displayPolicies, newProfileName, config.profileName, pendingPolicies, savedProfiles]);
+
+  const handleDeleteSavedProfile = useCallback(
+    (id: string) => {
+      const next = savedProfiles.filter((p) => p.id !== id);
+      setSavedProfiles(next);
+      try {
+        window.localStorage.setItem("winlab:desktop:saved-profiles:v1", JSON.stringify(next));
+      } catch {
+        // Ignora
+      }
+    },
+    [savedProfiles]
+  );
+
+  const handleStageSavedProfile = useCallback(
+    (profile: SavedPolicyProfile) => {
+      const diff = computeSavedProfileDiff(profile.policies, displayPolicies);
+      setPendingPolicies(diff.pendingMap);
+      const totalChanges = diff.toEnable.length + diff.toDisable.length;
+      setFeedback({
+        tone: totalChanges > 0 ? "warning" : "success",
+        message:
+          totalChanges > 0
+            ? `Perfil "${profile.name}" comparado com a estação atual: ${diff.toEnable.length} ativação(ões) e ${diff.toDisable.length} desativação(ões) prontas para revisão.`
+            : `A estação atual já está idêntica ao perfil "${profile.name}".`
+      });
+    },
+    [displayPolicies]
+  );
 
   // Se o resumo inicial veio de policy.query_state (fundação sem escopo), carrega o catálogo interativo completo (policy.query_states)
   useEffect(() => {
@@ -1026,6 +1153,26 @@ export function DesktopControlCenter({
           </div>
         )}
 
+        {driftSummary.hasDrift && (
+          <div role="alert" className="wl-feedback warning" data-testid="drift-warning-banner">
+            <span>
+              Configuração modificada fora do WinLab: {driftSummary.driftedPolicies.length} política(s) diverge(m) do padrão esperado (
+              {driftSummary.driftedPolicies.map((p) => p.title).join(", ")}). Revise e reaplique para restaurar o padrão.
+            </span>
+            <button
+              type="button"
+              className="wl-button primary"
+              onClick={() => {
+                setPendingPolicies((prev) => ({ ...prev, ...driftSummary.remediationPending }));
+                setShowReviewModal(true);
+              }}
+              disabled={busy}
+            >
+              Preparar restauração do padrão
+            </button>
+          </div>
+        )}
+
         {mode === "Demo" && (
           <div className="wl-connect">
             <div>
@@ -1316,6 +1463,84 @@ export function DesktopControlCenter({
             <div className="wl-card">
               <div className="wl-card-title">
                 <div>
+                  <h2>Estado atual de rede SMB nesta estação</h2>
+                  <p>
+                    Leitura não-elevada das unidades de rede mapeadas, compartilhamentos locais publicados e protocolo SMBv1.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => void refreshSystemDiagnostics()}
+                  disabled={busy || !canOperateAgent}
+                >
+                  Atualizar rede
+                </button>
+              </div>
+              {networkEnvironment ? (
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div className="wl-account">
+                    <div>
+                      <strong>Protocolo legado SMBv1</strong>
+                      <small>O SMBv1 deve permanecer desativado em redes educacionais e corporativas.</small>
+                    </div>
+                    <span
+                      className={`wl-status-badge ${
+                        networkEnvironment.smb1Enabled === true ? "error" : "active"
+                      }`}
+                    >
+                      {networkEnvironment.smb1Enabled === true
+                        ? "Ativo — Risco de segurança"
+                        : networkEnvironment.smb1Enabled === false
+                          ? "Desativado (Seguro)"
+                          : "Não aplicável neste host"}
+                    </span>
+                  </div>
+                  <div className="wl-account-list">
+                    {networkEnvironment.mappedDrives.map((drive) => (
+                      <div key={drive.driveLetter} className="wl-account">
+                        <div>
+                          <strong>
+                            Unidade {drive.driveLetter}: → {drive.remotePath}
+                          </strong>
+                          <small>
+                            {drive.persistent ? "Mapeamento persistente" : "Sessão atual"}
+                          </small>
+                        </div>
+                        <span className="wl-status-badge active">{drive.status}</span>
+                      </div>
+                    ))}
+                    {networkEnvironment.localShares.map((share) => (
+                      <div key={share.name} className="wl-account">
+                        <div>
+                          <strong>
+                            Compartilhamento local \\{inventory?.computerName || "LOCAL"}\{share.name}
+                          </strong>
+                          <small>
+                            {share.localPath} {share.remark ? `· ${share.remark}` : ""}
+                          </small>
+                        </div>
+                        <span className="wl-status-badge active">Publicado</span>
+                      </div>
+                    ))}
+                    {networkEnvironment.mappedDrives.length === 0 &&
+                      networkEnvironment.localShares.length === 0 && (
+                        <p className="wl-muted">
+                          Nenhuma unidade de rede mapeada ou pasta SMB publicada encontrada nesta estação.
+                        </p>
+                      )}
+                  </div>
+                </div>
+              ) : (
+                <p className="wl-muted">
+                  Conecte ao agente do Windows ou ative o Modo Demonstração para inspecionar mapeamentos SMB.
+                </p>
+              )}
+            </div>
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
                   <h2>Pasta compartilhada de laboratório (SMB)</h2>
                   <p>
                     Gere scripts administrativos seguros (sem compartilhamento anônimo nem SMBv1) para configurar o servidor e mapear a unidade nas estações de aula.
@@ -1468,6 +1693,136 @@ export function DesktopControlCenter({
         {/* SEÇÃO 8: CONFIGURAÇÕES DO WINLAB */}
         {section === "settings" && (
           <div className="wl-section-content">
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Versão, instalador e canal de atualizações</h2>
+                  <p>
+                    O WinLab Desktop baixa atualizações estáveis em segundo plano e aplica apenas no próximo início, sem interromper aulas em andamento.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => void refreshSystemDiagnostics()}
+                  disabled={busy || !canOperateAgent}
+                >
+                  Verificar estado
+                </button>
+              </div>
+              {updateStatus ? (
+                <div className="wl-account-list">
+                  <div className="wl-account">
+                    <div>
+                      <strong>
+                        WinLab Desktop v{updateStatus.currentVersion} · Canal {updateStatus.installChannel}
+                      </strong>
+                      <small>{updateStatus.channelSummary}</small>
+                    </div>
+                    <span
+                      className={`wl-status-badge ${
+                        updateStatus.coexistingLegacyInstallDetected
+                          ? "warning"
+                          : updateStatus.autoUpdateSupported
+                            ? "active"
+                            : "inactive"
+                      }`}
+                    >
+                      {updateStatus.pendingVersion
+                        ? `v${updateStatus.pendingVersion} pronta no próximo início`
+                        : updateStatus.autoUpdateSupported
+                          ? "Auto-atualizável"
+                          : "Canal fixo / manual"}
+                    </span>
+                  </div>
+                  <div className="wl-account">
+                    <div>
+                      <strong>Repositório de releases estáveis</strong>
+                      <small>{updateStatus.feedUrl}</small>
+                    </div>
+                    <span className="wl-scope-tag">Estado: {updateStatus.lastCheckState}</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="wl-muted">
+                  WinLab Desktop v0.9.1 (Pré-lançamento de piloto · sem publicação estável 1.0).
+                </p>
+              )}
+            </div>
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Perfis salvos localmente e comparação com a estação</h2>
+                  <p>
+                    Salve combinações personalizadas de políticas para reaproveitar e comparar diferenças antes de aplicar. Nenhuma senha é armazenada.
+                  </p>
+                </div>
+              </div>
+              <div className="wl-fields" style={{ marginBottom: 12 }}>
+                <label style={{ gridColumn: "1 / -1" }}>
+                  Nome do perfil personalizado
+                  <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                    <input
+                      type="text"
+                      placeholder="Ex.: Laboratório Noite — Design"
+                      value={newProfileName}
+                      onChange={(e) => setNewProfileName(e.target.value)}
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      className="wl-button primary"
+                      onClick={handleSaveCurrentProfile}
+                      disabled={busy || !displayPolicies || displayPolicies.length === 0}
+                    >
+                      Salvar estado atual
+                    </button>
+                  </div>
+                </label>
+              </div>
+              {savedProfiles.length === 0 ? (
+                <p className="wl-muted">Nenhum perfil personalizado salvo neste computador ainda.</p>
+              ) : (
+                <div className="wl-tx-list">
+                  {savedProfiles.map((prof) => {
+                    const diff = computeSavedProfileDiff(prof.policies, displayPolicies);
+                    const totalDiff = diff.toEnable.length + diff.toDisable.length;
+                    return (
+                      <div key={prof.id} className="wl-tx-item">
+                        <div>
+                          <strong>{prof.name}</strong>
+                          <small>
+                            {totalDiff === 0
+                              ? `Idêntico à estação atual (${diff.unchangedCount} política(s) alinhada(s))`
+                              : `Diferenças para a estação: +${diff.toEnable.length} ativar · -${diff.toDisable.length} desativar · ${diff.unchangedCount} iguais`}
+                          </small>
+                        </div>
+                        <div className="wl-head-actions">
+                          <button
+                            type="button"
+                            className="wl-button secondary"
+                            onClick={() => handleStageSavedProfile(prof)}
+                            disabled={busy}
+                          >
+                            {totalDiff === 0 ? "Alinhado" : "Carregar diferenças"}
+                          </button>
+                          <button
+                            type="button"
+                            className="wl-button secondary"
+                            onClick={() => handleDeleteSavedProfile(prof.id)}
+                            disabled={busy}
+                          >
+                            Remover
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             <div className="wl-card">
               <div className="wl-card-title">
                 <div>

@@ -293,6 +293,51 @@ export class MockDesktopAgent implements DesktopIpcTransport {
           } as unknown as T
         };
 
+      case IPC_CONSTANTS.ACTION_QUERY_UPDATE_STATUS:
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: {
+            currentVersion: "0.9.1",
+            installChannel: "Velopack",
+            autoUpdateSupported: true,
+            feedUrl: "https://github.com/krrozino/winlab",
+            lastCheckedAt: new Date().toISOString(),
+            lastCheckState: "UpToDate",
+            pendingVersion: null,
+            coexistingLegacyInstallDetected: false,
+            channelSummary: "Simulação: canal auto-atualizável (Velopack) verificado e atualizado."
+          } as unknown as T
+        };
+
+      case IPC_CONSTANTS.ACTION_QUERY_NETWORK_SHARES:
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: {
+            scannedAt: new Date().toISOString(),
+            isMock: true,
+            smb1Enabled: false,
+            mappedDrives: [
+              {
+                driveLetter: "M",
+                remotePath: "\\\\SERVIDOR-LAB\\Alunos",
+                persistent: true,
+                status: "Simulada (Modo Demonstração)"
+              }
+            ],
+            localShares: [
+              {
+                name: "MaterialAula",
+                localPath: "C:\\WinLabShare\\MaterialAula",
+                remark: "Material didático somente leitura (Simulação)"
+              }
+            ]
+          } as unknown as T
+        };
+
       case IPC_CONSTANTS.ACTION_QUERY_POLICY_CATALOG:
         return {
           id: crypto.randomUUID(),

@@ -272,6 +272,47 @@ namespace WinLab.Agent.Mock
                             platform = "Simulated Windows"
                         });
 
+                    case IpcConstants.ActionQueryUpdateStatus:
+                        return IpcResponse<object>.Ok(id, new UpdateStatusDto
+                        {
+                            CurrentVersion = "0.9.1",
+                            InstallChannel = "Velopack",
+                            AutoUpdateSupported = true,
+                            FeedUrl = "https://github.com/krrozino/winlab",
+                            LastCheckedAt = DateTime.UtcNow.ToString("o"),
+                            LastCheckState = "UpToDate",
+                            PendingVersion = null,
+                            CoexistingLegacyInstallDetected = false,
+                            ChannelSummary = "Simulação: canal auto-atualizável (Velopack) verificado e atualizado."
+                        });
+
+                    case IpcConstants.ActionQueryNetworkShares:
+                        return IpcResponse<object>.Ok(id, new NetworkShareEnvironmentDto
+                        {
+                            ScannedAt = DateTime.UtcNow.ToString("o"),
+                            IsMock = true,
+                            Smb1Enabled = false,
+                            MappedDrives = new List<MappedDriveDto>
+                            {
+                                new MappedDriveDto
+                                {
+                                    DriveLetter = "M",
+                                    RemotePath = @"\\SERVIDOR-LAB\Alunos",
+                                    Persistent = true,
+                                    Status = "Simulada (Modo Demonstração)"
+                                }
+                            },
+                            LocalShares = new List<LocalSmbShareDto>
+                            {
+                                new LocalSmbShareDto
+                                {
+                                    Name = "MaterialAula",
+                                    LocalPath = @"C:\WinLabShare\MaterialAula",
+                                    Remark = "Material didático somente leitura (Simulação)"
+                                }
+                            }
+                        });
+
                     default:
                         return IpcResponse<object>.Fail(id, $"Unhandled action: {action}", "UNHANDLED_ACTION");
                 }

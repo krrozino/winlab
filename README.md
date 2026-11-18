@@ -204,9 +204,16 @@ O WinLab também inclui:
 - alertas de armazenamento;
 - auditoria e verificação.
 
+## Arquitetura Dual: WinLab Web vs WinLab Desktop (v0.9.x)
+
+- **WinLab Web (`/`):** assistente guiado de 8 etapas para configuração pós-formatação via pacote ZIP auditável por SHA-256 (`Configurar-Computador.cmd` + PowerShell 5.1/7 + modelos SMB coletivo e individual por aluno).
+- **WinLab Desktop (`/desktop` + `.NET 10` WPF/WebView2):** central administrativa local para máquinas Windows 10/11 em operação, com leitura inicial não-elevada (`asInvoker`), elevação sob demanda via `WinLab.Executor.exe` (Named Pipes com SDDL `BA`/`SY`), isolamento estrito por SID de usuário comum, imunidade administrativa, detecção de *drift* externo, perfis locais comparáveis e reversão transacional verificada para 12 políticas canônicas.
+
 ## Pacote gerado
 
 ```text
+Configurar-Computador.cmd
+Reverter-Configuracao.cmd
 setup.ps1
 rollback.ps1
 audit.ps1
@@ -219,6 +226,11 @@ config.json
 README.txt
 verify-package.ps1
 manifest.json
+
+# extras opcionais de rede SMB
+servidor-pasta-smb.ps1
+estacao-mapear-smb.ps1
+testar-rede-smb.ps1
 
 # extras do pacote piloto
 PILOT-DEPLOYMENT-CHECKLIST.txt

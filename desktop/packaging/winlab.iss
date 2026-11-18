@@ -1,8 +1,8 @@
 ; Script do Inno Setup para o WinLab Desktop
-; Gera o instalador autocontido WinLabSetup-0.9.0-x64.exe para Windows x64
+; Gera o instalador autocontido WinLabSetup-0.9.1-x64.exe para Windows x64
 
 #define MyAppName "WinLab Desktop"
-#define MyAppVersion "0.9.0"
+#define MyAppVersion "0.9.1"
 #define MyAppPublisher "WinLab Project"
 #define MyAppURL "https://github.com/krrozino/winlab"
 #define MyAppExeName "WinLab.Desktop.exe"
@@ -23,7 +23,7 @@ AllowNoIcons=yes
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=commandline
 OutputDir=..\..\artifacts\installers
-OutputBaseFilename=WinLabSetup-0.9.0-x64
+OutputBaseFilename=WinLabSetup-0.9.1-x64
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -31,6 +31,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
 MinVersion=10.0.19041
+CloseApplications=yes
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
@@ -40,7 +41,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; Binários autocontidos publicados do WinLab Desktop (.NET 10 + WebView2 + wwwroot)
+; Binários autocontidos publicados do WinLab Desktop (.NET 10 + WebView2 + wwwroot + WinLab.Executor.exe)
 Source: "..\..\artifacts\publish\desktop\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -51,9 +52,29 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Limpa arquivos temporários da instalação, preservando C:\ProgramData\WinLab para integridade de baselines
+; Limpa arquivos temporários da instalação, preservando C:\ProgramData\WinLab para integridade de baselines e transações
 Type: files; Name: "{app}\*.log"
 
 [Messages]
-brazilianportuguese.BeveledLabel=WinLab Desktop 0.9.0 (Build de Piloto / Não Assinada)
-english.BeveledLabel=WinLab Desktop 0.9.0 (Pilot Build / Unsigned)
+brazilianportuguese.BeveledLabel=WinLab Desktop 0.9.1 (Build de Piloto / Não Assinada)
+english.BeveledLabel=WinLab Desktop 0.9.1 (Pilot Build / Unsigned)
+
+[Code]
+function InitializeSetup(): Boolean;
+var
+  VelopackUpdater: String;
+begin
+  Result := True;
+  VelopackUpdater := ExpandConstant('{localappdata}\WinLab.Desktop\Update.exe');
+  if FileExists(VelopackUpdater) and (not WizardSilent()) then
+  begin
+    if MsgBox(
+      'Foi detectada uma instalação do WinLab no canal auto-atualizável (Velopack) em AppData Local.' + #13#10 + #13#10 +
+      'Para evitar dois atalhos do WinLab no mesmo computador, recomenda-se manter apenas um canal de instalação (Inno Setup fixo em Program Files OU Velopack auto-atualizável).' + #13#10 + #13#10 +
+      'Deseja continuar a instalação em Program Files mesmo assim?',
+      mbConfirmation, MB_YESNO) = IDNO then
+    begin
+      Result := False;
+    end;
+  end;
+end;

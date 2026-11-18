@@ -379,5 +379,102 @@ namespace WinLab.Tests
                 if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
         }
+
+        [Fact]
+        public void DesktopUpdateService_DetectsVelopackInnoPortableAndLegacyCoexistence()
+        {
+            string root = Path.Combine(Path.GetTempPath(), $"WinLab_UpdateChannel_{Guid.NewGuid():N}");
+            try
+            {
+                string velopackRoot = Path.Combine(root, "LocalAppData", "WinLab.Desktop");
+                string velopackCurrent = Path.Combine(velopackRoot, "current");
+                string programFilesWinLab = Path.Combine(root, "ProgramFiles", "WinLab");
+                string portableDir = Path.Combine(root, "Portable");
+
+                Directory.CreateDirectory(velopackCurrent);
+                Directory.CreateDirectory(programFilesWinLab);
+                Directory.CreateDirectory(portableDir);
+
+                // 1. Portátil puro (sem Update.exe nem unins000.exe)
+                var portableStatus = UpdateChannelInspector.GetStatusSnapshot(
+                    baseDirectoryOverride: portableDir,
+                    programFilesOverride: Path.Combine(root, "ProgramFiles"),
+                    localAppDataOverride: Path.Combine(root, "LocalAppData"));
+                Assert.Equal("Portable", portableStatus.InstallChannel);
+                Assert.False(portableStatus.AutoUpdateSupported);
+                Assert.False(portableStatus.CoexistingLegacyInstallDetected);
+                Assert.StartsWith("0.9.", portableStatus.CurrentVersion);
+
+                // 2. Velopack puro (Update.exe no diretório pai)
+                File.WriteAllText(Path.Combine(velopackRoot, "Update.exe"), "stub");
+                var velopackStatus = UpdateChannelInspector.GetStatusSnapshot(
+                    baseDirectoryOverride: velopackCurrent,
+                    programFilesOverride: Path.Combine(root, "ProgramFiles"),
+                    localAppDataOverride: Path.Combine(root, "LocalAppData"));
+                Assert.Equal("Velopack", velopackStatus.InstallChannel);
+                Assert.True(velopackStatus.AutoUpdateSupported);
+                Assert.False(velopackStatus.CoexistingLegacyInstallDetected);
+
+                // 3. Coexistência detectada (Velopack ativo + unins000.exe do Inno Setup em Program Files)
+                File.WriteAllText(Path.Combine(programFilesWinLab, "unins000.exe"), "stub");
+                var coexistingVelopack = UpdateChannelInspector.GetStatusSnapshot(
+                    baseDirectoryOverride: velopackCurrent,
+                    programFilesOverride: Path.Combine(root, "ProgramFiles"),
+                    localAppDataOverride: Path.Combine(root, "LocalAppData"));
+                Assert.Equal("Velopack", coexistingVelopack.InstallChannel);
+                Assert.True(coexistingVelopack.CoexistingLegacyInstallDetected);
+
+                // 4. Inno Setup com coexistência de Velopack detectada
+                var innoStatus = UpdateChannelInspector.GetStatusSnapshot(
+                    baseDirectoryOverride: programFilesWinLab,
+                    programFilesOverride: Path.Combine(root, "ProgramFiles"),
+                    localAppDataOverride: Path.Combine(root, "LocalAppData"));
+                Assert.Equal("InnoSetup", innoStatus.InstallChannel);
+                Assert.False(innoStatus.AutoUpdateSupported);
+                Assert.True(innoStatus.CoexistingLegacyInstallDetected);
+            }
+            finally
+            {
+                if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+        }
+
+        [Fact]
+        public async Task RealAgentService_UpdateStatusAndNetworkShares_ExecuteNonElevatedWithoutTouchingExecutor()
+        {
+            var scanner = new FakeScanner();
+            var executorStub = new RecordingExecutorStub { IsRunning = false };
+            var service = new RealAgentService(
+                scanner: scanner,
+                executorClient: executorStub,
+                simulateWindows: true);
+
+            var updateResp = await service.HandleRequestAsync("""
+            {
+                "id": "q-update",
+                "version": "1.0.0",
+                "type": "query",
+                "action": "system.update_status"
+            }
+            """);
+            Assert.True(updateResp.Success);
+            var updateDto = Assert.IsType<UpdateStatusDto>(updateResp.Data);
+            Assert.StartsWith("0.9.", updateDto.CurrentVersion);
+
+            var netResp = await service.HandleRequestAsync("""
+            {
+                "id": "q-net",
+                "version": "1.0.0",
+                "type": "query",
+                "action": "network.query_shares"
+            }
+            """);
+            Assert.True(netResp.Success);
+            var netDto = Assert.IsType<NetworkShareEnvironmentDto>(netResp.Data);
+            Assert.False(netDto.IsMock);
+
+            // Garante zero chamadas privilegiadas/UAC
+            Assert.Empty(executorStub.ReceivedRawEnvelopes);
+        }
     }
 }

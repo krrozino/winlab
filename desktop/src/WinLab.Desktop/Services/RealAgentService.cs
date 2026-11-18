@@ -109,6 +109,16 @@ namespace WinLab.Desktop.Services
                         });
                     }
 
+                    case IpcConstants.ActionQueryUpdateStatus:
+                    {
+                        return IpcResponse<object>.Ok(id, UpdateChannelInspector.GetStatusSnapshot());
+                    }
+
+                    case IpcConstants.ActionQueryNetworkShares:
+                    {
+                        return IpcResponse<object>.Ok(id, NetworkShareScanner.Scan());
+                    }
+
                     case IpcConstants.ActionCreateLocalAccount:
                     {
                         if (!_isWindows)

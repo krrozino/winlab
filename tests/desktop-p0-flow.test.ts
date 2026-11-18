@@ -4,7 +4,9 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   buildValidatedTransactionRequest,
+  computePolicyDriftSummary,
   computePolicyVisualModel,
+  computeSavedProfileDiff,
   getEligibleTargetUsers,
   isPolicyCurrentlyEnabled,
   togglePolicyPendingState,
@@ -18,9 +20,11 @@ import {
   IpcResponse,
   LocalUserDto,
   MachineInventoryDto,
+  NetworkShareEnvironmentDto,
   PolicyItemDto,
   PolicyStateSummaryDto,
-  RollbackResultDto
+  RollbackResultDto,
+  UpdateStatusDto
 } from "../src/desktop/contracts";
 import { MachineDataSession } from "../src/desktop/machine-data-session";
 import { DesktopControlCenter } from "../src/desktop/DesktopControlCenter";
@@ -509,3 +513,114 @@ test("DesktopControlCenter renders cleanly in Demo and Real modes with Portugues
   assert.match(html, /LAB-SALA-01/);
   assert.match(html, /Computador Real/);
 });
+
+test("MockDesktopAgent responds to system.update_status and network.query_shares with pre-1.0 version and SMB safety", async () => {
+  const agent = new MockDesktopAgent();
+
+  const updateRes = await agent.handleRequest<UpdateStatusDto>(
+    makeEnvelope(IPC_CONSTANTS.ACTION_QUERY_UPDATE_STATUS)
+  );
+  assert.equal(updateRes.success, true);
+  assert.equal(updateRes.data?.currentVersion, "0.9.1");
+  assert.equal(updateRes.data?.installChannel, "Velopack");
+  assert.equal(updateRes.data?.autoUpdateSupported, true);
+
+  const netRes = await agent.handleRequest<NetworkShareEnvironmentDto>(
+    makeEnvelope(IPC_CONSTANTS.ACTION_QUERY_NETWORK_SHARES)
+  );
+  assert.equal(netRes.success, true);
+  assert.equal(netRes.data?.isMock, true);
+  assert.equal(netRes.data?.smb1Enabled, false);
+  assert.ok((netRes.data?.mappedDrives.length ?? 0) >= 1);
+  assert.ok((netRes.data?.localShares.length ?? 0) >= 1);
+});
+
+test("External drift detection surfaces warning banner and computes exact saved profile diff", () => {
+  const driftedPolicies: PolicyItemDto[] = [
+    makePolicy({
+      id: "personalization.wallpaper",
+      title: "Bloquear papel de parede",
+      currentState: "Drifted",
+      effectiveState: "Drifted",
+      desiredState: "Blocked"
+    }),
+    makePolicy({
+      id: "browser.chrome.incognito",
+      title: "Bloquear navegação anônima",
+      scope: "Machine",
+      currentState: "Applied",
+      effectiveState: "Applied",
+      configuredState: "Blocked",
+      desiredState: "Blocked"
+    }),
+    makePolicy({
+      id: "storage.usb_write_protect",
+      title: "Bloquear gravação em pendrives USB",
+      scope: "Machine",
+      currentState: "NotConfigured",
+      effectiveState: "NotConfigured",
+      configuredState: "NotConfigured",
+      desiredState: "NotConfigured"
+    })
+  ];
+
+  const drift = computePolicyDriftSummary(driftedPolicies);
+  assert.equal(drift.hasDrift, true);
+  assert.equal(drift.driftedPolicies.length, 1);
+  assert.deepEqual(drift.remediationPending, { "personalization.wallpaper": true });
+
+  // Diff: saved profile enables usb_write_protect, disables incognito, keeps wallpaper disabled
+  const diff = computeSavedProfileDiff(
+    {
+      "personalization.wallpaper": false,
+      "browser.chrome.incognito": false,
+      "storage.usb_write_protect": true
+    },
+    driftedPolicies
+  );
+  assert.deepEqual(diff.toEnable, ["storage.usb_write_protect"]);
+  assert.deepEqual(diff.toDisable, ["browser.chrome.incognito"]);
+  assert.equal(diff.unchangedCount, 1);
+  assert.deepEqual(diff.pendingMap, {
+    "browser.chrome.incognito": false,
+    "storage.usb_write_protect": true
+  });
+
+  // SSR render verifies the drift warning banner appears automatically
+  const html = renderToStaticMarkup(
+    React.createElement(DesktopControlCenter, {
+      mode: "Real",
+      native: true,
+      inventory: {
+        scannedAt: new Date().toISOString(),
+        computerName: "LAB-DRIFT-01",
+        isMock: false,
+        windows: {
+          caption: "Windows 11 Pro",
+          version: "10.0.26100",
+          buildNumber: "26100",
+          edition: "Professional",
+          architecture: "64-bit"
+        },
+        disks: [{ device: "C:", totalGb: 256, freeGb: 180, freePercent: 70 }],
+        detectedApps: [],
+        installedApps: [],
+        localUsers: SAMPLE_USERS
+      },
+      policyStates: driftedPolicies,
+      selectedUserSid: "S-1-5-21-1000-1002",
+      config: defaultConfig,
+      setConfig: () => {},
+      scanError: null,
+      isScanning: false,
+      onChangeMode: () => {},
+      onRefresh: () => {},
+      sendIpc: async () => ({ id: "1", replyToId: "1", success: true })
+    })
+  );
+
+  assert.match(html, /drift-warning-banner/);
+  assert.match(html, /Configuração modificada fora do WinLab/);
+  assert.match(html, /Bloquear papel de parede/);
+});
+

@@ -1,6 +1,6 @@
-(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,41045,e=>{"use strict";var t=e.i(95060),o=e.i(14265);function r(e){return e?"$true":"$false"}function a(e){return`'${e.replaceAll("'","''")}'`}function i(e){return e.length?`@(
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,22016,(e,t,r)=>{"use strict";e.i(47167),Object.defineProperty(r,"__esModule",{value:!0});var o={default:function(){return g},useLinkStatus:function(){return A}};for(var a in o)Object.defineProperty(r,a,{enumerable:!0,get:o[a]});let i=e.r(90809),n=e.r(43476),s=i._(e.r(71645)),l=e.r(95057),c=e.r(8372),d=e.r(18581),u=e.r(18967),p=e.r(5550),$=e.r(88540),m=e.r(91949),f=e.r(73668),h=e.r(9396);function g(t){var r;let o,a,i,[g,A]=(0,s.useOptimistic)(m.IDLE_LINK_STATUS),S=(0,s.useRef)(null),{href:y,as:C,children:b,prefetch:x=null,passHref:k,replace:v,shallow:E,scroll:R,onClick:L,onMouseEnter:W,onTouchStart:N,legacyBehavior:w=!1,onNavigate:U,transitionTypes:I,ref:D,unstable_dynamicOnHover:B,...O}=t;o=b,w&&("string"==typeof o||"number"==typeof o)&&(o=(0,n.jsx)("a",{children:o}));let T=s.default.useContext(c.AppRouterContext),F=!1!==x,M=!1===x?"none":!0===x?"full":"auto",G="none"!==M?"auto"===M?h.FetchStrategy.PPR:h.FetchStrategy.Full:h.FetchStrategy.PPR,H="string"==typeof(r=C||y)?r:(0,l.formatUrl)(r);if(w){if(o?.$$typeof===Symbol.for("react.lazy"))throw Object.defineProperty(Error("`<Link legacyBehavior>` received a direct child that is either a Server Component, or JSX that was loaded with React.lazy(). This is not supported. Either remove legacyBehavior, or make the direct child a Client Component that renders the Link's `<a>` tag."),"__NEXT_ERROR_CODE",{value:"E863",enumerable:!1,configurable:!0});a=s.default.Children.only(o)}let V=w?a&&"object"==typeof a&&a.ref:D,_,j=s.default.useCallback(e=>(null!==T&&(S.current=(0,m.mountLinkInstance)(e,H,T,G,F,A,_)),()=>{S.current&&((0,m.unmountLinkForCurrentNavigation)(S.current),S.current=null),(0,m.unmountPrefetchableInstance)(e)}),[F,H,T,G,A,_]),q={ref:(0,d.useMergedRef)(j,V),onClick(t){w||"function"!=typeof L||L(t),w&&a.props&&"function"==typeof a.props.onClick&&a.props.onClick(t),!T||t.defaultPrevented||function(t,r,o,a,i,n,l,c="none"){if("u">typeof window){let d,{nodeName:u}=t.currentTarget;if("A"===u.toUpperCase()&&((d=t.currentTarget.getAttribute("target"))&&"_self"!==d||t.metaKey||t.ctrlKey||t.shiftKey||t.altKey||t.nativeEvent&&2===t.nativeEvent.which)||t.currentTarget.hasAttribute("download"))return;if(!(0,f.isLocalURL)(r)){a&&(t.preventDefault(),location.replace(r));return}if(t.preventDefault(),n){let e=!1;if(n({preventDefault:()=>{e=!0}}),e)return}let{dispatchNavigateAction:p}=e.r(99781);s.default.startTransition(()=>{p(r,a?"replace":"push",!1===i?$.ScrollBehavior.NoScroll:$.ScrollBehavior.Default,o.current,l,c)})}}(t,H,S,v,R,U,I,M)},onMouseEnter(e){w||"function"!=typeof W||W(e),w&&a.props&&"function"==typeof a.props.onMouseEnter&&a.props.onMouseEnter(e),T&&F&&(0,m.onNavigationIntent)(e.currentTarget,!0===B)},onTouchStart:function(e){w||"function"!=typeof N||N(e),w&&a.props&&"function"==typeof a.props.onTouchStart&&a.props.onTouchStart(e),T&&F&&(0,m.onNavigationIntent)(e.currentTarget,!0===B)}};return(0,u.isAbsoluteUrl)(H)?q.href=H:w&&!k&&("a"!==a.type||"href"in a.props)||(q.href=(0,p.addBasePath)(H)),i=w?s.default.cloneElement(a,q):(0,n.jsx)("a",{...O,...q,children:o}),(0,n.jsx)(P.Provider,{value:g,children:i})}let P=(0,s.createContext)(m.IDLE_LINK_STATUS),A=()=>(0,s.useContext)(P);("function"==typeof r.default||"object"==typeof r.default&&null!==r.default)&&void 0===r.default.__esModule&&(Object.defineProperty(r.default,"__esModule",{value:!0}),Object.assign(r.default,r),t.exports=r.default)},18581,(e,t,r)=>{"use strict";Object.defineProperty(r,"__esModule",{value:!0}),Object.defineProperty(r,"useMergedRef",{enumerable:!0,get:function(){return a}});let o=e.r(71645);function a(e,t){let r=(0,o.useRef)(null),a=(0,o.useRef)(null);return(0,o.useCallback)(o=>{if(null===o){let e=r.current;e&&(r.current=null,e());let t=a.current;t&&(a.current=null,t())}else e&&(r.current=i(e,o)),t&&(a.current=i(t,o))},[e,t])}function i(e,t){if("function"!=typeof e)return e.current=t,()=>{e.current=null};{let r=e(t);return"function"==typeof r?r:()=>e(null)}}("function"==typeof r.default||"object"==typeof r.default&&null!==r.default)&&void 0===r.default.__esModule&&(Object.defineProperty(r.default,"__esModule",{value:!0}),Object.assign(r.default,r),t.exports=r.default)},18967,(e,t,r)=>{"use strict";e.i(47167),Object.defineProperty(r,"__esModule",{value:!0});var o={DecodeError:function(){return g},MiddlewareNotFoundError:function(){return y},MissingStaticPage:function(){return S},NormalizeError:function(){return P},PageNotFoundError:function(){return A},SP:function(){return f},ST:function(){return h},WEB_VITALS:function(){return i},execOnce:function(){return n},getDisplayName:function(){return u},getLocationOrigin:function(){return c},getURL:function(){return d},isAbsoluteUrl:function(){return l},isResSent:function(){return p},loadGetInitialProps:function(){return m},normalizeRepeatedSlashes:function(){return $},stringifyError:function(){return C}};for(var a in o)Object.defineProperty(r,a,{enumerable:!0,get:o[a]});let i=["CLS","FCP","FID","INP","LCP","TTFB"];function n(e){let t,r=!1;return(...o)=>(r||(r=!0,t=e(...o)),t)}let s=/^[a-zA-Z][a-zA-Z\d+\-.]*?:/,l=e=>{let t=e.charCodeAt(0);return!!(t>=65&&t<=90||t>=97&&t<=122)&&s.test(e)};function c(){let{protocol:e,hostname:t,port:r}=window.location;return`${e}//${t}${r?":"+r:""}`}function d(){let{href:e}=window.location,t=c();return e.substring(t.length)}function u(e){return"string"==typeof e?e:e.displayName||e.name||"Unknown"}function p(e){return e.finished||e.headersSent}function $(e){let t=e.split("?");return t[0].replace(/\\/g,"/").replace(/\/\/+/g,"/")+(t[1]?`?${t.slice(1).join("?")}`:"")}async function m(e,t){let r=t.res||t.ctx&&t.ctx.res;if(!e.getInitialProps)return t.ctx&&t.Component?{pageProps:await m(t.Component,t.ctx)}:{};let o=await e.getInitialProps(t);if(r&&p(r))return o;if(!o)throw Object.defineProperty(Error(`"${u(e)}.getInitialProps()" should resolve to an object. But found "${o}" instead.`),"__NEXT_ERROR_CODE",{value:"E1025",enumerable:!1,configurable:!0});return o}let f="u">typeof performance,h=f&&["mark","measure","getEntriesByName"].every(e=>"function"==typeof performance[e]);class g extends Error{}class P extends Error{}class A extends Error{constructor(e){super(),this.code="ENOENT",this.name="PageNotFoundError",this.message=`Cannot find module for page: ${e}`}}class S extends Error{constructor(e,t){super(),this.message=`Failed to load static file for page: ${e} ${t}`}}class y extends Error{constructor(){super(),this.code="ENOENT",this.message="Cannot find the middleware module"}}function C(e){return JSON.stringify({message:e.message,stack:e.stack})}},73668,(e,t,r)=>{"use strict";Object.defineProperty(r,"__esModule",{value:!0}),Object.defineProperty(r,"isLocalURL",{enumerable:!0,get:function(){return i}});let o=e.r(18967),a=e.r(52817);function i(e){if(!(0,o.isAbsoluteUrl)(e))return!0;try{let t=(0,o.getLocationOrigin)(),r=new URL(e,t);return r.origin===t&&(0,a.hasBasePath)(r.pathname)}catch(e){return!1}}},98183,(e,t,r)=>{"use strict";Object.defineProperty(r,"__esModule",{value:!0});var o={assign:function(){return l},searchParamsToUrlQuery:function(){return i},urlQueryToSearchParams:function(){return s}};for(var a in o)Object.defineProperty(r,a,{enumerable:!0,get:o[a]});function i(e){let t={};for(let[r,o]of e.entries()){let e=t[r];void 0===e?t[r]=o:Array.isArray(e)?e.push(o):t[r]=[e,o]}return t}function n(e){return"string"==typeof e?e:("number"!=typeof e||isNaN(e))&&"boolean"!=typeof e?"":String(e)}function s(e){let t=new URLSearchParams;for(let[r,o]of Object.entries(e))if(Array.isArray(o))for(let e of o)t.append(r,n(e));else t.set(r,n(o));return t}function l(e,...t){for(let r of t){for(let t of r.keys())e.delete(t);for(let[t,o]of r.entries())e.append(t,o)}return e}},95057,(e,t,r)=>{"use strict";e.i(47167),Object.defineProperty(r,"__esModule",{value:!0});var o={formatUrl:function(){return s},formatWithValidation:function(){return c},urlObjectKeys:function(){return l}};for(var a in o)Object.defineProperty(r,a,{enumerable:!0,get:o[a]});let i=e.r(90809)._(e.r(98183)),n=/https?|ftp|gopher|file/;function s(e){let{auth:t,hostname:r}=e,o=e.protocol||"",a=e.pathname||"",s=e.hash||"",l=e.query||"",c=!1;t=t?encodeURIComponent(t).replace(/%3A/i,":")+"@":"",e.host?c=t+e.host:r&&(c=t+(~r.indexOf(":")?`[${r}]`:r),e.port&&(c+=":"+e.port)),l&&"object"==typeof l&&(l=String(i.urlQueryToSearchParams(l)));let d=e.search||l&&`?${l}`||"";return o&&!o.endsWith(":")&&(o+=":"),e.slashes||(!o||n.test(o))&&!1!==c?(c="//"+(c||""),a&&"/"!==a[0]&&(a="/"+a)):c||(c=""),s&&"#"!==s[0]&&(s="#"+s),d&&"?"!==d[0]&&(d="?"+d),a=a.replace(/[?#]/g,encodeURIComponent),d=d.replace("#","%23"),`${o}${c}${a}${d}${s}`}let l=["auth","hash","host","hostname","href","path","pathname","port","protocol","query","search","slashes"];function c(e){return s(e)}},41045,e=>{"use strict";var t=e.i(95060),r=e.i(14265);function o(e){return e?"$true":"$false"}function a(e){return`'${e.replaceAll("'","''")}'`}function i(e){return e.length?`@(
 ${e.map(e=>`    ${a(e)}`).join(",\n")}
-)`:"@()"}function n(e,t,o=""){let r=o?`${o}
+)`:"@()"}function n(e,t,r=""){let o=r?`${r}
 
 `:"";return`#requires -version 5.1
 <#
@@ -11,7 +11,7 @@ Perfil: ${e.profileName}
 Teste primeiro em uma m\xe1quina piloto.
 Nenhuma senha \xe9 armazenada neste arquivo.
 #>
-${r}$ErrorActionPreference = "Stop"
+${o}$ErrorActionPreference = "Stop"
 $Aluno = ${a(e.studentUser)}
 $Admin = ${a(e.adminUser)}
 
@@ -145,7 +145,7 @@ foreach ($log in $logs) {
         Select-Object -First 100 TimeCreated, Id, Message |
         Format-List
 }
-`},"generateConfigJson",0,function(e){return(0,o.serializeConfig)(e)},"generateMaintenanceScript",0,function(e){return`${n(e,"MANUTENÇÃO E LIMPEZA DE PERFIS",`[CmdletBinding()]
+`},"generateConfigJson",0,function(e){return(0,r.serializeConfig)(e)},"generateMaintenanceScript",0,function(e){return`${n(e,"MANUTENÇÃO E LIMPEZA DE PERFIS",`[CmdletBinding()]
 param([switch]$Apply)`)}
 
 Assert-Administrator
@@ -319,6 +319,14 @@ maintenance.ps1
   Mostra espa\xe7o livre e perfis inativos. No modo Delete pode remover perfis
   n\xe3o carregados e antigos, preservando as contas Aluno/Admin configuradas.
 
+Configurar-Computador.cmd
+  Atalho guiado p\xf3s-formata\xe7\xe3o. Solicita eleva\xe7\xe3o UAC se necess\xe1rio, confere os hashes SHA-256
+  via verify-package.ps1, exibe o plano de mudan\xe7as, pede confirma\xe7\xe3o e executa setup.ps1 -Apply
+  seguido de verify.ps1 sem alterar a pol\xedtica global de execu\xe7\xe3o do PowerShell.
+
+Reverter-Configuracao.cmd
+  Atalho guiado para restaurar os baselines anteriores (rollback.ps1 -Apply) ap\xf3s valida\xe7\xe3o SHA-256.
+
 verify-package.ps1
   Verifica SHA-256 e tamanho de todos os arquivos listados no manifest.
 
@@ -330,9 +338,16 @@ config.json
   Configura\xe7\xe3o versionada usada para gerar este pacote.
   Pode ser importada novamente no WinLab.
 
-FLUXO RECOMENDADO
------------------
-1. Execute verify.ps1 como administrador e confira a m\xe1quina.
+EXECU\xc7\xc3O R\xc1PIDA P\xd3S-FORMATA\xc7\xc3O
+------------------------------
+1. Extraia TODOS os arquivos deste ZIP para uma pasta local (ex.: C:TempWinLab-Setup).
+2. Clique duas vezes em Configurar-Computador.cmd e aprove a permiss\xe3o de Administrador (UAC).
+3. Confira o resumo exibido na tela e digite S para confirmar a aplica\xe7\xe3o.
+4. Caso precise desfazer tudo depois, execute Reverter-Configuracao.cmd.
+
+FLUXO RECOMENDADO EM LABORAT\xd3RIO
+--------------------------------
+1. Execute verify.ps1 como administrador e confira a m\xe1quina (ou use Configurar-Computador.cmd).
 2. Gere inicialmente em modo AUDITORIA.
 3. Execute setup.ps1 SEM -Apply para revisar o plano.
 4. Quando estiver de acordo, execute setup.ps1 -Apply como administrador.
@@ -589,36 +604,36 @@ else {
     Write-Host "Nenhuma altera\xe7\xe3o foi aplicada." -ForegroundColor Green
     Write-Host "Para executar o rollback seguro, rode novamente com -Apply." -ForegroundColor Yellow
 }
-`},"generateSetupScript",0,function(e){let o=[...e.allowedApps.flatMap(e=>t.APP_CATALOG[e].paths),...e.customAllowedPaths.map(e=>e.trim()).filter(Boolean)],s=e.enforcementMode;return`${n(e,"SETUP",`[CmdletBinding()]
+`},"generateSetupScript",0,function(e){let r=[...e.allowedApps.flatMap(e=>t.APP_CATALOG[e].paths),...e.customAllowedPaths.map(e=>e.trim()).filter(Boolean)],s=e.enforcementMode;return`${n(e,"SETUP",`[CmdletBinding()]
 param([switch]$Apply, [switch]$UserPoliciesOnly)`)}
 $ProfileName = ${a(e.profileName)}
-$CreateAccounts = ${r(e.createAccounts)}
-$BlockInstallers = ${r(e.blockInstallers)}
-$BlockStoreApps = ${r(e.blockStoreApps)}
-$BlockCmd = ${r(e.blockCmd)}
-$BlockPowerShell = ${r(e.blockPowerShell)}
-$BlockRegedit = ${r(e.blockRegedit)}
-$AllowLocalAccountManagement = ${r(e.allowLocalAccountManagement)}
+$CreateAccounts = ${o(e.createAccounts)}
+$BlockInstallers = ${o(e.blockInstallers)}
+$BlockStoreApps = ${o(e.blockStoreApps)}
+$BlockCmd = ${o(e.blockCmd)}
+$BlockPowerShell = ${o(e.blockPowerShell)}
+$BlockRegedit = ${o(e.blockRegedit)}
+$AllowLocalAccountManagement = ${o(e.allowLocalAccountManagement)}
 
-$BlockChromeExtensions = ${r(e.blockChromeExtensions)}
-$BlockChromeGuest = ${r(e.blockChromeGuest)}
-$BlockChromeNewProfiles = ${r(e.blockChromeNewProfiles)}
-$BlockChromeIncognito = ${r(e.blockChromeIncognito)}
-$BlockChromePasswordManager = ${r(e.blockChromePasswordManager)}
+$BlockChromeExtensions = ${o(e.blockChromeExtensions)}
+$BlockChromeGuest = ${o(e.blockChromeGuest)}
+$BlockChromeNewProfiles = ${o(e.blockChromeNewProfiles)}
+$BlockChromeIncognito = ${o(e.blockChromeIncognito)}
+$BlockChromePasswordManager = ${o(e.blockChromePasswordManager)}
 
 $BrowserUrlMode = "${e.browserUrlMode}"
 $BlockedUrls = ${i(e.blockedUrls)}
 $AllowedUrls = ${i(e.allowedUrls)}
 
-$BlockUsbRead = ${r(e.blockUsbRead)}
-$BlockUsbWrite = ${r(e.blockUsbWrite)}
-$BlockUsbExecute = ${r(e.blockUsbExecute)}
+$BlockUsbRead = ${o(e.blockUsbRead)}
+$BlockUsbWrite = ${o(e.blockUsbWrite)}
+$BlockUsbExecute = ${o(e.blockUsbExecute)}
 
-$BlockWallpaper = ${r(e.blockWallpaper)}
-$BlockMousePointers = ${r(e.blockMousePointers)}
-$BlockSoundScheme = ${r(e.blockSoundScheme)}
+$BlockWallpaper = ${o(e.blockWallpaper)}
+$BlockMousePointers = ${o(e.blockMousePointers)}
+$BlockSoundScheme = ${o(e.blockSoundScheme)}
 
-$AllowedExecutables = ${i(o)}
+$AllowedExecutables = ${i(r)}
 $EnforcementMode = "${s}"
 
 $WinLabRoot = "C:\\ProgramData\\WinLab"
@@ -1486,7 +1501,7 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Pr
 Write-Host "Wallpaper liberado por $Minutos minutos." -ForegroundColor Green
 Write-Host "Rebloqueio autom\xe1tico: $($when.ToString('HH:mm'))." -ForegroundColor Cyan
 Write-Host "Ponteiro e esquema de sons continuam bloqueados." -ForegroundColor Yellow
-`},"generateVerifyScript",0,function(e){let o=e.allowedApps.map(e=>({label:t.APP_CATALOG[e].label,paths:t.APP_CATALOG[e].paths})).map(e=>`    @{
+`},"generateVerifyScript",0,function(e){let r=e.allowedApps.map(e=>({label:t.APP_CATALOG[e].label,paths:t.APP_CATALOG[e].paths})).map(e=>`    @{
         Name = ${a(e.label)}
         Paths = ${i([...e.paths])}
     }`).join(",\n");return`${n(e,"VERIFICAÇÃO DO PC")}
@@ -1494,7 +1509,7 @@ Write-Host "Ponteiro e esquema de sons continuam bloqueados." -ForegroundColor Y
 Assert-Administrator
 
 $KnownApps = @(
-${o}
+${r}
 )
 $CustomAllowedPaths = ${i(e.customAllowedPaths)}
 
@@ -1530,8 +1545,8 @@ Write-Check "Application Identity" ($null -ne $service) $(if ($service) { "servi
 
 $student = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
 $admin = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
-Write-Check "Conta restrita" ($null -ne $student -or ${r(e.createAccounts)}) $(if ($student) { "existe: $Aluno" } else { "ser\xe1 criada pelo setup: $Aluno" })
-Write-Check "Conta administrativa" ($null -ne $admin -or ${r(e.createAccounts)}) $(if ($admin) { "existe: $Admin" } else { "ser\xe1 criada pelo setup: $Admin" })
+Write-Check "Conta restrita" ($null -ne $student -or ${o(e.createAccounts)}) $(if ($student) { "existe: $Aluno" } else { "ser\xe1 criada pelo setup: $Aluno" })
+Write-Check "Conta administrativa" ($null -ne $admin -or ${o(e.createAccounts)}) $(if ($admin) { "existe: $Admin" } else { "ser\xe1 criada pelo setup: $Admin" })
 
 Write-Host ""
 Write-Host "=== Safety & Recovery ===" -ForegroundColor Cyan
@@ -1595,11 +1610,11 @@ if ($CustomAllowedPaths.Count -gt 0) {
 
 Write-Host ""
 Write-Host "Use este relat\xf3rio antes de ativar o AppLocker em modo Enabled." -ForegroundColor Yellow
-`}])},79529,e=>{"use strict";var t=e.i(95060);function o(e){return`'${e.replaceAll("'","''")}'`}e.s(["generateInventoryScannerScript",0,function(){let e=Object.entries(t.APP_CATALOG).map(([e,t])=>{var r;return`    @{
-        Id = ${o(e)}
-        Label = ${o(t.label)}
-        Paths = ${!(r=t.paths).length?"@()":`@(
-${r.map(e=>`        ${o(e)}`).join(",\n")}
+`}])},79529,65086,e=>{"use strict";var t=e.i(95060);function r(e){return`'${e.replaceAll("'","''")}'`}function o(e){return"'"+e.replaceAll("'","''")+"'"}function a(e){return e.length?"@("+e.map(o).join(", ")+")":"@()"}e.s(["generateInventoryScannerScript",0,function(){let e=Object.entries(t.APP_CATALOG).map(([e,t])=>{var o;return`    @{
+        Id = ${r(e)}
+        Label = ${r(t.label)}
+        Paths = ${!(o=t.paths).length?"@()":`@(
+${o.map(e=>`        ${r(e)}`).join(",\n")}
     )`}
     }`}).join(",\n");return`#requires -version 5.1
 <#
@@ -1738,80 +1753,7 @@ Write-Host "Invent\xe1rio WinLab criado com sucesso." -ForegroundColor Green
 Write-Host $outputPath -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Agora importe esse JSON no WinLab Configurator." -ForegroundColor Yellow
-`}])},65334,83489,e=>{"use strict";var t=e.i(79529),o=e.i(41045),r=e.i(65086);function a(e){return new TextEncoder().encode(e)}async function i(e){return[...new Uint8Array(await crypto.subtle.digest("SHA-256",a(e)))].map(e=>e.toString(16).padStart(2,"0")).join("")}async function n(e,t,o){let r=await Promise.all(t.map(async e=>({name:e.name,sha256:await i(e.content),bytes:a(e.content).byteLength})));return{schemaVersion:1,packageVersion:"0.9.0",packageId:o?.packageId??crypto.randomUUID(),generatedAt:o?.generatedAt??new Date().toISOString(),profileName:e.profileName,configSchemaVersion:1,channel:o?.channel??"standard",targetComputerName:o?.targetComputerName??null,integrity:{algorithm:"SHA-256",manifestSelfHashed:!1,authenticity:"unsigned"},files:r}}async function s(e,a){let i=[{name:"setup.ps1",content:(0,o.generateSetupScript)(e)},{name:"rollback.ps1",content:(0,o.generateRollbackScript)(e)},{name:"audit.ps1",content:(0,o.generateAuditScript)(e)},{name:"liberar-wallpaper.ps1",content:(0,o.generateUnlockWallpaperScript)(e)},{name:"verify.ps1",content:(0,o.generateVerifyScript)(e)},{name:"preflight.ps1",content:(0,r.generatePreflightScript)(e)},{name:"scan-pc.ps1",content:(0,t.generateInventoryScannerScript)()},{name:"maintenance.ps1",content:(0,o.generateMaintenanceScript)(e)},{name:"config.json",content:(0,o.generateConfigJson)(e)},{name:"README.txt",content:(0,o.generateReadme)(e)},{name:"verify-package.ps1",content:`#requires -version 5.1
-[CmdletBinding()]
-param(
-    [string]$PackageRoot = $PSScriptRoot
-)
-
-$ErrorActionPreference = "Stop"
-
-$manifestPath = Join-Path $PackageRoot "manifest.json"
-
-if (-not (Test-Path $manifestPath)) {
-    Write-Error "manifest.json n\xe3o encontrado em '$PackageRoot'."
-    exit 1
-}
-
-try {
-    $manifest = Get-Content -Path $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-}
-catch {
-    Write-Error ("manifest.json inv\xe1lido: " + $_.Exception.Message)
-    exit 1
-}
-
-if ($manifest.schemaVersion -ne 1) {
-    Write-Error ("Vers\xe3o de manifesto n\xe3o suportada: " + $manifest.schemaVersion)
-    exit 1
-}
-
-if ($manifest.integrity.algorithm -ne "SHA-256") {
-    Write-Error ("Algoritmo de integridade n\xe3o suportado: " + $manifest.integrity.algorithm)
-    exit 1
-}
-
-$failures = New-Object System.Collections.Generic.List[string]
-
-foreach ($entry in @($manifest.files)) {
-    $filePath = Join-Path $PackageRoot ([string]$entry.name)
-
-    if (-not (Test-Path $filePath -PathType Leaf)) {
-        $failures.Add("Arquivo ausente: $($entry.name)")
-        continue
-    }
-
-    $hash = (Get-FileHash -Path $filePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $expected = ([string]$entry.sha256).ToLowerInvariant()
-
-    if ($hash -ne $expected) {
-        $failures.Add("Hash divergente: $($entry.name)")
-    }
-
-    $length = (Get-Item -LiteralPath $filePath).Length
-    if ([int64]$entry.bytes -ne [int64]$length) {
-        $failures.Add("Tamanho divergente: $($entry.name)")
-    }
-}
-
-if ($failures.Count -gt 0) {
-    Write-Host "=== WinLab Package Integrity: FAIL ===" -ForegroundColor Red
-    foreach ($failure in $failures) {
-        Write-Host ("- " + $failure) -ForegroundColor Red
-    }
-
-    exit 1
-}
-
-Write-Host "=== WinLab Package Integrity: PASS ===" -ForegroundColor Green
-Write-Host ("Package ID: " + $manifest.packageId)
-Write-Host ("Version: " + $manifest.packageVersion)
-Write-Host ("Arquivos verificados: " + @($manifest.files).Count)
-
-if ($manifest.integrity.authenticity -eq "unsigned") {
-    Write-Host "Nota: os hashes verificam integridade, n\xe3o autenticidade/assinatura do pacote." -ForegroundColor Yellow
-}
-`},...a?.extraFiles??[]],s=await n(e,i,a);return[...i,{name:"manifest.json",content:JSON.stringify(s,null,2)+"\n"}]}e.s(["buildWinLabPackageFiles",0,s],65334);let l=new TextEncoder;function c(e){return new Uint8Array(e)}function d(e,t,o){e.setUint16(t,o,!0)}function u(e,t,o){e.setUint32(t,o>>>0,!0)}e.s(["createZip",0,function(e){var t;let o,r=(o=Math.max(1980,(t=new Date).getFullYear()),{time:t.getHours()<<11|t.getMinutes()<<5|Math.floor(t.getSeconds()/2),date:o-1980<<9|t.getMonth()+1<<5|t.getDate()}),a=[],i=[],n=0;for(let t of e){let e=l.encode(t.name),o=l.encode(t.content),s=function(e){let t=0xffffffff;for(let o of e){t^=o;for(let e=0;e<8;e++)t=t>>>1^0xedb88320&-(1&t)}return(0xffffffff^t)>>>0}(o),$=c(30),p=new DataView($.buffer);u(p,0,0x4034b50),d(p,4,20),d(p,6,2048),d(p,8,0),d(p,10,r.time),d(p,12,r.date),u(p,14,s),u(p,18,o.length),u(p,22,o.length),d(p,26,e.length),d(p,28,0),i.push({name:e,data:o,crc:s,offset:n}),a.push($,e,o),n+=$.length+e.length+o.length}let s=[],$=0;for(let e of i){let t=c(46),o=new DataView(t.buffer);u(o,0,0x2014b50),d(o,4,20),d(o,6,20),d(o,8,2048),d(o,10,0),d(o,12,r.time),d(o,14,r.date),u(o,16,e.crc),u(o,20,e.data.length),u(o,24,e.data.length),d(o,28,e.name.length),d(o,30,0),d(o,32,0),d(o,34,0),d(o,36,0),u(o,38,0),u(o,42,e.offset),s.push(t,e.name),$+=t.length+e.name.length}let p=c(22),m=new DataView(p.buffer);u(m,0,0x6054b50),d(m,4,0),d(m,6,0),d(m,8,i.length),d(m,10,i.length),u(m,12,$),u(m,16,n),d(m,20,0);let f=function(e){let t=new Uint8Array(e.reduce((e,t)=>e+t.length,0)),o=0;for(let r of e)t.set(r,o),o+=r.length;return t}([...a,...s,p]),h=new ArrayBuffer(f.byteLength);return new Uint8Array(h).set(f),new Blob([h],{type:"application/zip"})}],83489)},65086,e=>{"use strict";var t=e.i(95060);function o(e){return"'"+e.replaceAll("'","''")+"'"}function r(e){return e.length?"@("+e.map(o).join(", ")+")":"@()"}e.s(["generatePreflightScript",0,function(e){let a=e.allowedApps.map(e=>{let a=t.APP_CATALOG[e];return"@{ Id = "+o(e)+"; Label = "+o(a.label)+"; Paths = "+r(a.paths)+" }"}).join(",\n    ");return String.raw`#requires -version 5.1
+`}],79529),e.s(["generatePreflightScript",0,function(e){let r=e.allowedApps.map(e=>{let r=t.APP_CATALOG[e];return"@{ Id = "+o(e)+"; Label = "+o(r.label)+"; Paths = "+a(r.paths)+" }"}).join(",\n    ");return String.raw`#requires -version 5.1
 [CmdletBinding()]
 param([string]$OutputPath = $null)
 
@@ -1828,11 +1770,11 @@ $CreateAccounts = ${e.createAccounts?"$true":"$false"}
 $EnforcementMode = ${o(e.enforcementMode)}
 $StorageWarningFreePercent = ${e.storageWarningFreePercent}
 $BrowserUrlMode = ${o(e.browserUrlMode)}
-$AllowedUrls = ${r(e.allowedUrls)}
-$CustomAllowedPaths = ${r(e.customAllowedPaths)}
+$AllowedUrls = ${a(e.allowedUrls)}
+$CustomAllowedPaths = ${a(e.customAllowedPaths)}
 
 $KnownApps = @(
-    ${a}
+    ${r}
 )
 
 $checks = @()
@@ -2158,4 +2100,183 @@ foreach ($check in $checks) {
     $color = if ($check.status -eq "PASS") { "Green" } elseif ($check.status -eq "WARN") { "Yellow" } else { "Red" }
     Write-Host ("[" + $check.status + "] " + $check.label + " - " + $check.message) -ForegroundColor $color
 }
-`}])}]);
+`}],65086)},65334,83489,e=>{"use strict";var t=e.i(79529),r=e.i(41045),o=e.i(65086);function a(e){return new TextEncoder().encode(e)}async function i(e){return[...new Uint8Array(await crypto.subtle.digest("SHA-256",a(e)))].map(e=>e.toString(16).padStart(2,"0")).join("")}function n(e){let a,i;return[{name:"Configurar-Computador.cmd",content:(a=e.profileName.replace(/["&|<>^%\r\n]/g,"").trim()||"WinLab",`@echo off\r
+setlocal EnableExtensions\r
+chcp 65001 >nul 2>&1\r
+title WinLab - Configurar Computador (${a})\r
+echo ================================================================\r
+echo   WinLab - Configuracao Pos-Formatacao (${a})\r
+echo ================================================================\r
+echo.\r
+if not "%OS%"=="Windows_NT" (\r
+  echo [ERRO] Este pacote deve ser executado em um computador Windows.\r
+  pause\r
+  exit /b 1\r
+)\r
+cd /d "%~dp0"\r
+if not exist "%~dp0setup.ps1" (\r
+  echo [ERRO] Extraia TODOS os arquivos do ZIP para uma pasta antes de abrir Configurar-Computador.cmd.\r
+  pause\r
+  exit /b 1\r
+)\r
+if not exist "%~dp0manifest.json" (\r
+  echo [ERRO] manifest.json nao encontrado. Extraia o pacote ZIP completo antes de continuar.\r
+  pause\r
+  exit /b 1\r
+)\r
+net session >nul 2>&1\r
+if not %errorLevel%==0 (\r
+  echo Solicitando permissao de Administrador do Windows ^(UAC^)...\r
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -WorkingDirectory '%~dp0' -Verb RunAs"\r
+  exit /b %errorLevel%\r
+)\r
+echo [1/4] Verificando integridade SHA-256 do pacote...\r
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0verify-package.ps1"\r
+if not %errorLevel%==0 (\r
+  echo.\r
+  echo [BLOQUEADO] A verificacao de integridade do pacote falhou. Nenhuma alteracao foi feita.\r
+  pause\r
+  exit /b 1\r
+)\r
+echo.\r
+echo [2/4] Exibindo plano de configuracao (modo simulacao)...\r
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1"\r
+if not %errorLevel%==0 (\r
+  echo.\r
+  echo [ERRO] Falha ao exibir o plano inicial.\r
+  pause\r
+  exit /b 1\r
+)\r
+echo.\r
+set /p WINLAB_CONFIRM="Deseja aplicar esta configuracao neste computador agora? (S/N): "\r
+if /I not "%WINLAB_CONFIRM%"=="S" (\r
+  echo Operacao cancelada pelo operador. Nenhuma alteracao foi aplicada.\r
+  pause\r
+  exit /b 0\r
+)\r
+echo.\r
+echo [3/4] Aplicando configuracao e preservando baseline para reversao...\r
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" -Apply\r
+if not %errorLevel%==0 (\r
+  echo.\r
+  echo [ERRO] A aplicacao encontrou um problema. Verifique as mensagens acima.\r
+  pause\r
+  exit /b 1\r
+)\r
+echo.\r
+echo [4/4] Verificando estado final aplicado...\r
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0verify.ps1"\r
+echo.\r
+echo ================================================================\r
+echo   Concluido! Se solicitado acima, reinicie o computador ou\r
+echo   encerre a sessao da conta comum para efetivar todas as regras.\r
+echo ================================================================\r
+pause\r
+exit /b 0\r
+`)},{name:"Reverter-Configuracao.cmd",content:(i=e.profileName.replace(/["&|<>^%\r\n]/g,"").trim()||"WinLab",`@echo off\r
+setlocal EnableExtensions\r
+chcp 65001 >nul 2>&1\r
+title WinLab - Reverter Configuracao (${i})\r
+cd /d "%~dp0"\r
+if not exist "%~dp0rollback.ps1" (\r
+  echo [ERRO] Extraia todos os arquivos do pacote ZIP antes de executar Reverter-Configuracao.cmd.\r
+  pause\r
+  exit /b 1\r
+)\r
+net session >nul 2>&1\r
+if not %errorLevel%==0 (\r
+  echo Solicitando permissao de Administrador do Windows ^(UAC^)...\r
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -WorkingDirectory '%~dp0' -Verb RunAs"\r
+  exit /b %errorLevel%\r
+)\r
+echo [1/2] Verificando integridade SHA-256 do pacote...\r
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0verify-package.ps1"\r
+if not %errorLevel%==0 (\r
+  echo [BLOQUEADO] Integridade do pacote invalida.\r
+  pause\r
+  exit /b 1\r
+)\r
+set /p WINLAB_RB="Confirma a reversao para o baseline anterior deste computador? (S/N): "\r
+if /I not "%WINLAB_RB%"=="S" (\r
+  echo Operacao cancelada.\r
+  pause\r
+  exit /b 0\r
+)\r
+echo [2/2] Executando rollback.ps1 -Apply...\r
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0rollback.ps1" -Apply\r
+pause\r
+exit /b %errorLevel%\r
+`)},{name:"setup.ps1",content:(0,r.generateSetupScript)(e)},{name:"rollback.ps1",content:(0,r.generateRollbackScript)(e)},{name:"audit.ps1",content:(0,r.generateAuditScript)(e)},{name:"liberar-wallpaper.ps1",content:(0,r.generateUnlockWallpaperScript)(e)},{name:"verify.ps1",content:(0,r.generateVerifyScript)(e)},{name:"preflight.ps1",content:(0,o.generatePreflightScript)(e)},{name:"scan-pc.ps1",content:(0,t.generateInventoryScannerScript)()},{name:"maintenance.ps1",content:(0,r.generateMaintenanceScript)(e)},{name:"config.json",content:(0,r.generateConfigJson)(e)},{name:"README.txt",content:(0,r.generateReadme)(e)},{name:"verify-package.ps1",content:`#requires -version 5.1
+[CmdletBinding()]
+param(
+    [string]$PackageRoot = $PSScriptRoot
+)
+
+$ErrorActionPreference = "Stop"
+
+$manifestPath = Join-Path $PackageRoot "manifest.json"
+
+if (-not (Test-Path $manifestPath)) {
+    Write-Error "manifest.json n\xe3o encontrado em '$PackageRoot'."
+    exit 1
+}
+
+try {
+    $manifest = Get-Content -Path $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+catch {
+    Write-Error ("manifest.json inv\xe1lido: " + $_.Exception.Message)
+    exit 1
+}
+
+if ($manifest.schemaVersion -ne 1) {
+    Write-Error ("Vers\xe3o de manifesto n\xe3o suportada: " + $manifest.schemaVersion)
+    exit 1
+}
+
+if ($manifest.integrity.algorithm -ne "SHA-256") {
+    Write-Error ("Algoritmo de integridade n\xe3o suportado: " + $manifest.integrity.algorithm)
+    exit 1
+}
+
+$failures = New-Object System.Collections.Generic.List[string]
+
+foreach ($entry in @($manifest.files)) {
+    $filePath = Join-Path $PackageRoot ([string]$entry.name)
+
+    if (-not (Test-Path $filePath -PathType Leaf)) {
+        $failures.Add("Arquivo ausente: $($entry.name)")
+        continue
+    }
+
+    $hash = (Get-FileHash -Path $filePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $expected = ([string]$entry.sha256).ToLowerInvariant()
+
+    if ($hash -ne $expected) {
+        $failures.Add("Hash divergente: $($entry.name)")
+    }
+
+    $length = (Get-Item -LiteralPath $filePath).Length
+    if ([int64]$entry.bytes -ne [int64]$length) {
+        $failures.Add("Tamanho divergente: $($entry.name)")
+    }
+}
+
+if ($failures.Count -gt 0) {
+    Write-Host "=== WinLab Package Integrity: FAIL ===" -ForegroundColor Red
+    foreach ($failure in $failures) {
+        Write-Host ("- " + $failure) -ForegroundColor Red
+    }
+
+    exit 1
+}
+
+Write-Host "=== WinLab Package Integrity: PASS ===" -ForegroundColor Green
+Write-Host ("Package ID: " + $manifest.packageId)
+Write-Host ("Version: " + $manifest.packageVersion)
+Write-Host ("Arquivos verificados: " + @($manifest.files).Count)
+
+if ($manifest.integrity.authenticity -eq "unsigned") {
+    Write-Host "Nota: os hashes verificam integridade, n\xe3o autenticidade/assinatura do pacote." -ForegroundColor Yellow
+}
+`}]}async function s(e,t,r){let o=await Promise.all(t.map(async e=>({name:e.name,sha256:await i(e.content),bytes:a(e.content).byteLength})));return{schemaVersion:1,packageVersion:"0.9.0",packageId:r?.packageId??crypto.randomUUID(),generatedAt:r?.generatedAt??new Date().toISOString(),profileName:e.profileName,configSchemaVersion:1,channel:r?.channel??"standard",targetComputerName:r?.targetComputerName??null,integrity:{algorithm:"SHA-256",manifestSelfHashed:!1,authenticity:"unsigned"},files:o}}async function l(e,t){let r=[...n(e),...t?.extraFiles??[]],o=await s(e,r,t);return[...r,{name:"manifest.json",content:JSON.stringify(o,null,2)+"\n"}]}e.s(["buildWinLabPackageFiles",0,l,"getBasePackageFiles",0,n],65334);let c=new TextEncoder;function d(e){return new Uint8Array(e)}function u(e,t,r){e.setUint16(t,r,!0)}function p(e,t,r){e.setUint32(t,r>>>0,!0)}e.s(["createZip",0,function(e){var t;let r,o=(r=Math.max(1980,(t=new Date).getFullYear()),{time:t.getHours()<<11|t.getMinutes()<<5|Math.floor(t.getSeconds()/2),date:r-1980<<9|t.getMonth()+1<<5|t.getDate()}),a=[],i=[],n=0;for(let t of e){let e=c.encode(t.name),r=c.encode(t.content),s=function(e){let t=0xffffffff;for(let r of e){t^=r;for(let e=0;e<8;e++)t=t>>>1^0xedb88320&-(1&t)}return(0xffffffff^t)>>>0}(r),l=d(30),$=new DataView(l.buffer);p($,0,0x4034b50),u($,4,20),u($,6,2048),u($,8,0),u($,10,o.time),u($,12,o.date),p($,14,s),p($,18,r.length),p($,22,r.length),u($,26,e.length),u($,28,0),i.push({name:e,data:r,crc:s,offset:n}),a.push(l,e,r),n+=l.length+e.length+r.length}let s=[],l=0;for(let e of i){let t=d(46),r=new DataView(t.buffer);p(r,0,0x2014b50),u(r,4,20),u(r,6,20),u(r,8,2048),u(r,10,0),u(r,12,o.time),u(r,14,o.date),p(r,16,e.crc),p(r,20,e.data.length),p(r,24,e.data.length),u(r,28,e.name.length),u(r,30,0),u(r,32,0),u(r,34,0),u(r,36,0),p(r,38,0),p(r,42,e.offset),s.push(t,e.name),l+=t.length+e.name.length}let $=d(22),m=new DataView($.buffer);p(m,0,0x6054b50),u(m,4,0),u(m,6,0),u(m,8,i.length),u(m,10,i.length),p(m,12,l),p(m,16,n),u(m,20,0);let f=function(e){let t=new Uint8Array(e.reduce((e,t)=>e+t.length,0)),r=0;for(let o of e)t.set(o,r),r+=o.length;return t}([...a,...s,$]),h=new ArrayBuffer(f.byteLength);return new Uint8Array(h).set(f),new Blob([h],{type:"application/zip"})}],83489)}]);

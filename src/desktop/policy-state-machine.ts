@@ -441,3 +441,91 @@ export function buildValidatedTransactionRequest(params: {
     requiresAppRestart
   };
 }
+
+export interface SavedPolicyProfile {
+  id: string;
+  name: string;
+  savedAt: string;
+  policies: Record<string, boolean>;
+}
+
+export interface PolicyDriftSummary {
+  hasDrift: boolean;
+  driftedPolicies: PolicyItemDto[];
+  remediationPending: Record<string, boolean>;
+}
+
+/**
+ * Identifica políticas marcadas como Drifted (alteradas externamente fora do WinLab)
+ * e monta o mapa de pendências para restaurar o padrão esperado após confirmação do operador.
+ */
+export function computePolicyDriftSummary(
+  policies: PolicyItemDto[] | null | undefined
+): PolicyDriftSummary {
+  if (!policies || policies.length === 0) {
+    return { hasDrift: false, driftedPolicies: [], remediationPending: {} };
+  }
+
+  const driftedPolicies = policies.filter(
+    (p) => p.effectiveState === "Drifted" || p.currentState === "Drifted"
+  );
+
+  if (driftedPolicies.length === 0) {
+    return { hasDrift: false, driftedPolicies: [], remediationPending: {} };
+  }
+
+  const remediationPending: Record<string, boolean> = {};
+  for (const policy of driftedPolicies) {
+    // Se desiredState era NotConfigured, restaura desativado; caso contrário reaplica Blocked
+    remediationPending[policy.id] = policy.desiredState !== "NotConfigured";
+  }
+
+  return {
+    hasDrift: true,
+    driftedPolicies,
+    remediationPending
+  };
+}
+
+export interface SavedProfileDiff {
+  toEnable: string[];
+  toDisable: string[];
+  unchangedCount: number;
+  pendingMap: Record<string, boolean>;
+}
+
+/**
+ * Compara um perfil salvo (sem credenciais) contra as políticas lidas da estação atual.
+ */
+export function computeSavedProfileDiff(
+  profilePolicies: Record<string, boolean>,
+  livePolicies: PolicyItemDto[] | null | undefined
+): SavedProfileDiff {
+  if (!livePolicies || livePolicies.length === 0) {
+    return { toEnable: [], toDisable: [], unchangedCount: 0, pendingMap: {} };
+  }
+
+  const toEnable: string[] = [];
+  const toDisable: string[] = [];
+  let unchangedCount = 0;
+  const pendingMap: Record<string, boolean> = {};
+
+  for (const policy of livePolicies) {
+    if (policy.effectiveState === "NotSupported") continue;
+    const desired = Boolean(profilePolicies[policy.id]);
+    const current = isPolicyCurrentlyEnabled(policy);
+    if (desired !== current) {
+      pendingMap[policy.id] = desired;
+      if (desired) {
+        toEnable.push(policy.id);
+      } else {
+        toDisable.push(policy.id);
+      }
+    } else {
+      unchangedCount++;
+    }
+  }
+
+  return { toEnable, toDisable, unchangedCount, pendingMap };
+}
+
