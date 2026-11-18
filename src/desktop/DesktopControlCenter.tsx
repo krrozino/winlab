@@ -25,8 +25,10 @@ import { presets, getPreset } from "@/lib/presets";
 import { parseConfigJson, serializeConfig } from "@/lib/config-io";
 import {
   DEFAULT_NETWORK_SHARE,
+  NetworkShareModel,
   NetworkSharePlan,
   generateShareClientScript,
+  generateShareDiagnosticsScript,
   generateShareServerScript,
   validateNetworkShare
 } from "@/lib/network-share";
@@ -289,6 +291,9 @@ export function DesktopControlCenter({
 
   // Rede SMB
   const [network, setNetwork] = useState<NetworkSharePlan>(DEFAULT_NETWORK_SHARE);
+  const [networkStudentAccounts, setNetworkStudentAccounts] = useState<string>(
+    config.studentUser || "Aluno"
+  );
 
   // Sincroniza estados vindos da sessão
   useEffect(() => {
@@ -719,17 +724,34 @@ export function DesktopControlCenter({
     ]
   );
 
+  const effectiveNetworkPlan: NetworkSharePlan = useMemo(() => {
+    const parsedAccounts = networkStudentAccounts
+      .split(/[,;\n]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const fallbackAccounts =
+      nonAdminUsers.length > 0
+        ? nonAdminUsers.map((u) => u.name)
+        : [config.studentUser || "Aluno"];
+    return {
+      ...network,
+      studentAccounts: parsedAccounts.length > 0 ? parsedAccounts : fallbackAccounts
+    };
+  }, [network, networkStudentAccounts, nonAdminUsers, config.studentUser]);
+
   const downloadNetworkScript = useCallback(
-    (kind: "server" | "client") => {
-      const errors = validateNetworkShare(network);
+    (kind: "server" | "client" | "diagnostics") => {
+      const errors = validateNetworkShare(effectiveNetworkPlan);
       if (errors.length > 0) {
         setFeedback({ tone: "error", message: errors.join(" ") });
         return;
       }
       const content =
         kind === "server"
-          ? generateShareServerScript(network)
-          : generateShareClientScript(network);
+          ? generateShareServerScript(effectiveNetworkPlan)
+          : kind === "client"
+            ? generateShareClientScript(effectiveNetworkPlan)
+            : generateShareDiagnosticsScript(effectiveNetworkPlan);
       const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -737,18 +759,22 @@ export function DesktopControlCenter({
       anchor.download =
         kind === "server"
           ? "winlab-servidor-pasta-alunos.ps1"
-          : "winlab-conectar-pasta-alunos.ps1";
+          : kind === "client"
+            ? "winlab-conectar-pasta-alunos.ps1"
+            : "winlab-testar-rede-smb.ps1";
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       setFeedback({
         tone: "success",
         message:
           kind === "server"
-            ? "Script do servidor gerado. Execute como Administrador no servidor de arquivos."
-            : "Script da estação gerado. Execute na conta comum que acessará a pasta de rede."
+            ? "Script do servidor gerado. Execute como Administrador no computador servidor."
+            : kind === "client"
+              ? "Script da estação gerado. Execute na conta comum que acessará a pasta de rede."
+              : "Script de diagnóstico SMB gerado (somente leitura: DNS, TCP 445 e acesso UNC)."
       });
     },
-    [network]
+    [effectiveNetworkPlan]
   );
 
   const applyPresetToPending = useCallback(
@@ -1292,9 +1318,27 @@ export function DesktopControlCenter({
                 <div>
                   <h2>Pasta compartilhada de laboratório (SMB)</h2>
                   <p>
-                    Gere os scripts administrativos para configurar a pasta no computador servidor e mapear automaticamente a unidade nas estações de aula.
+                    Gere scripts administrativos seguros (sem compartilhamento anônimo nem SMBv1) para configurar o servidor e mapear a unidade nas estações de aula.
                   </p>
                 </div>
+              </div>
+              <div className="wl-role-choice" style={{ marginBottom: 16 }}>
+                <button
+                  type="button"
+                  className={(network.model ?? "collective") === "collective" ? "chosen" : ""}
+                  onClick={() => setNetwork({ ...network, model: "collective" as NetworkShareModel })}
+                >
+                  <span>Modelo A — Pasta coletiva da turma</span>
+                  <small>Uma pasta compartilhada autenticada onde os alunos leem e salvam exercícios em conjunto.</small>
+                </button>
+                <button
+                  type="button"
+                  className={network.model === "per_student" ? "chosen" : ""}
+                  onClick={() => setNetwork({ ...network, model: "per_student" as NetworkShareModel })}
+                >
+                  <span>Modelo B — Pastas individuais isoladas por aluno</span>
+                  <small>Herança NTFS desativada na raiz: cada conta acessa exclusivamente sua própria subpasta.</small>
+                </button>
               </div>
               <div className="wl-fields">
                 <label>
@@ -1332,11 +1376,24 @@ export function DesktopControlCenter({
                   />
                 </label>
               </div>
+              {network.model === "per_student" && (
+                <div className="wl-fields" style={{ marginTop: 12 }}>
+                  <label style={{ gridColumn: "1 / -1" }}>
+                    Contas individuais dos alunos (separadas por vírgula)
+                    <input
+                      type="text"
+                      placeholder="Ex.: Aluno01, Aluno02, Aluno03"
+                      value={networkStudentAccounts}
+                      onChange={(e) => setNetworkStudentAccounts(e.target.value)}
+                    />
+                  </label>
+                </div>
+              )}
               <div className="wl-network-steps">
                 <div>
                   <strong>1. No computador servidor</strong>
                   <p className="wl-muted">
-                    Cria a pasta local, aplica permissões NTFS seguras e publica o compartilhamento SMB sem acesso anônimo.
+                    Cria a pasta local, aplica ACLs NTFS {(network.model ?? "collective") === "per_student" ? "isoladas por subpasta de aluno" : "autenticadas"} e publica o compartilhamento SMB.
                   </p>
                   <button
                     type="button"
@@ -1349,7 +1406,7 @@ export function DesktopControlCenter({
                 <div>
                   <strong>2. Nas estações dos alunos</strong>
                   <p className="wl-muted">
-                    Testa conectividade com <code>\\{network.server || "SERVIDOR"}\{network.shareName}</code> e mapeia a unidade persistente.
+                    Testa porta TCP 445 em <code>\\{network.server || "SERVIDOR"}\{network.shareName}</code> e mapeia a unidade persistente.
                   </p>
                   <button
                     type="button"
@@ -1357,6 +1414,19 @@ export function DesktopControlCenter({
                     onClick={() => downloadNetworkScript("client")}
                   >
                     Baixar script das estações (.ps1)
+                  </button>
+                </div>
+                <div>
+                  <strong>3. Diagnóstico de conectividade SMB</strong>
+                  <p className="wl-muted">
+                    Verifica resolução DNS, porta TCP 445, acesso UNC e estado do SMBv1 sem alterar nenhuma configuração.
+                  </p>
+                  <button
+                    type="button"
+                    className="wl-button secondary"
+                    onClick={() => downloadNetworkScript("diagnostics")}
+                  >
+                    Baixar diagnóstico de rede (.ps1)
                   </button>
                 </div>
               </div>

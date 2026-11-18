@@ -1590,6 +1590,14 @@ maintenance.ps1
   Mostra espaço livre e perfis inativos. No modo Delete pode remover perfis
   não carregados e antigos, preservando as contas Aluno/Admin configuradas.
 
+Configurar-Computador.cmd
+  Atalho guiado pós-formatação. Solicita elevação UAC se necessário, confere os hashes SHA-256
+  via verify-package.ps1, exibe o plano de mudanças, pede confirmação e executa setup.ps1 -Apply
+  seguido de verify.ps1 sem alterar a política global de execução do PowerShell.
+
+Reverter-Configuracao.cmd
+  Atalho guiado para restaurar os baselines anteriores (rollback.ps1 -Apply) após validação SHA-256.
+
 verify-package.ps1
   Verifica SHA-256 e tamanho de todos os arquivos listados no manifest.
 
@@ -1601,9 +1609,16 @@ config.json
   Configuração versionada usada para gerar este pacote.
   Pode ser importada novamente no WinLab.
 
-FLUXO RECOMENDADO
------------------
-1. Execute verify.ps1 como administrador e confira a máquina.
+EXECUÇÃO RÁPIDA PÓS-FORMATAÇÃO
+------------------------------
+1. Extraia TODOS os arquivos deste ZIP para uma pasta local (ex.: C:\Temp\WinLab-Setup).
+2. Clique duas vezes em Configurar-Computador.cmd e aprove a permissão de Administrador (UAC).
+3. Confira o resumo exibido na tela e digite S para confirmar a aplicação.
+4. Caso precise desfazer tudo depois, execute Reverter-Configuracao.cmd.
+
+FLUXO RECOMENDADO EM LABORATÓRIO
+--------------------------------
+1. Execute verify.ps1 como administrador e confira a máquina (ou use Configurar-Computador.cmd).
 2. Gere inicialmente em modo AUDITORIA.
 3. Execute setup.ps1 SEM -Apply para revisar o plano.
 4. Quando estiver de acordo, execute setup.ps1 -Apply como administrador.
