@@ -15,6 +15,7 @@ namespace WinLab.Contracts.RegistryServices
         // Fault injection hooks for testing
         private readonly Dictionary<string, Exception> _writeFaults = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Exception> _probeFaults = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Exception> _deleteFaults = new(StringComparer.OrdinalIgnoreCase);
 
         public InMemoryRegistryService()
         {
@@ -81,6 +82,22 @@ namespace WinLab.Contracts.RegistryServices
             lock (_lock)
             {
                 _probeFaults.Remove(valueName);
+            }
+        }
+
+        public void SetDeleteFault(string valueName, Exception ex)
+        {
+            lock (_lock)
+            {
+                _deleteFaults[valueName] = ex;
+            }
+        }
+
+        public void ClearDeleteFault(string valueName)
+        {
+            lock (_lock)
+            {
+                _deleteFaults.Remove(valueName);
             }
         }
 
@@ -157,6 +174,10 @@ namespace WinLab.Contracts.RegistryServices
         {
             lock (_lock)
             {
+                if (_deleteFaults.TryGetValue(valueName, out var ex))
+                {
+                    throw ex;
+                }
                 string norm = NormalizeValuePath(hive, subKeyPath, valueName);
                 _values.Remove(norm);
             }

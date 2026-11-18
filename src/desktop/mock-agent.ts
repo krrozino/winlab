@@ -140,8 +140,17 @@ export class MockDesktopAgent implements DesktopIpcTransport {
   public readonly isRunning = true;
   public readonly mode = "Unprivileged Mock (In-Memory Development)";
   private activeMode: "Demo" | "Real" = "Demo";
-  private readonly policyStates: Map<string, PolicyDesiredState> = new Map();
+  private readonly machinePolicyStates: Map<string, PolicyDesiredState> = new Map();
+  private readonly userPolicyStates: Map<string, Map<string, PolicyDesiredState>> = new Map();
+  private lastTargetUserSid = "S-1-5-21-1000-1002";
   private readonly transactions: Map<string, any> = new Map();
+  private nextRid = 1004;
+  private readonly localUsersList = [
+    { name: "Administrador", enabled: true, isAdmin: true, sid: "S-1-5-21-1000-500" },
+    { name: "AdminLocal", enabled: true, isAdmin: true, sid: "S-1-5-21-1000-1001" },
+    { name: "Aluno", enabled: true, isAdmin: false, sid: "S-1-5-21-1000-1002" },
+    { name: "TurmaNoite", enabled: true, isAdmin: false, sid: "S-1-5-21-1000-1003" }
+  ];
 
   public async handleRequest<T = unknown>(envelope: IpcEnvelope): Promise<IpcResponse<T>> {
     const schemaCheck = validateEnvelopeSchema(envelope);
@@ -304,24 +313,126 @@ export class MockDesktopAgent implements DesktopIpcTransport {
           })) as unknown as T
         };
 
-      case IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES:
+      case IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES: {
+        const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+        const requestedSid =
+          typeof payload.targetUserSid === "string" && payload.targetUserSid.trim()
+            ? payload.targetUserSid.trim()
+            : undefined;
+
+        if (requestedSid) {
+          if (requestedSid === "S-1-5-32-544" || requestedSid.endsWith("-500")) {
+            return {
+              id: crypto.randomUUID(),
+              replyToId: envelope.id,
+              success: false,
+              error: "Contas de Administrador possuem imunidade e não podem ser selecionadas como alvo.",
+              errorCode: "ADMIN_TARGET_FORBIDDEN"
+            };
+          }
+          const matchedUser = this.localUsersList.find(
+            (u) => u.sid.toLowerCase() === requestedSid.toLowerCase()
+          );
+          if (matchedUser?.isAdmin) {
+            return {
+              id: crypto.randomUUID(),
+              replyToId: envelope.id,
+              success: false,
+              error: `A conta '${matchedUser.name}' é administradora e está protegida pelo WinLab.`,
+              errorCode: "ADMIN_TARGET_FORBIDDEN"
+            };
+          }
+          if (matchedUser && !matchedUser.enabled) {
+            return {
+              id: crypto.randomUUID(),
+              replyToId: envelope.id,
+              success: false,
+              error: `A conta '${matchedUser.name}' está desativada.`,
+              errorCode: "TARGET_USER_DISABLED"
+            };
+          }
+        }
+
         return {
           id: crypto.randomUUID(),
           replyToId: envelope.id,
           success: true,
-          data: this.getMockMilestone3PolicyStates() as unknown as T
+          data: this.getMockMilestone3PolicyStates(requestedSid) as unknown as T
         };
+      }
+
+      case IPC_CONSTANTS.ACTION_CREATE_LOCAL_ACCOUNT: {
+        const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+        const name = typeof payload.name === "string" ? payload.name.trim() : "";
+        const password = typeof payload.password === "string" ? payload.password : "";
+        const isAdmin = payload.isAdmin === true;
+
+        if (!name || name.length > 20 || /["/\\[\]:;|=,+*?<>@]/.test(name)) {
+          return {
+            id: crypto.randomUUID(),
+            replyToId: envelope.id,
+            success: false,
+            error: "Informe um nome de conta válido (1 a 20 caracteres, sem símbolos especiais do Windows).",
+            errorCode: "INVALID_ACCOUNT_REQUEST"
+          };
+        }
+        if (password.length < 8) {
+          return {
+            id: crypto.randomUUID(),
+            replyToId: envelope.id,
+            success: false,
+            error: "Use uma senha com pelo menos 8 caracteres.",
+            errorCode: "ACCOUNT_CREATE_FAILED"
+          };
+        }
+        if (this.localUsersList.some((u) => u.name.toLowerCase() === name.toLowerCase())) {
+          return {
+            id: crypto.randomUUID(),
+            replyToId: envelope.id,
+            success: false,
+            error: `Já existe uma conta chamada '${name}' neste ambiente.`,
+            errorCode: "ACCOUNT_CREATE_FAILED"
+          };
+        }
+
+        const newSid = `S-1-5-21-1000-${this.nextRid++}`;
+        this.localUsersList.push({
+          name,
+          enabled: true,
+          isAdmin,
+          sid: newSid
+        });
+
+        return {
+          id: crypto.randomUUID(),
+          replyToId: envelope.id,
+          success: true,
+          data: {
+            name,
+            sid: newSid,
+            role: isAdmin ? "Administrator" : "Standard",
+            message: `Conta simulada '${name}' criada em memória (sem alterar o computador).`
+          } as unknown as T
+        };
+      }
 
       case IPC_CONSTANTS.ACTION_APPLY_TRANSACTION: {
         const payload = (envelope.payload ?? {}) as Record<string, unknown>;
         const targetSid = typeof payload.targetUserSid === "string" ? payload.targetUserSid.trim() : "";
         const targetName = typeof payload.targetUserName === "string" ? payload.targetUserName.trim() : "";
 
+        const matchedTarget = this.localUsersList.find(
+          (u) =>
+            (targetSid && u.sid.toLowerCase() === targetSid.toLowerCase()) ||
+            (targetName && u.name.toLowerCase() === targetName.toLowerCase())
+        );
+
         if (
           targetSid === "S-1-5-32-544" ||
           targetSid.endsWith("-500") ||
           targetName.toLowerCase() === "administrador" ||
-          targetName.toLowerCase() === "administrator"
+          targetName.toLowerCase() === "administrator" ||
+          matchedTarget?.isAdmin
         ) {
           return {
             id: crypto.randomUUID(),
@@ -359,7 +470,7 @@ export class MockDesktopAgent implements DesktopIpcTransport {
           ) as unknown as IpcResponse<T>;
         }
 
-        const policies: Array<{ policyId: string; desiredState: PolicyDesiredState }> = [];
+        const policies: Array<{ policyId: string; desiredState: PolicyDesiredState; scope: string; previousState: PolicyDesiredState }> = [];
         for (const entry of rawPolicies) {
           if (entry === null || typeof entry !== "object") {
             return invalidPolicyRequest(
@@ -437,11 +548,44 @@ export class MockDesktopAgent implements DesktopIpcTransport {
             ) as unknown as IpcResponse<T>;
           }
 
-          policies.push({ policyId: canonicalPolicy.id, desiredState: desired });
+          if (canonicalPolicy.scope === "User" && !targetSid) {
+            return invalidPolicyRequest(
+              envelope,
+              `A política de usuário '${canonicalPolicy.id}' exige um targetUserSid válido de conta comum.`,
+              "INVALID_TARGET_SID"
+            ) as unknown as IpcResponse<T>;
+          }
+
+          const effectiveSid = targetSid || this.lastTargetUserSid;
+          const prevState =
+            canonicalPolicy.scope === "User"
+              ? this.userPolicyStates.get(effectiveSid)?.get(canonicalPolicy.id) ?? "NotConfigured"
+              : this.machinePolicyStates.get(canonicalPolicy.id) ?? "NotConfigured";
+
+          policies.push({
+            policyId: canonicalPolicy.id,
+            desiredState: desired,
+            scope: canonicalPolicy.scope,
+            previousState: prevState
+          });
         }
 
+        if (targetSid) {
+          this.lastTargetUserSid = targetSid;
+        }
+        const effectiveSid = targetSid || this.lastTargetUserSid;
+
         for (const item of policies) {
-          this.policyStates.set(item.policyId, item.desiredState);
+          if (item.scope === "User") {
+            let userMap = this.userPolicyStates.get(effectiveSid);
+            if (!userMap) {
+              userMap = new Map();
+              this.userPolicyStates.set(effectiveSid, userMap);
+            }
+            userMap.set(item.policyId, item.desiredState);
+          } else {
+            this.machinePolicyStates.set(item.policyId, item.desiredState);
+          }
         }
 
         const txRecord = {
@@ -449,7 +593,7 @@ export class MockDesktopAgent implements DesktopIpcTransport {
           status: "Committed",
           createdAt: new Date().toISOString(),
           targetUserName: targetName,
-          targetUserSid: targetSid,
+          targetUserSid: effectiveSid,
           policies
         };
         this.transactions.set(txId, txRecord);
@@ -474,10 +618,29 @@ export class MockDesktopAgent implements DesktopIpcTransport {
         const txId = typeof payload.transactionId === "string" ? payload.transactionId : "";
         const tx = this.transactions.get(txId);
 
-        if (tx) {
-          tx.status = "RolledBack";
-          for (const item of tx.policies || []) {
-            this.policyStates.set(item.policyId, "NotConfigured");
+        if (!tx) {
+          return {
+            id: crypto.randomUUID(),
+            replyToId: envelope.id,
+            success: false,
+            error: `Transação '${txId}' não encontrada para reversão.`,
+            errorCode: "TRANSACTION_NOT_FOUND"
+          };
+        }
+
+        tx.status = "RolledBack";
+        const effectiveSid = tx.targetUserSid || this.lastTargetUserSid;
+        for (const item of tx.policies || []) {
+          const restoreTo: PolicyDesiredState = item.previousState ?? "NotConfigured";
+          if (item.scope === "User") {
+            let userMap = this.userPolicyStates.get(effectiveSid);
+            if (!userMap) {
+              userMap = new Map();
+              this.userPolicyStates.set(effectiveSid, userMap);
+            }
+            userMap.set(item.policyId, restoreTo);
+          } else {
+            this.machinePolicyStates.set(item.policyId, restoreTo);
           }
         }
 
@@ -488,7 +651,7 @@ export class MockDesktopAgent implements DesktopIpcTransport {
           data: {
             transactionId: txId,
             status: "RolledBack",
-            restoredCount: tx?.policies?.length ?? 0,
+            restoredCount: tx.policies?.length ?? 0,
             success: true,
             message: `Transação '${txId}' revertida com sucesso.`
           } as unknown as T
@@ -558,11 +721,7 @@ export class MockDesktopAgent implements DesktopIpcTransport {
         { displayName: "Microsoft 365 Apps for enterprise", displayVersion: "16.0.17932.20162", publisher: "Microsoft Corporation" },
         { displayName: "Microsoft Power BI Desktop", displayVersion: "2.138.1004.0", publisher: "Microsoft Corporation" }
       ],
-      localUsers: [
-        { name: "Administrador", enabled: true, isAdmin: true, sid: "S-1-5-21-1000-500" },
-        { name: "AdminLocal", enabled: true, isAdmin: true, sid: "S-1-5-21-1000-1001" },
-        { name: "Aluno", enabled: true, isAdmin: false, sid: "S-1-5-21-1000-1002" }
-      ],
+      localUsers: this.localUsersList.map((u) => ({ ...u })),
       disks: [
         { device: "C:", totalGb: 237.5, freeGb: 142.1, freePercent: 59.8 }
       ]
@@ -663,9 +822,13 @@ export class MockDesktopAgent implements DesktopIpcTransport {
     this.browserRunning = running;
   }
 
-  public getMockMilestone3PolicyStates(): PolicyStateSummaryDto {
+  public getMockMilestone3PolicyStates(requestedSid?: string): PolicyStateSummaryDto {
+    const effectiveSid = requestedSid || this.lastTargetUserSid;
     const items: PolicyItemDto[] = MILESTONE_3_POLICIES.map((p) => {
-      const raw: PolicyDesiredState = this.policyStates.get(p.id) ?? "NotConfigured";
+      const raw: PolicyDesiredState =
+        p.scope === "User"
+          ? this.userPolicyStates.get(effectiveSid)?.get(p.id) ?? "NotConfigured"
+          : this.machinePolicyStates.get(p.id) ?? "NotConfigured";
       const isBlocked = raw === "Blocked";
 
       let effective: PolicyState = "NotConfigured";

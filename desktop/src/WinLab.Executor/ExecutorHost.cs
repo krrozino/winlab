@@ -25,6 +25,7 @@ namespace WinLab.Executor
         private readonly int _parentPid;
         private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
         private readonly IWindowsScanner _scanner;
+        private readonly bool _hasCustomScanner;
         private readonly IPolicyCatalog _catalog;
         private readonly IRegistryService _registry;
         private readonly IUserHiveManager _hiveManager;
@@ -43,6 +44,7 @@ namespace WinLab.Executor
             _pipeName = pipeName ?? throw new ArgumentNullException(nameof(pipeName));
             _sessionToken = sessionToken ?? throw new ArgumentNullException(nameof(sessionToken));
             _parentPid = parentPid;
+            _hasCustomScanner = scanner != null;
             _scanner = scanner ?? new WindowsScanner();
             _catalog = catalog ?? new PolicyCatalog();
             _registry = registry ?? (OperatingSystem.IsWindows() ? new Services.WindowsRegistryService() : new InMemoryRegistryService());
@@ -138,7 +140,7 @@ namespace WinLab.Executor
             return 0;
         }
 
-        private async Task<string> ProcessRequestAsync(string rawJson, CancellationToken cancellationToken)
+        public async Task<string> ProcessRequestAsync(string rawJson, CancellationToken cancellationToken = default)
         {
             var shellCheck = SecurityValidator.ValidateNoArbitraryShell(rawJson);
             if (!shellCheck.IsSafe)
@@ -285,6 +287,7 @@ namespace WinLab.Executor
                         return JsonSerializer.Serialize(resp);
                     }
 
+                    case IpcConstants.ActionQueryPolicyState:
                     case IpcConstants.ActionQueryPolicyStates:
                     {
                         string? targetUserSid = null;
@@ -296,60 +299,25 @@ namespace WinLab.Executor
                             }
                         }
 
-                        var items = new List<PolicyItemDto>();
-                        int applied = 0, notConfigured = 0, pending = 0;
-                        foreach (var policy in _catalog.GetAllPolicies())
-                        {
-                            var probe = policy.Probe(targetUserSid, _registry, _hiveManager);
-                            var item = new PolicyItemDto
-                            {
-                                Id = policy.PolicyId,
-                                Category = policy.Category,
-                                Title = policy.Title,
-                                Description = policy.Description,
-                                Scope = policy.Scope,
-                                Risk = policy.Risk,
-                                CurrentState = probe.IsActive ? PolicyState.Applied : PolicyState.NotConfigured,
-                                DesiredState = probe.IsActive ? PolicyState.Applied : PolicyState.NotConfigured,
-                                ConfiguredState = probe.IsActive ? PolicyState.Applied : PolicyState.NotConfigured,
-                                EffectiveState = probe.EffectiveState,
-                                RequiresLogoff = policy.RequiresLogoff,
-                                RequiresRestart = policy.RequiresRestart,
-                                RequiresAppRestart = policy.RequiresAppRestart,
-                                Reversible = policy.Reversible,
-                                Evidence = probe.DetailMessage,
-                                LastVerified = probe.ProbedAtUtc.ToString("o")
-                            };
-                            items.Add(item);
+                        var inv = await _scanner.ScanInventoryAsync(cancellationToken);
+                        IReadOnlyList<LocalUserDto>? knownAccounts = (OperatingSystem.IsWindows() || _hasCustomScanner) && inv.LocalUsers.Count > 0
+                            ? inv.LocalUsers
+                            : null;
 
-                            if (probe.EffectiveState == PolicyEffectiveState.PendingLogoff ||
-                                     probe.EffectiveState == PolicyEffectiveState.PendingAppRestart ||
-                                     probe.EffectiveState == PolicyEffectiveState.PendingRefresh ||
-                                     probe.EffectiveState == PolicyEffectiveState.PendingFirstLogon ||
-                                     probe.EffectiveState == PolicyEffectiveState.PendingReboot)
-                            {
-                                pending++;
-                            }
-                            else if (probe.IsActive || probe.EffectiveState == PolicyEffectiveState.Applied)
-                            {
-                                applied++;
-                            }
-                            else
-                            {
-                                notConfigured++;
-                            }
+                        var outcome = PolicyQueryCoordinator.QueryStates(
+                            _catalog,
+                            _registry,
+                            _hiveManager,
+                            targetUserSid,
+                            knownAccounts);
+
+                        if (!outcome.Success)
+                        {
+                            var failResp = IpcResponse<object>.Fail(id, outcome.Error!, outcome.ErrorCode!);
+                            return JsonSerializer.Serialize(failResp);
                         }
 
-                        var summary = new PolicyStateSummaryDto
-                        {
-                            TotalPolicies = items.Count,
-                            AppliedCount = applied,
-                            NotConfiguredCount = notConfigured,
-                            PendingCount = pending,
-                            Items = items
-                        };
-
-                        var resp = IpcResponse<PolicyStateSummaryDto>.Ok(id, summary);
+                        var resp = IpcResponse<PolicyStateSummaryDto>.Ok(id, outcome.Summary!);
                         return JsonSerializer.Serialize(resp);
                     }
 
@@ -368,6 +336,63 @@ namespace WinLab.Executor
                             return JsonSerializer.Serialize(errResp);
                         }
 
+                        var inv = await _scanner.ScanInventoryAsync(cancellationToken);
+                        IReadOnlyList<LocalUserDto>? knownAccounts = (OperatingSystem.IsWindows() || _hasCustomScanner) && inv.LocalUsers.Count > 0
+                            ? inv.LocalUsers
+                            : null;
+
+                        if (knownAccounts != null)
+                        {
+                            var adminNameCheck = SecurityValidator.ValidateTargetNotAdministrator(applyReq.TargetUserName, knownAccounts);
+                            if (!adminNameCheck.IsValid)
+                            {
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, adminNameCheck.Error!, "ADMIN_TARGET_FORBIDDEN"));
+                            }
+
+                            var adminSidCheck = SecurityValidator.ValidateTargetNotAdministrator(applyReq.TargetUserSid, knownAccounts);
+                            if (!adminSidCheck.IsValid)
+                            {
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, adminSidCheck.Error!, "ADMIN_TARGET_FORBIDDEN"));
+                            }
+
+                            bool hasUserScopedPolicy = applyReq.Policies != null && applyReq.Policies.Any(op =>
+                            {
+                                var handler = _catalog.GetPolicy(op.PolicyId);
+                                return handler != null && handler.Scope == PolicyScope.User;
+                            });
+
+                            if (hasUserScopedPolicy && !string.IsNullOrWhiteSpace(applyReq.TargetUserSid))
+                            {
+                                string cleanSid = applyReq.TargetUserSid.Trim();
+                                var matched = knownAccounts.FirstOrDefault(u =>
+                                    u != null && string.Equals(u.Sid?.Trim(), cleanSid, StringComparison.OrdinalIgnoreCase));
+
+                                if (matched == null)
+                                {
+                                    return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                        id,
+                                        $"A conta com SID '{cleanSid}' não foi encontrada neste computador.",
+                                        "TARGET_USER_NOT_FOUND"));
+                                }
+
+                                if (!matched.Enabled)
+                                {
+                                    return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                        id,
+                                        $"A conta '{matched.Name}' está desativada e não pode receber restrições.",
+                                        "TARGET_USER_DISABLED"));
+                                }
+
+                                if (matched.IsAdmin)
+                                {
+                                    return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                        id,
+                                        $"A conta '{matched.Name}' é administradora e possui imunidade.",
+                                        "ADMIN_TARGET_FORBIDDEN"));
+                                }
+                            }
+                        }
+
                         var applyResult = await _engine.ApplyTransactionAsync(applyReq, cancellationToken);
                         if (applyResult.Success)
                         {
@@ -376,7 +401,10 @@ namespace WinLab.Executor
                         }
                         else
                         {
-                            var failResp = IpcResponse<ApplyTransactionResultDto>.Fail(id, applyResult.Message, "TRANSACTION_ROLLED_BACK", applyResult);
+                            string errCode = applyResult.Status == TransactionStatus.Failed
+                                ? "TRANSACTION_FAILED"
+                                : "TRANSACTION_ROLLED_BACK";
+                            var failResp = IpcResponse<ApplyTransactionResultDto>.Fail(id, applyResult.Message, errCode, applyResult);
                             return JsonSerializer.Serialize(failResp);
                         }
                     }

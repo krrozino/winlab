@@ -312,20 +312,36 @@ namespace WinLab.Contracts.Transactions
                     handlers.Add((handler, desired));
                 }
 
-                // 2. Administrator Immunity Guard
+                // 2. Administrator Immunity Guard & User-Scope Target SID Guard
+                bool hasUserPolicy = handlers.Any(h => h.Handler.Scope == PolicyScope.User);
                 var sidAdminCheck = SecurityValidator.ValidateTargetNotAdministrator(request.TargetUserSid);
                 var nameAdminCheck = SecurityValidator.ValidateTargetNotAdministrator(request.TargetUserName);
                 bool isTargetAdmin = !sidAdminCheck.IsValid ||
                                      !nameAdminCheck.IsValid ||
                                      _hiveManager.IsUserAdministrator(request.TargetUserSid) ||
                                      _hiveManager.IsUserAdministrator(request.TargetUserName);
-                if (isTargetAdmin)
+                if (isTargetAdmin && hasUserPolicy)
                 {
-                    bool hasUserPolicy = handlers.Any(h => h.Handler.Scope == PolicyScope.User);
-                    if (hasUserPolicy)
+                    tx.Status = TransactionStatus.Failed;
+                    tx.FailureReason = "Violação de segurança: Contas de Administrador possuem imunidade e não podem receber restrições de laboratório.";
+                    await SaveTransactionAsync(tx, ct);
+
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = tx.FailureReason ?? string.Empty
+                    };
+                }
+
+                if (hasUserPolicy)
+                {
+                    var sidValidation = SecurityValidator.ValidateTargetUserSid(request.TargetUserSid);
+                    if (!sidValidation.IsValid)
                     {
                         tx.Status = TransactionStatus.Failed;
-                        tx.FailureReason = "Violação de segurança: Contas de Administrador possuem imunidade e não podem receber restrições de laboratório.";
+                        tx.FailureReason = sidValidation.Error ?? "Conta-alvo com SID válido é obrigatória para políticas de usuário.";
                         await SaveTransactionAsync(tx, ct);
 
                         return new ApplyTransactionResultDto
@@ -333,7 +349,7 @@ namespace WinLab.Contracts.Transactions
                             TransactionId = txId,
                             Status = TransactionStatus.Failed,
                             Success = false,
-                            Message = tx.FailureReason ?? string.Empty
+                            Message = tx.FailureReason
                         };
                     }
                 }
@@ -452,7 +468,30 @@ namespace WinLab.Contracts.Transactions
                     tx.Status = TransactionStatus.RollingBack;
                     await SaveTransactionAsync(tx, ct);
 
-                    int rolledBackCount = await ExecuteRollbackPlanAsync(tx, appliedHandlers.Select(h => h.PolicyId).ToHashSet(StringComparer.OrdinalIgnoreCase), ct);
+                    var (rolledBackCount, rollbackFailures, rollbackErrors) = await ExecuteRollbackPlanAsync(
+                        tx,
+                        appliedHandlers.Select(h => h.PolicyId).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                        ct);
+
+                    if (rollbackFailures > 0)
+                    {
+                        tx.Status = TransactionStatus.Failed;
+                        tx.FailureReason = $"{tx.FailureReason} | Recuperação incompleta: {string.Join("; ", rollbackErrors)}";
+                        tx.UpdatedAt = DateTime.UtcNow;
+                        await SaveTransactionAsync(tx, ct);
+
+                        return new ApplyTransactionResultDto
+                        {
+                            TransactionId = txId,
+                            Status = TransactionStatus.Failed,
+                            Success = false,
+                            FailedPolicyId = tx.FailedPolicyId,
+                            FailureReason = tx.FailureReason,
+                            AppliedCount = appliedHandlers.Count,
+                            RolledBackCount = rolledBackCount,
+                            Message = $"Aplicação interrompida em '{tx.FailedPolicyId}' com recuperação incompleta: {rolledBackCount} item(ns) revertido(s) e {rollbackFailures} falha(s) no rollback."
+                        };
+                    }
 
                     tx.Status = TransactionStatus.RolledBack;
                     tx.UpdatedAt = DateTime.UtcNow;
@@ -512,7 +551,26 @@ namespace WinLab.Contracts.Transactions
                 tx.Status = TransactionStatus.RollingBack;
                 await SaveTransactionAsync(tx, ct);
 
-                int restored = await ExecuteRollbackPlanAsync(tx, null, ct);
+                var (restored, rollbackFailures, rollbackErrors) = await ExecuteRollbackPlanAsync(tx, null, ct);
+
+                if (rollbackFailures > 0)
+                {
+                    string incompleteMsg = $"Recuperação incompleta na transação '{request.TransactionId}': {restored} item(ns) restaurado(s), {rollbackFailures} falha(s) ({string.Join("; ", rollbackErrors)}).";
+                    tx.Status = TransactionStatus.Failed;
+                    tx.FailureReason = incompleteMsg;
+                    tx.UpdatedAt = DateTime.UtcNow;
+                    await SaveTransactionAsync(tx, ct);
+
+                    return new RollbackResultDto
+                    {
+                        TransactionId = request.TransactionId,
+                        Status = TransactionStatus.Failed,
+                        RestoredCount = restored,
+                        Success = false,
+                        Message = incompleteMsg,
+                        Error = incompleteMsg
+                    };
+                }
 
                 tx.Status = TransactionStatus.RolledBack;
                 tx.UpdatedAt = DateTime.UtcNow;
@@ -533,12 +591,19 @@ namespace WinLab.Contracts.Transactions
             }
         }
 
-        private async Task<int> ExecuteRollbackPlanAsync(
+        private async Task<(int RestoredCount, int FailedCount, List<string> Errors)> ExecuteRollbackPlanAsync(
             TransactionDto tx,
             HashSet<string>? policyFilter,
             CancellationToken ct)
         {
+            await Task.CompletedTask;
             int restoredCount = 0;
+            int failedCount = 0;
+            var errors = new List<string>();
+
+            using var hiveScope = !string.IsNullOrWhiteSpace(tx.TargetUserSid)
+                ? _hiveManager.OpenUserHive(tx.TargetUserSid)
+                : null;
 
             foreach (var step in tx.RollbackPlan)
             {
@@ -556,6 +621,10 @@ namespace WinLab.Contracts.Transactions
                     if (string.Equals(step.Operation, "DeleteValue", StringComparison.OrdinalIgnoreCase))
                     {
                         _registry.DeleteValue(hive, step.SubKey, step.ValueName);
+                        if (_registry.GetValueNames(hive, step.SubKey).Contains(step.ValueName, StringComparer.OrdinalIgnoreCase))
+                        {
+                            throw new InvalidOperationException($"O valor '{step.ValueName}' permaneceu presente após tentativa de remoção.");
+                        }
                     }
                     else if (string.Equals(step.Operation, "RestoreValue", StringComparison.OrdinalIgnoreCase))
                     {
@@ -570,9 +639,12 @@ namespace WinLab.Contracts.Transactions
                         }
 
                         _registry.SetValue(hive, step.SubKey, step.ValueName, val, kind);
+                        if (!_registry.GetValueNames(hive, step.SubKey).Contains(step.ValueName, StringComparer.OrdinalIgnoreCase))
+                        {
+                            throw new InvalidOperationException($"O valor '{step.ValueName}' não pôde ser confirmado após restauração.");
+                        }
                     }
 
-                    // Restoration verification probe
                     step.ExecutedAt = DateTime.UtcNow;
                     step.VerifiedAt = DateTime.UtcNow;
                     step.Status = "RolledBackAndVerified";
@@ -581,10 +653,12 @@ namespace WinLab.Contracts.Transactions
                 catch (Exception ex)
                 {
                     step.Status = $"Failed: {ex.Message}";
+                    failedCount++;
+                    errors.Add($"{step.PolicyId} ({step.ValueName}): {ex.Message}");
                 }
             }
 
-            return restoredCount;
+            return (restoredCount, failedCount, errors);
         }
 
         public async Task<TransactionDto?> GetTransactionAsync(string transactionId, CancellationToken ct = default)

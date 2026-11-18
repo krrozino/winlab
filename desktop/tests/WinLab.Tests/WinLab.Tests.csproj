@@ -28,4 +28,14 @@
     <ProjectReference Include="..\..\src\WinLab.Agent.Mock\WinLab.Agent.Mock.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\src\WinLab.Desktop\Services\ElevatedExecutorClient.cs" Link="Linked\ElevatedExecutorClient.cs" />
+    <Compile Include="..\..\src\WinLab.Desktop\Services\RealAgentService.cs" Link="Linked\RealAgentService.cs" />
+    <Compile Include="..\..\src\WinLab.Desktop\Services\DispatcherAgentService.cs" Link="Linked\DispatcherAgentService.cs" />
+    <Compile Include="..\..\src\WinLab.Executor\ExecutorHost.cs" Link="Linked\ExecutorHost.cs" />
+    <Compile Include="..\..\src\WinLab.Executor\Services\WindowsRegistryService.cs" Link="Linked\WindowsRegistryService.cs" />
+    <Compile Include="..\..\src\WinLab.Executor\Services\WindowsUserHiveManager.cs" Link="Linked\WindowsUserHiveManager.cs" />
+    <Compile Include="..\..\src\WinLab.Executor\Services\LocalAccountProvisioner.cs" Link="Linked\LocalAccountProvisioner.cs" />
+  </ItemGroup>
+
 </Project>

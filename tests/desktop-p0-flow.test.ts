@@ -1,123 +1,511 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import {
+  buildValidatedTransactionRequest,
+  computePolicyVisualModel,
+  getEligibleTargetUsers,
+  isPolicyCurrentlyEnabled,
+  togglePolicyPendingState,
+  transitionTargetUserContext
+} from "../src/desktop/policy-state-machine";
+import { MockDesktopAgent } from "../src/desktop/mock-agent";
+import {
+  ApplyTransactionResultDto,
+  IPC_CONSTANTS,
+  IpcEnvelope,
+  IpcResponse,
+  LocalUserDto,
+  MachineInventoryDto,
+  PolicyItemDto,
+  PolicyStateSummaryDto,
+  RollbackResultDto
+} from "../src/desktop/contracts";
+import { MachineDataSession } from "../src/desktop/machine-data-session";
+import { DesktopControlCenter } from "../src/desktop/DesktopControlCenter";
+import { defaultConfig } from "../src/lib/default-config";
 
-// Test 1: Verify ACTION_QUERY_POLICY_STATE is properly handled
-const realAgentService = readFileSync(
-  fileURLToPath(new URL("../desktop/src/WinLab.Desktop/Services/RealAgentService.cs", import.meta.url)),
-  "utf8"
-);
+function makeEnvelope(action: string, payload?: unknown, type: "query" | "command" = "query"): IpcEnvelope {
+  return {
+    id: crypto.randomUUID(),
+    version: IPC_CONSTANTS.PROTOCOL_VERSION,
+    timestamp: new Date().toISOString(),
+    type,
+    action,
+    payload
+  };
+}
 
-test("ACTION_QUERY_POLICY_STATE delegates to ACTION_QUERY_POLICY_STATES on Windows", () => {
-  // Verify that ActionQueryPolicyState case exists and delegates to executor
-  assert.match(realAgentService, /case IpcConstants\.ActionQueryPolicyState:/, "ActionQueryPolicyState case must exist");
-  assert.match(realAgentService, /OperatingSystem\.IsWindows\(\)/, "Must check for Windows OS");
-  assert.match(realAgentService, /ModifyActionInJson.*ActionQueryPolicyStates/, "Must convert to ActionQueryPolicyStates");
-  assert.match(realAgentService, /_executorClient\.HandleRequestAsync/, "Must delegate to executor");
+function makePolicy(overrides: Partial<PolicyItemDto> = {}): PolicyItemDto {
+  return {
+    id: "personalization.wallpaper",
+    category: "Personalização",
+    title: "Bloquear alteração do papel de parede",
+    description: "Impede que o usuário comum altere o plano de fundo.",
+    desiredState: "NotConfigured",
+    currentState: "NotConfigured",
+    effectiveState: "NotConfigured",
+    configuredState: "NotConfigured",
+    scope: "User",
+    reversible: true,
+    risk: "Low",
+    requiresRestart: false,
+    requiresLogoff: true,
+    requiresAppRestart: false,
+    ...overrides
+  };
+}
+
+const SAMPLE_USERS: LocalUserDto[] = [
+  {
+    name: "Administrador",
+    enabled: true,
+    isAdmin: true,
+    sid: "S-1-5-21-1000-500"
+  },
+  {
+    name: "Aluno",
+    enabled: true,
+    isAdmin: false,
+    sid: "S-1-5-21-1000-1002"
+  },
+  {
+    name: "TurmaNoite",
+    enabled: true,
+    isAdmin: false,
+    sid: "S-1-5-21-1000-1003"
+  },
+  {
+    name: "ExAlunoInativo",
+    enabled: false,
+    isAdmin: false,
+    sid: "S-1-5-21-1000-1004"
+  }
+];
+
+test("State machine: symmetric toggle NotConfigured -> PendingActivation -> NotConfigured", () => {
+  const policy = makePolicy({ currentState: "NotConfigured", effectiveState: "NotConfigured" });
+  assert.equal(isPolicyCurrentlyEnabled(policy), false);
+
+  const initialVisual = computePolicyVisualModel(policy, {});
+  assert.equal(initialVisual.switchChecked, false);
+  assert.equal(initialVisual.visualStatus, "NotConfigured");
+  assert.equal(initialVisual.badgeLabel, "Desativado");
+
+  // 1st click: stages activation without falsely claiming Windows applied it
+  const afterFirstClick = togglePolicyPendingState({}, policy);
+  assert.equal(afterFirstClick[policy.id], true);
+
+  const pendingVisual = computePolicyVisualModel(policy, afterFirstClick);
+  assert.equal(pendingVisual.switchChecked, true);
+  assert.equal(pendingVisual.hasPendingChange, true);
+  assert.equal(pendingVisual.pendingDesiredState, "Blocked");
+  assert.equal(pendingVisual.visualStatus, "PendingActivation");
+  assert.equal(pendingVisual.badgeLabel, "Ativação pendente");
+
+  // 2nd click: cancels pending activation cleanly back to NotConfigured
+  const afterSecondClick = togglePolicyPendingState(afterFirstClick, policy);
+  assert.equal(afterSecondClick[policy.id], undefined);
+
+  const restoredVisual = computePolicyVisualModel(policy, afterSecondClick);
+  assert.equal(restoredVisual.switchChecked, false);
+  assert.equal(restoredVisual.hasPendingChange, false);
+  assert.equal(restoredVisual.visualStatus, "NotConfigured");
 });
 
-test("ACTION_QUERY_POLICY_STATE returns catalog policies in non-Windows", () => {
-  // Verify fallback to catalog in non-Windows
-  assert.match(realAgentService, /PolicyCatalog\(\)/, "Must create PolicyCatalog");
-  assert.match(realAgentService, /PolicyStateSummaryDto/, "Must return PolicyStateSummaryDto");
-  assert.match(realAgentService, /PolicyState\.NotConfigured/, "Must set default state");
+test("State machine: symmetric toggle Applied -> PendingDeactivation -> Applied", () => {
+  const policy = makePolicy({
+    currentState: "Applied",
+    effectiveState: "Applied",
+    configuredState: "Blocked"
+  });
+  assert.equal(isPolicyCurrentlyEnabled(policy), true);
+
+  const initialVisual = computePolicyVisualModel(policy, {});
+  assert.equal(initialVisual.switchChecked, true);
+  assert.equal(initialVisual.visualStatus, "Applied");
+  assert.equal(initialVisual.badgeLabel, "Ativado");
+
+  // 1st click on active policy: stages deactivation (NotConfigured)
+  const afterFirstClick = togglePolicyPendingState({}, policy);
+  assert.equal(afterFirstClick[policy.id], false);
+
+  const pendingVisual = computePolicyVisualModel(policy, afterFirstClick);
+  assert.equal(pendingVisual.switchChecked, false);
+  assert.equal(pendingVisual.hasPendingChange, true);
+  assert.equal(pendingVisual.pendingDesiredState, "NotConfigured");
+  assert.equal(pendingVisual.visualStatus, "PendingDeactivation");
+  assert.equal(pendingVisual.badgeLabel, "Desativação pendente");
+
+  // 2nd click: cancels pending deactivation cleanly back to Applied
+  const afterSecondClick = togglePolicyPendingState(afterFirstClick, policy);
+  assert.equal(afterSecondClick[policy.id], undefined);
+
+  const restoredVisual = computePolicyVisualModel(policy, afterSecondClick);
+  assert.equal(restoredVisual.switchChecked, true);
+  assert.equal(restoredVisual.hasPendingChange, false);
+  assert.equal(restoredVisual.visualStatus, "Applied");
 });
 
-// Test 2: Verify ACTION_QUERY_PREFLIGHT delegates to executor
-test("ACTION_QUERY_PREFLIGHT delegates to executor on Windows", () => {
-  assert.match(realAgentService, /case IpcConstants\.ActionQueryPreflight:/, "ActionQueryPreflight case must exist");
-  assert.match(realAgentService, /OperatingSystem\.IsWindows\(\)/, "Must check for Windows OS");
-  assert.match(realAgentService, /_executorClient\.HandleRequestAsync/, "Must delegate to executor");
-});
+test("State machine: represents Applying, PendingLogoff, PendingAppRestart, Drifted, Inconclusive, NotSupported", () => {
+  const base = makePolicy();
 
-// Test 3: Verify ModifyActionInJson helper exists
-test("ModifyActionInJson helper method exists", () => {
-  assert.match(realAgentService, /private static string ModifyActionInJson/, "ModifyActionInJson must exist");
-  assert.match(realAgentService, /JsonDocument\.Parse/, "Must parse JSON");
-  assert.match(realAgentService, /JsonSerializer\.Serialize/, "Must serialize JSON");
-});
+  const applyingVisual = computePolicyVisualModel(base, { [base.id]: true }, { isApplying: true });
+  assert.equal(applyingVisual.visualStatus, "Applying");
+  assert.equal(applyingVisual.disabled, true);
 
-// Test 4: Verify DesktopControlCenter toggle logic
-const desktopControlCenter = readFileSync(
-  fileURLToPath(new URL("../src/desktop/DesktopControlCenter.tsx", import.meta.url)),
-  "utf8"
-);
-
-test("DesktopControlCenter toggle stores both Blocked and NotConfigured states", () => {
-  // Verify that toggle doesn't just delete on false
-  assert.match(desktopControlCenter, /newPending\[policyId\] = enabled/, "Must store enabled state");
-  // Verify that it removes only if same state is toggled again
-  assert.match(desktopControlCenter, /if \(newPending\[policyId\] === enabled\)/, "Must check if same state");
-  assert.match(desktopControlCenter, /delete newPending\[policyId\]/, "Must delete if toggled back");
-});
-
-test("DesktopControlCenter applies correct desiredState", () => {
-  // Verify that Blocked and NotConfigured are sent correctly
-  assert.match(desktopControlCenter, /desiredState: enabled \? "Blocked" : "NotConfigured"/, "Must map to Blocked/NotConfigured");
-});
-
-// Test 5: Verify user selection for user-scoped policies
-test("DesktopControlCenter has user selection for user-scoped policies", () => {
-  assert.match(desktopControlCenter, /selectedUserSid/, "Must have selectedUserSid state");
-  assert.match(desktopControlCenter, /nonAdminUsers/, "Must filter non-admin users");
-  assert.match(desktopControlCenter, /hasUserScopedPolicies/, "Must track user-scoped policies");
-  assert.match(desktopControlCenter, /canApply/, "Must check if can apply");
-});
-
-test("DesktopControlCenter sends targetUserSid in transaction", () => {
-  assert.match(desktopControlCenter, /targetUserSid: selectedUserSid/, "Must send targetUserSid in payload");
-});
-
-test("DesktopControlCenter prevents applying user policies without selection", () => {
-  assert.match(desktopControlCenter, /hasUserScopedPolicies && !selectedUserSid/, "Must check for user selection");
-  assert.match(desktopControlCenter, /Selecione um usuário/, "Must show error message");
-});
-
-// Test 6: Verify review modal exists
-test("DesktopControlCenter has review modal", () => {
-  assert.match(desktopControlCenter, /showReviewModal/, "Must have showReviewModal state");
-  assert.match(desktopControlCenter, /wl-modal-overlay/, "Must have modal overlay");
-  assert.match(desktopControlCenter, /Revisar Alterações/, "Must have review title");
-  assert.match(desktopControlCenter, /Confirmar e aplicar/, "Must have confirm button");
-});
-
-test("DesktopControlCenter shows requirements in review modal", () => {
-  assert.match(desktopControlCenter, /requiresRestart/, "Must check restart requirement");
-  assert.match(desktopControlCenter, /requiresLogoff/, "Must check logoff requirement");
-  assert.match(desktopControlCenter, /requiresAppRestart/, "Must check app restart requirement");
-});
-
-test("DesktopControlCenter refreshes after apply", () => {
-  assert.match(desktopControlCenter, /await onRefresh\(\)/, "Must refresh after apply");
-});
-
-// Test 7: Verify CSS styles for new components
-test("CSS has styles for user selector", () => {
-  const css = readFileSync(
-    fileURLToPath(new URL("../src/desktop/control-center.css", import.meta.url)),
-    "utf8"
+  const logoffVisual = computePolicyVisualModel(
+    makePolicy({ currentState: "Applied", effectiveState: "PendingLogoff", configuredState: "Blocked" }),
+    {}
   );
-  assert.match(css, /\.wl-user-selector/, "Must have wl-user-selector style");
-  assert.match(css, /\.wl-user-selector select/, "Must have select style");
+  assert.equal(logoffVisual.visualStatus, "PendingLogoff");
+  assert.equal(logoffVisual.switchChecked, true);
+
+  const browserRestartVisual = computePolicyVisualModel(
+    makePolicy({
+      id: "browser.incognito",
+      scope: "Machine",
+      currentState: "Applied",
+      effectiveState: "PendingAppRestart",
+      configuredState: "Blocked"
+    }),
+    {}
+  );
+  assert.equal(browserRestartVisual.visualStatus, "PendingAppRestart");
+
+  const driftedVisual = computePolicyVisualModel(
+    makePolicy({ currentState: "Drifted", effectiveState: "Drifted", configuredState: "NotConfigured" }),
+    {}
+  );
+  assert.equal(driftedVisual.visualStatus, "Drifted");
+  assert.equal(driftedVisual.badgeTone, "error");
+
+  const inconclusiveVisual = computePolicyVisualModel(
+    makePolicy({ currentState: "Inconclusive", effectiveState: "Inconclusive" }),
+    {}
+  );
+  assert.equal(inconclusiveVisual.visualStatus, "Inconclusive");
+  assert.equal(inconclusiveVisual.switchChecked, false);
+
+  const unsupportedVisual = computePolicyVisualModel(
+    makePolicy({ currentState: "NotSupported", effectiveState: "NotSupported" }),
+    {}
+  );
+  assert.equal(unsupportedVisual.visualStatus, "NotSupported");
+  assert.equal(unsupportedVisual.disabled, true);
+
+  const noUserVisual = computePolicyVisualModel(base, {}, { hasSelectedStandardUser: false });
+  assert.equal(noUserVisual.disabled, true);
 });
 
-test("CSS has styles for modal", () => {
-  const css = readFileSync(
-    fileURLToPath(new URL("../src/desktop/control-center.css", import.meta.url)),
-    "utf8"
-  );
-  assert.match(css, /\.wl-modal-overlay/, "Must have wl-modal-overlay style");
-  assert.match(css, /\.wl-modal/, "Must have wl-modal style");
-  assert.match(css, /\.wl-review-item/, "Must have wl-review-item style");
+test("User context transition clears user-scoped pending edits and invalidates stale user states", () => {
+  const userPolicy = makePolicy({
+    id: "personalization.wallpaper",
+    scope: "User",
+    currentState: "Applied",
+    effectiveState: "Applied",
+    configuredState: "Blocked"
+  });
+  const machinePolicy = makePolicy({
+    id: "browser.incognito",
+    scope: "Machine",
+    currentState: "Applied",
+    effectiveState: "Applied",
+    configuredState: "Blocked"
+  });
+
+  const transition = transitionTargetUserContext({
+    previousSid: "S-1-5-21-1000-1002",
+    nextSid: "S-1-5-21-1000-1003",
+    pendingPolicies: {
+      "personalization.wallpaper": false,
+      "browser.incognito": false
+    },
+    policies: [userPolicy, machinePolicy]
+  });
+
+  assert.equal(transition.clearedUserPendingCount, 1);
+  assert.equal(transition.nextPendingPolicies["personalization.wallpaper"], undefined);
+  assert.equal(transition.nextPendingPolicies["browser.incognito"], false);
+
+  const updatedUserPolicy = transition.invalidatedPolicies?.find((p) => p.id === "personalization.wallpaper");
+  const updatedMachinePolicy = transition.invalidatedPolicies?.find((p) => p.id === "browser.incognito");
+  assert.equal(updatedUserPolicy?.effectiveState, "Inconclusive");
+  assert.equal(updatedMachinePolicy?.effectiveState, "Applied");
 });
 
-// Test 8: Verify contracts have both singular and plural actions
-test("Contracts have both QUERY_POLICY_STATE and QUERY_POLICY_STATES", () => {
-  const contracts = readFileSync(
-    fileURLToPath(new URL("../src/desktop/contracts.ts", import.meta.url)),
-    "utf8"
+test("Transaction request validator enforces non-admin, enabled, canonical SID before UAC/IPC", () => {
+  const eligible = getEligibleTargetUsers(SAMPLE_USERS);
+  assert.deepEqual(
+    eligible.map((u) => u.name),
+    ["Aluno", "TurmaNoite"]
   );
-  assert.match(contracts, /ACTION_QUERY_POLICY_STATE/, "Must have singular action");
-  assert.match(contracts, /ACTION_QUERY_POLICY_STATES/, "Must have plural action");
+
+  const policies = [
+    makePolicy({ id: "personalization.wallpaper", scope: "User", requiresLogoff: true }),
+    makePolicy({ id: "browser.incognito", scope: "Machine", requiresLogoff: false, requiresAppRestart: true })
+  ];
+
+  // Missing SID for user policy
+  const missingSid = buildValidatedTransactionRequest({
+    pendingPolicies: { "personalization.wallpaper": true },
+    policies,
+    selectedUserSid: null,
+    localUsers: SAMPLE_USERS
+  });
+  assert.equal(missingSid.valid, false);
+
+  // Admin SID rejected
+  const adminSid = buildValidatedTransactionRequest({
+    pendingPolicies: { "personalization.wallpaper": true },
+    policies,
+    selectedUserSid: "S-1-5-21-1000-500",
+    localUsers: SAMPLE_USERS
+  });
+  assert.equal(adminSid.valid, false);
+  assert.match(adminSid.error ?? "", /imunidade|administradora/i);
+
+  // Disabled user rejected
+  const disabledSid = buildValidatedTransactionRequest({
+    pendingPolicies: { "personalization.wallpaper": true },
+    policies,
+    selectedUserSid: "S-1-5-21-1000-1004",
+    localUsers: SAMPLE_USERS
+  });
+  assert.equal(disabledSid.valid, false);
+  assert.match(disabledSid.error ?? "", /desativada/i);
+
+  // Malformed SID rejected
+  const malformedSid = buildValidatedTransactionRequest({
+    pendingPolicies: { "personalization.wallpaper": true },
+    policies,
+    selectedUserSid: "NOT_A_SID",
+    localUsers: SAMPLE_USERS
+  });
+  assert.equal(malformedSid.valid, false);
+
+  // Valid standard user + symmetric Blocked & NotConfigured mapping
+  const validTx = buildValidatedTransactionRequest({
+    pendingPolicies: {
+      "personalization.wallpaper": true,
+      "browser.incognito": false
+    },
+    policies,
+    selectedUserSid: "S-1-5-21-1000-1002",
+    localUsers: SAMPLE_USERS
+  });
+  assert.equal(validTx.valid, true);
+  assert.equal(validTx.requiresLogoff, true);
+  assert.equal(validTx.requiresAppRestart, true);
+  assert.equal(validTx.request?.targetUserSid, "S-1-5-21-1000-1002");
+  assert.equal(validTx.request?.targetUserName, "Aluno");
+  assert.deepEqual(validTx.request?.policies, [
+    { policyId: "personalization.wallpaper", desiredState: "Blocked" },
+    { policyId: "browser.incognito", desiredState: "NotConfigured" }
+  ]);
+});
+
+test("MockDesktopAgent isolates user policies per SID, supports deactivation/rollback, and creates accounts without storing passwords", async () => {
+  const agent = new MockDesktopAgent();
+
+  // Apply user-scoped wallpaper policy + machine-scoped incognito policy to Aluno (1002)
+  const applyRes = await agent.handleRequest<ApplyTransactionResultDto>(
+    makeEnvelope(
+      IPC_CONSTANTS.ACTION_APPLY_TRANSACTION,
+      {
+        targetUserName: "Aluno",
+        targetUserSid: "S-1-5-21-1000-1002",
+        policies: [
+          { policyId: "personalization.wallpaper", desiredState: "Blocked" },
+          { policyId: "browser.chrome.incognito", desiredState: "Blocked" }
+        ]
+      },
+      "command"
+    )
+  );
+  assert.equal(applyRes.success, true);
+  const txId = applyRes.data?.transactionId;
+  assert.ok(txId);
+
+  // Query Aluno (1002): both user policy and machine policy are active
+  const alunoStates = await agent.handleRequest<PolicyStateSummaryDto>(
+    makeEnvelope(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES, { targetUserSid: "S-1-5-21-1000-1002" })
+  );
+  assert.equal(alunoStates.success, true);
+  const alunoWallpaper = alunoStates.data?.items.find((p) => p.id === "personalization.wallpaper");
+  const alunoIncognito = alunoStates.data?.items.find((p) => p.id === "browser.chrome.incognito");
+  assert.equal(alunoWallpaper?.configuredState, "Blocked");
+  assert.equal(alunoIncognito?.configuredState, "Blocked");
+
+  // Query TurmaNoite (1003): user policy MUST remain NotConfigured while machine policy is Blocked!
+  const turmaStates = await agent.handleRequest<PolicyStateSummaryDto>(
+    makeEnvelope(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES, { targetUserSid: "S-1-5-21-1000-1003" })
+  );
+  assert.equal(turmaStates.success, true);
+  const turmaWallpaper = turmaStates.data?.items.find((p) => p.id === "personalization.wallpaper");
+  const turmaIncognito = turmaStates.data?.items.find((p) => p.id === "browser.chrome.incognito");
+  assert.equal(turmaWallpaper?.currentState, "NotConfigured");
+  assert.equal(turmaWallpaper?.configuredState, "NotConfigured");
+  assert.equal(turmaIncognito?.configuredState, "Blocked");
+
+  // Rollback transaction restores Aluno's user policy and machine policy
+  const rollbackRes = await agent.handleRequest<RollbackResultDto>(
+    makeEnvelope(IPC_CONSTANTS.ACTION_ROLLBACK_TRANSACTION, { transactionId: txId }, "command")
+  );
+  assert.equal(rollbackRes.success, true);
+  assert.equal(rollbackRes.data?.status, "RolledBack");
+
+  const afterRollback = await agent.handleRequest<PolicyStateSummaryDto>(
+    makeEnvelope(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES, { targetUserSid: "S-1-5-21-1000-1002" })
+  );
+  assert.equal(
+    afterRollback.data?.items.find((p) => p.id === "personalization.wallpaper")?.currentState,
+    "NotConfigured"
+  );
+  assert.equal(
+    afterRollback.data?.items.find((p) => p.id === "browser.chrome.incognito")?.currentState,
+    "NotConfigured"
+  );
+
+  // Create local standard account without leaking password
+  const createRes = await agent.handleRequest<{ name: string; sid: string; role: string }>(
+    makeEnvelope(
+      IPC_CONSTANTS.ACTION_CREATE_LOCAL_ACCOUNT,
+      { name: "LabManha", password: "StrongPassword#2026", isAdmin: false },
+      "command"
+    )
+  );
+  assert.equal(createRes.success, true);
+  assert.equal(createRes.data?.name, "LabManha");
+  assert.equal(createRes.data?.role, "Standard");
+  assert.doesNotMatch(JSON.stringify(createRes), /StrongPassword#2026/);
+
+  const invRes = await agent.handleRequest<MachineInventoryDto>(
+    makeEnvelope(IPC_CONSTANTS.ACTION_QUERY_INVENTORY)
+  );
+  assert.ok(invRes.data?.localUsers.some((u) => u.name === "LabManha" && !u.isAdmin));
+});
+
+test("MachineDataSession.queryPoliciesForUser drops out-of-order responses on rapid user switch", async () => {
+  const resolvers = new Map<string, (res: IpcResponse<PolicyStateSummaryDto>) => void>();
+  let latestSummary = null as PolicyStateSummaryDto | null;
+  let latestSelectedSid = null as string | null;
+
+  const session = new MachineDataSession(
+    async <T>(action: string, payload?: unknown): Promise<IpcResponse<T>> => {
+      if (action === IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES) {
+        const sid = (payload as { targetUserSid?: string } | undefined)?.targetUserSid ?? "none";
+        return new Promise<IpcResponse<PolicyStateSummaryDto>>((resolve) => {
+          resolvers.set(sid, resolve);
+        }) as unknown as Promise<IpcResponse<T>>;
+      }
+      throw new Error(`Unexpected action ${action}`);
+    },
+    {
+      onModeChange: () => {},
+      onConnectionState: () => {},
+      onInventory: () => {},
+      onPolicySummary: (summary) => {
+        latestSummary = summary;
+      },
+      onPreflight: () => {},
+      onScanError: () => {},
+      onScanning: () => {},
+      onSelectedUserSidChange: (sid) => {
+        latestSelectedSid = sid;
+      }
+    }
+  );
+
+  const p1 = session.queryPoliciesForUser("S-1-5-21-1000-1002");
+  const p2 = session.queryPoliciesForUser("S-1-5-21-1000-1003");
+  assert.equal(latestSelectedSid, "S-1-5-21-1000-1003");
+
+  // Resolve second request FIRST
+  resolvers.get("S-1-5-21-1000-1003")?.({
+    id: "r2",
+    replyToId: "q2",
+    success: true,
+    data: {
+      totalPolicies: 1,
+      appliedCount: 0,
+      notConfiguredCount: 1,
+      pendingCount: 0,
+      items: [makePolicy({ evidence: "SID-1003" })]
+    }
+  });
+  await p2;
+  assert.equal(latestSummary?.items[0]?.evidence, "SID-1003");
+
+  // Resolve stale first request AFTER second request: must be ignored!
+  resolvers.get("S-1-5-21-1000-1002")?.({
+    id: "r1",
+    replyToId: "q1",
+    success: true,
+    data: {
+      totalPolicies: 1,
+      appliedCount: 1,
+      notConfiguredCount: 0,
+      pendingCount: 0,
+      items: [makePolicy({ currentState: "Applied", effectiveState: "Applied", evidence: "STALE-SID-1002" })]
+    }
+  });
+  const staleReturn = await p1;
+  assert.equal(staleReturn, null);
+  assert.equal(latestSummary?.items[0]?.evidence, "SID-1003");
+});
+
+test("DesktopControlCenter renders cleanly in Demo and Real modes with Portuguese labels and target user bar", () => {
+  const mockInventory: MachineInventoryDto = {
+    scannedAt: new Date().toISOString(),
+    computerName: "LAB-SALA-01",
+    isMock: false,
+    windows: {
+      caption: "Microsoft Windows 11 Pro",
+      version: "10.0.26100",
+      buildNumber: "26100",
+      edition: "Professional",
+      architecture: "64-bit"
+    },
+    disks: [{ device: "C:", totalGb: 256, freeGb: 180, freePercent: 70 }],
+    detectedApps: [
+      { id: "chrome", name: "Google Chrome", path: "C:\\Chrome\\chrome.exe", detected: true, allowed: true }
+    ],
+    installedApps: [],
+    localUsers: SAMPLE_USERS
+  };
+
+  const html = renderToStaticMarkup(
+    React.createElement(DesktopControlCenter, {
+      mode: "Real",
+      native: true,
+      inventory: mockInventory,
+      policyStates: [
+        makePolicy({ id: "personalization.wallpaper", scope: "User" }),
+        makePolicy({
+          id: "browser.chrome.incognito",
+          category: "Navegadores",
+          title: "Bloquear aba anônima",
+          scope: "Machine"
+        })
+      ],
+      selectedUserSid: "S-1-5-21-1000-1002",
+      config: defaultConfig,
+      setConfig: () => {},
+      scanError: null,
+      isScanning: false,
+      onChangeMode: () => {},
+      onRefresh: () => {},
+      sendIpc: async () => ({ id: "1", replyToId: "1", success: true })
+    })
+  );
+
+  assert.match(html, /Contas e permissões/);
+  assert.match(html, /Internet e navegadores/);
+  assert.match(html, /Sistema Windows/);
+  assert.match(html, /Rede e compartilhamento/);
+  assert.match(html, /Configurações do WinLab/);
+  assert.match(html, /LAB-SALA-01/);
+  assert.match(html, /Computador Real/);
 });

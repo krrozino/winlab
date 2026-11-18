@@ -1,27 +1,46 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import type { Config, OperatingMode } from "@/lib/types";
-import type { IpcResponse, MachineInventoryDto, PolicyStateSummaryDto, PolicyItemDto, ApplyTransactionResultDto } from "@/desktop/contracts";
+import { useState, useCallback, useEffect, useMemo } from "react";
+import type { Config, OperatingMode, PresetId } from "@/lib/types";
+import type {
+  ApplyTransactionResultDto,
+  IpcResponse,
+  MachineInventoryDto,
+  PolicyItemDto,
+  PolicyStateSummaryDto,
+  RollbackResultDto
+} from "@/desktop/contracts";
 import { IPC_CONSTANTS } from "@/desktop/contracts";
-import "./control-center.css";
+import type { PreflightSnapshotWithMessage } from "@/desktop/machine-data-session";
+import {
+  buildValidatedTransactionRequest,
+  computePolicyVisualModel,
+  getEligibleTargetUsers,
+  isPolicyCurrentlyEnabled,
+  togglePolicyPendingState,
+  transitionTargetUserContext
+} from "@/desktop/policy-state-machine";
+import { DiagnosticReport } from "@/desktop/DiagnosticReport";
+import { presets, getPreset } from "@/lib/presets";
+import { parseConfigJson, serializeConfig } from "@/lib/config-io";
+import {
+  DEFAULT_NETWORK_SHARE,
+  NetworkSharePlan,
+  generateShareClientScript,
+  generateShareServerScript,
+  validateNetworkShare
+} from "@/lib/network-share";
 
-/**
- * Desktop Control Center - WinLab Desktop Main Interface
- * 
- * This component provides a clean, professional interface for direct Windows administration.
- * It focuses on:
- * - Real-time Windows state consultation
- * - Policy selection and application
- * - Clear feedback on changes
- * - Restart/logoff requirements indication
- */
-
-interface DesktopControlCenterProps {
+export interface DesktopControlCenterProps {
   mode: OperatingMode;
   native: boolean;
   inventory: MachineInventoryDto | null;
+  policySummary?: PolicyStateSummaryDto | null;
   policyStates: PolicyItemDto[] | null;
+  preflightData?: PreflightSnapshotWithMessage | null;
+  selectedUserSid?: string | null;
+  onSelectUser?: (sid: string | null) => void | Promise<unknown>;
+  onQueryOfflineProfile?: (sid: string | null) => void | Promise<unknown>;
   config: Config;
   setConfig: (config: Config) => void;
   scanError: string | null;
@@ -32,55 +51,187 @@ interface DesktopControlCenterProps {
   sendIpc: <T>(action: string, payload?: unknown) => Promise<IpcResponse<T>>;
 }
 
-type Section = "home" | "accounts" | "apps" | "internet" | "system" | "network" | "diagnostics";
+type Section =
+  | "home"
+  | "accounts"
+  | "apps"
+  | "internet"
+  | "system"
+  | "network"
+  | "diagnostics"
+  | "settings";
 
-const NAVIGATION_ITEMS = [
-  { id: "home" as Section, label: "Início", icon: "🏠" },
-  { id: "accounts" as Section, label: "Contas e permissões", icon: "👥" },
-  { id: "apps" as Section, label: "Aplicativos", icon: "📦" },
-  { id: "internet" as Section, label: "Internet e navegadores", icon: "🌐" },
-  { id: "system" as Section, label: "Sistema Windows", icon: "⚙️" },
-  { id: "network" as Section, label: "Rede e compartilhamento", icon: "🔗" },
-  { id: "diagnostics" as Section, label: "Diagnóstico", icon: "🔍" }
-];
-
-/**
- * Policy Setting Component
- * Displays a single policy with its current state and allows toggling
- */
-interface PolicySettingProps {
-  policy: PolicyItemDto;
-  isPending: boolean;
-  onToggle: (policyId: string, enabled: boolean) => void;
+interface SessionTransactionEntry {
+  transactionId: string;
+  appliedAt: string;
+  targetUserName?: string;
+  targetUserSid?: string;
+  appliedCount: number;
+  status: "Committed" | "RolledBack";
 }
 
-function PolicySetting({ policy, isPending, onToggle }: PolicySettingProps) {
-  const isActive = policy.currentState === "Applied" || policy.currentState === "Blocked";
-  const isPendingChange = isPending;
-  const requiresAction = policy.requiresLogoff || policy.requiresRestart || policy.requiresAppRestart;
+function SectionIcon({ id }: { id: Section }) {
+  const common = {
+    width: 17,
+    height: 17,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.9,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const
+  };
+  switch (id) {
+    case "home":
+      return (
+        <svg {...common} aria-hidden="true">
+          <rect x="3" y="3" width="8" height="8" rx="1.5" />
+          <rect x="13" y="3" width="8" height="5" rx="1.5" />
+          <rect x="13" y="10" width="8" height="11" rx="1.5" />
+          <rect x="3" y="13" width="8" height="8" rx="1.5" />
+        </svg>
+      );
+    case "accounts":
+      return (
+        <svg {...common} aria-hidden="true">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+          <circle cx="9" cy="7" r="4" />
+          <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+        </svg>
+      );
+    case "apps":
+      return (
+        <svg {...common} aria-hidden="true">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+          <polyline points="3.3 7 12 12 20.7 7" />
+          <line x1="12" y1="22" x2="12" y2="12" />
+        </svg>
+      );
+    case "internet":
+      return (
+        <svg {...common} aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <line x1="3" y1="12" x2="21" y2="12" />
+          <path d="M12 3a14.5 14.5 0 0 1 0 18 14.5 14.5 0 0 1 0-18" />
+        </svg>
+      );
+    case "system":
+      return (
+        <svg {...common} aria-hidden="true">
+          <rect x="2" y="3" width="20" height="14" rx="2" />
+          <line x1="8" y1="21" x2="16" y2="21" />
+          <line x1="12" y1="17" x2="12" y2="21" />
+        </svg>
+      );
+    case "network":
+      return (
+        <svg {...common} aria-hidden="true">
+          <rect x="9" y="2" width="6" height="6" rx="1" />
+          <rect x="2" y="16" width="6" height="6" rx="1" />
+          <rect x="16" y="16" width="6" height="6" rx="1" />
+          <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" />
+          <line x1="12" y1="12" x2="12" y2="8" />
+        </svg>
+      );
+    case "diagnostics":
+      return (
+        <svg {...common} aria-hidden="true">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+        </svg>
+      );
+    case "settings":
+      return (
+        <svg {...common} aria-hidden="true">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      );
+  }
+}
 
-  const statusText = isPendingChange ? "Pendente" : isActive ? "Ativado" : "Desativado";
-  const statusClass = isPendingChange ? "pending" : isActive ? "active" : "inactive";
+const NAVIGATION_ITEMS: { id: Section; label: string }[] = [
+  { id: "home", label: "Início" },
+  { id: "accounts", label: "Contas e permissões" },
+  { id: "apps", label: "Aplicativos" },
+  { id: "internet", label: "Internet e navegadores" },
+  { id: "system", label: "Sistema Windows" },
+  { id: "network", label: "Rede e compartilhamento" },
+  { id: "diagnostics", label: "Diagnóstico" },
+  { id: "settings", label: "Configurações do WinLab" }
+];
 
-  const actionText = [];
-  if (policy.requiresRestart) actionText.push("Reinício");
-  if (policy.requiresLogoff) actionText.push("Logoff");
-  if (policy.requiresAppRestart) actionText.push("Reiniciar apps");
+const CATEGORY_TO_SECTION: Record<string, Section> = {
+  Personalization: "system",
+  Personalização: "system",
+  Browsers: "internet",
+  Navegadores: "internet",
+  Navegador: "internet",
+  Internet: "internet",
+  System: "system",
+  Sistema: "system",
+  Accounts: "accounts",
+  Contas: "accounts",
+  "Contas Locais": "accounts",
+  Storage: "system",
+  "Armazenamento e USB": "system",
+  "Controle de Aplicativos": "apps",
+  Aplicativos: "apps",
+  Rede: "network"
+};
+
+interface PolicySettingProps {
+  policy: PolicyItemDto;
+  pendingPolicies: Record<string, boolean>;
+  isApplying: boolean;
+  hasSelectedStandardUser: boolean;
+  onToggle: (policy: PolicyItemDto) => void;
+}
+
+function PolicySetting({
+  policy,
+  pendingPolicies,
+  isApplying,
+  hasSelectedStandardUser,
+  onToggle
+}: PolicySettingProps) {
+  const visual = computePolicyVisualModel(policy, pendingPolicies, {
+    isApplying,
+    hasSelectedStandardUser
+  });
+
+  const scopeLabel = policy.scope === "User" ? "Conta comum selecionada" : "Todo o computador";
+  const riskLabel: Record<string, string> = {
+    Low: "Baixo",
+    Medium: "Moderado",
+    High: "Elevado",
+    Critical: "Crítico"
+  };
 
   return (
     <div className="wl-setting" data-policy-id={policy.id}>
       <div className="wl-setting-info">
         <div className="wl-setting-header">
           <strong>{policy.title}</strong>
-          <span className={`wl-status-badge ${statusClass}`}>
-            {statusText}
-          </span>
+          <span className="wl-scope-tag">{scopeLabel}</span>
+          <span className={`wl-status-badge ${visual.badgeTone}`}>{visual.badgeLabel}</span>
         </div>
         <p className="wl-setting-description">{policy.description}</p>
-        {requiresAction && (
+        {visual.actionRequirements.length > 0 && (
           <small className="wl-requires-action">
-            {actionText.join(", ")} necessário após aplicação
+            Efeito completo: {visual.actionRequirements.join(" · ")}
           </small>
+        )}
+        {policy.evidence && (
+          <details className="wl-setting-details">
+            <summary>Detalhes técnicos da verificação</summary>
+            <div>
+              <span>Identificador: {policy.id}</span>
+              <span>Impacto: {riskLabel[policy.risk] ?? policy.risk}</span>
+              <span>Leitura do sistema: {policy.evidence}</span>
+              {policy.lastVerified && <span>Última leitura: {new Date(policy.lastVerified).toLocaleString()}</span>}
+            </div>
+          </details>
         )}
       </div>
       <div className="wl-setting-controls">
@@ -88,10 +239,11 @@ function PolicySetting({ policy, isPending, onToggle }: PolicySettingProps) {
           type="button"
           role="switch"
           aria-label={`Alternar ${policy.title}`}
-          aria-checked={isActive}
-          className={`wl-switch ${isActive ? "selected" : ""} ${isPendingChange ? "pending" : ""}`}
-          onClick={() => onToggle(policy.id, !isActive)}
-          disabled={!policy.reversible}
+          aria-checked={visual.switchChecked}
+          title={visual.disabledReason}
+          className={`wl-switch ${visual.switchChecked ? "selected" : ""} ${visual.hasPendingChange ? "pending" : ""}`}
+          onClick={() => onToggle(policy)}
+          disabled={visual.disabled}
         >
           <span />
         </button>
@@ -100,164 +252,247 @@ function PolicySetting({ policy, isPending, onToggle }: PolicySettingProps) {
   );
 }
 
-/**
- * Section Component
- * Renders a section with policies or content
- */
-interface SectionProps {
-  id: Section;
-  title: string;
-  policies: PolicyItemDto[] | null;
-  pendingPolicies: Record<string, boolean>;
-  onTogglePolicy: (policyId: string, enabled: boolean) => void;
-}
-
-function Section({ id, title, policies, pendingPolicies, onTogglePolicy }: SectionProps) {
-  if (id === "home") {
-    return (
-      <div className="wl-section-content">
-        <div className="wl-welcome">
-          <h2>Bem-vindo ao WinLab Desktop</h2>
-          <p>Gerencie seu computador Windows de forma simples e segura.</p>
-          <p>Selecione uma categoria no menu para começar.</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Get policies for this section (already filtered by category mapping)
-  const sectionPolicies = policies || [];
-
-  if (sectionPolicies.length === 0) {
-    return (
-      <div className="wl-section-content">
-        <p className="wl-empty-state">Nenhuma política disponível nesta categoria.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="wl-section-content">
-      <div className="wl-section-header">
-        <h2>{title}</h2>
-        <span className="wl-policy-count">{sectionPolicies.length} política(s)</span>
-      </div>
-      <div className="wl-settings-list">
-        {sectionPolicies.map(policy => (
-          <PolicySetting
-            key={policy.id}
-            policy={policy}
-            isPending={pendingPolicies[policy.id] !== undefined}
-            onToggle={onTogglePolicy}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Main Desktop Control Center Component
- */
 export function DesktopControlCenter({
   mode,
   native,
   inventory,
+  policySummary,
   policyStates,
+  preflightData,
+  selectedUserSid: externalSelectedUserSid,
+  onSelectUser,
+  onQueryOfflineProfile,
   config,
   setConfig,
   scanError,
   isScanning,
   onChangeMode,
   onRefresh,
+  onAdvanced,
   sendIpc
 }: DesktopControlCenterProps) {
   const [section, setSection] = useState<Section>("home");
   const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<{ error: boolean; message: string } | null>(null);
+  const [feedback, setFeedback] = useState<{ tone: "success" | "error" | "warning"; message: string } | null>(null);
   const [pendingPolicies, setPendingPolicies] = useState<Record<string, boolean>>({});
-  const [selectedUserSid, setSelectedUserSid] = useState<string | null>(null);
+  const [localSelectedUserSid, setLocalSelectedUserSid] = useState<string | null>(externalSelectedUserSid ?? null);
+  const [displayPolicies, setDisplayPolicies] = useState<PolicyItemDto[] | null>(policyStates);
   const [showReviewModal, setShowReviewModal] = useState(false);
+  const [transactionHistory, setTransactionHistory] = useState<SessionTransactionEntry[]>([]);
 
-  // Check if we have real connection to Windows
-  const realConnected = native && mode === "Real" && inventory?.isMock !== true && !scanError;
-  
-  // Get non-admin users for policy targeting (only when we have inventory)
-  const nonAdminUsers = inventory?.localUsers?.filter(u => !u.isAdmin && u.enabled && u.sid) || [];
-  
-  // Check if we have user-scoped policies in pending changes
-  const hasUserScopedPolicies = policyStates?.some(p => 
-    p.scope === "User" && pendingPolicies[p.id] !== undefined
-  ) || false;
-  
-  // Check if we can apply (no user-scoped policies or user selected)
-  const canApply = !hasUserScopedPolicies || selectedUserSid !== null;
-  
-  // Get section title for display
-  const sectionTitle = NAVIGATION_ITEMS.find(item => item.id === section)?.label || "Início";
+  // Criação de contas locais
+  const [accountRole, setAccountRole] = useState<"standard" | "admin">("standard");
+  const [accountName, setAccountName] = useState("");
+  const [accountPassword, setAccountPassword] = useState("");
+  const [repeatPassword, setRepeatPassword] = useState("");
 
-  // Map policy categories to navigation sections
-  const categoryToSection: Record<string, Section> = {
-    "Personalização": "system",
-    "Navegadores": "internet",
-    "Internet": "internet",
-    "Sistema": "system",
-    "Contas": "accounts",
-    "Aplicativos": "apps",
-    "Rede": "network"
-  };
+  // Rede SMB
+  const [network, setNetwork] = useState<NetworkSharePlan>(DEFAULT_NETWORK_SHARE);
 
-  // Group policies by section
-  const policiesBySection: Record<Section, PolicyItemDto[]> = {
-    home: [],
-    accounts: [],
-    apps: [],
-    internet: [],
-    system: [],
-    network: [],
-    diagnostics: []
-  };
-  
-  if (policyStates) {
-    policyStates.forEach(policy => {
-      const section = categoryToSection[policy.category] || "system";
-      policiesBySection[section].push(policy);
-    });
-  }
+  // Sincroniza estados vindos da sessão
+  useEffect(() => {
+    setDisplayPolicies(policyStates);
+  }, [policyStates]);
 
-  // Handle policy toggle
-  const handleTogglePolicy = useCallback((policyId: string, enabled: boolean) => {
-    setPendingPolicies(prev => {
-      const newPending = { ...prev };
-      // Store the desired state (true = Blocked, false = NotConfigured)
-      // If already pending with the same state, remove it (toggle back to current state)
-      if (newPending[policyId] === enabled) {
-        delete newPending[policyId];
-      } else {
-        newPending[policyId] = enabled;
+  const nonAdminUsers = useMemo(
+    () => getEligibleTargetUsers(inventory?.localUsers),
+    [inventory?.localUsers]
+  );
+
+  const selectedUserSid = externalSelectedUserSid !== undefined ? externalSelectedUserSid : localSelectedUserSid;
+
+  // Auto-seleciona a primeira conta comum elegível quando o inventário carrega
+  useEffect(() => {
+    if (nonAdminUsers.length > 0) {
+      const stillValid =
+        selectedUserSid !== null &&
+        nonAdminUsers.some((u) => u.sid?.toLowerCase() === selectedUserSid.toLowerCase());
+      if (!stillValid) {
+        const defaultSid = nonAdminUsers[0]?.sid ?? null;
+        setLocalSelectedUserSid(defaultSid);
+        if (defaultSid && onSelectUser) {
+          void onSelectUser(defaultSid);
+        }
       }
-      return newPending;
+    } else if (selectedUserSid !== null) {
+      setLocalSelectedUserSid(null);
+    }
+  }, [nonAdminUsers, selectedUserSid, onSelectUser]);
+
+  const realConnected = native && mode === "Real" && inventory?.isMock !== true && !scanError;
+  const demoConnected = mode === "Demo" && inventory !== null && !scanError;
+  const canOperateAgent = realConnected || demoConnected;
+
+  // Se o resumo inicial veio de policy.query_state (fundação sem escopo), carrega o catálogo interativo completo (policy.query_states)
+  useEffect(() => {
+    if (
+      canOperateAgent &&
+      policyStates &&
+      policyStates.length > 0 &&
+      policyStates.every((p) => !p.scope)
+    ) {
+      if (onSelectUser) {
+        void onSelectUser(selectedUserSid);
+      } else {
+        void sendIpc<PolicyStateSummaryDto>(
+          IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES,
+          selectedUserSid ? { targetUserSid: selectedUserSid } : undefined
+        ).then((res) => {
+          if (res.success && res.data) {
+            setDisplayPolicies(res.data.items);
+          }
+        });
+      }
+    }
+  }, [canOperateAgent, policyStates, selectedUserSid, onSelectUser, sendIpc]);
+
+  const selectedUser = useMemo(
+    () =>
+      nonAdminUsers.find(
+        (u) => (u.sid?.toLowerCase() ?? "") === (selectedUserSid?.toLowerCase() ?? "")
+      ) ?? null,
+    [nonAdminUsers, selectedUserSid]
+  );
+
+  const policiesBySection = useMemo(() => {
+    const grouped: Record<Section, PolicyItemDto[]> = {
+      home: [],
+      accounts: [],
+      apps: [],
+      internet: [],
+      system: [],
+      network: [],
+      diagnostics: [],
+      settings: []
+    };
+    (displayPolicies ?? []).forEach((policy) => {
+      const target = CATEGORY_TO_SECTION[policy.category] ?? "system";
+      grouped[target].push(policy);
     });
+    return grouped;
+  }, [displayPolicies]);
+
+  const hasUserScopedPending = useMemo(
+    () =>
+      (displayPolicies ?? []).some(
+        (p) => p.scope === "User" && pendingPolicies[p.id] !== undefined
+      ),
+    [displayPolicies, pendingPolicies]
+  );
+
+  const hasInconclusiveUserPolicies = useMemo(
+    () =>
+      Boolean(
+        selectedUserSid &&
+          (displayPolicies ?? []).some(
+            (p) =>
+              p.scope === "User" &&
+              (p.effectiveState === "Inconclusive" || p.currentState === "Inconclusive")
+          )
+      ),
+    [displayPolicies, selectedUserSid]
+  );
+
+  const pendingCount = Object.keys(pendingPolicies).length;
+  const canApply = canOperateAgent && pendingCount > 0 && (!hasUserScopedPending || selectedUser !== null);
+
+  // Alterna uma política usando a máquina de estados simétrica
+  const handleTogglePolicy = useCallback((policy: PolicyItemDto) => {
+    setPendingPolicies((prev) => togglePolicyPendingState(prev, policy));
   }, []);
 
-  // Apply pending changes
-  const applyPendingChanges = useCallback(async () => {
-    if (!realConnected) {
-      setFeedback({ error: true, message: "Conecte ao Windows real para aplicar alterações." });
-      return;
+  // Troca de conta-alvo: limpa pendências de usuário, invalida estado anterior e reconsulta IPC
+  const handleUserSwitch = useCallback(
+    async (nextSidRaw: string) => {
+      const nextSid = nextSidRaw.trim() ? nextSidRaw.trim() : null;
+      const transition = transitionTargetUserContext({
+        previousSid: selectedUserSid ?? null,
+        nextSid,
+        pendingPolicies,
+        policies: displayPolicies
+      });
+
+      setLocalSelectedUserSid(nextSid);
+      setPendingPolicies(transition.nextPendingPolicies);
+      setDisplayPolicies(transition.invalidatedPolicies);
+
+      if (transition.clearedUserPendingCount > 0) {
+        setFeedback({
+          tone: "warning",
+          message: `${transition.clearedUserPendingCount} alteração(ões) pendente(s) da conta anterior foram limpas ao trocar de usuário.`
+        });
+      } else {
+        setFeedback(null);
+      }
+
+      if (onSelectUser) {
+        await onSelectUser(nextSid);
+      } else if (nextSid) {
+        const res = await sendIpc<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES, {
+          targetUserSid: nextSid
+        });
+        if (res.success && res.data) {
+          setDisplayPolicies(res.data.items);
+        } else if (res.error) {
+          setFeedback({ tone: "error", message: res.error });
+        }
+      }
+    },
+    [selectedUserSid, pendingPolicies, displayPolicies, onSelectUser, sendIpc]
+  );
+
+  const handleQueryOfflineProfile = useCallback(async () => {
+    if (!selectedUserSid) return;
+    setBusy(true);
+    setFeedback(null);
+    try {
+      if (onQueryOfflineProfile) {
+        await onQueryOfflineProfile(selectedUserSid);
+      } else {
+        const res = await sendIpc<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES, {
+          targetUserSid: selectedUserSid,
+          allowElevation: true
+        });
+        if (res.success && res.data) {
+          setDisplayPolicies(res.data.items);
+          setFeedback({
+            tone: "success",
+            message: `Perfil da conta '${selectedUser?.name ?? selectedUserSid}' consultado com sucesso.`
+          });
+        } else {
+          setFeedback({
+            tone: "error",
+            message: res.error || "Não foi possível ler o perfil offline desta conta."
+          });
+        }
+      }
+    } finally {
+      setBusy(false);
     }
-    
-    // Check if we have user-scoped policies without a selected user
-    if (hasUserScopedPolicies && !selectedUserSid) {
-      setFeedback({ 
-        error: true, 
-        message: "Selecione um usuário alvo para aplicar políticas de usuário." 
+  }, [selectedUserSid, selectedUser?.name, onQueryOfflineProfile, sendIpc]);
+
+  // Aplica alterações pendentes com validação, transação atômica e releitura imediata
+  const applyPendingChanges = useCallback(async () => {
+    if (!canOperateAgent) {
+      setFeedback({
+        tone: "error",
+        message: "Conecte ao Windows real (no aplicativo instalado) ou ative o Modo Demonstração."
       });
       return;
     }
-    
-    if (Object.keys(pendingPolicies).length === 0) {
-      setFeedback({ error: false, message: "Nenhuma alteração pendente para aplicar." });
+
+    const validation = buildValidatedTransactionRequest({
+      pendingPolicies,
+      policies: displayPolicies,
+      selectedUserSid: selectedUserSid ?? null,
+      localUsers: inventory?.localUsers
+    });
+
+    if (!validation.valid || !validation.request) {
+      setFeedback({
+        tone: "error",
+        message: validation.error || "Selecione um usuário válido antes de aplicar."
+      });
       return;
     }
 
@@ -266,64 +501,386 @@ export function DesktopControlCenter({
     setShowReviewModal(false);
 
     try {
-      // Build the transaction payload
-      const policiesToApply = Object.entries(pendingPolicies).map(([policyId, enabled]) => ({
-        policyId,
-        desiredState: enabled ? "Blocked" : "NotConfigured"
-      }));
-
       const response = await sendIpc<ApplyTransactionResultDto>(
         IPC_CONSTANTS.ACTION_APPLY_TRANSACTION,
-        { 
-          policies: policiesToApply,
-          targetUserSid: selectedUserSid // Only for user-scoped policies
-        }
+        validation.request
       );
 
       if (response.success && response.data?.success) {
+        const txData = response.data;
         setPendingPolicies({});
+        setTransactionHistory((prev) => [
+          {
+            transactionId: txData.transactionId,
+            appliedAt: new Date().toISOString(),
+            targetUserName: validation.request?.targetUserName,
+            targetUserSid: validation.request?.targetUserSid,
+            appliedCount: txData.appliedCount,
+            status: "Committed"
+          },
+          ...prev.slice(0, 14)
+        ]);
+
+        // Reconsulta imediatamente o estado real verificado
+        if (onSelectUser) {
+          await onSelectUser(selectedUserSid ?? null);
+        } else {
+          const refreshed = await sendIpc<PolicyStateSummaryDto>(
+            IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES,
+            selectedUserSid ? { targetUserSid: selectedUserSid } : undefined
+          );
+          if (refreshed.success && refreshed.data) {
+            setDisplayPolicies(refreshed.data.items);
+          }
+          await onRefresh();
+        }
+
+        const followUp: string[] = [];
+        if (validation.requiresRestart) followUp.push("reinicie o computador");
+        if (validation.requiresLogoff) followUp.push("encerre e inicie novamente a sessão da conta comum");
+        if (validation.requiresAppRestart) followUp.push("feche e reabra o navegador");
+
+        const followUpNote =
+          followUp.length > 0 ? ` Para concluir o efeito em sessão ativa, ${followUp.join(" e ")}.` : "";
+
         setFeedback({
-          error: false,
-          message: `Sucesso: ${response.data.appliedCount} políticas aplicadas e verificadas.`
+          tone: followUp.length > 0 ? "warning" : "success",
+          message: `${txData.appliedCount} política(s) aplicada(s) e verificada(s)${mode === "Demo" ? " em modo de demonstração" : " no Windows"}.${followUpNote}`
         });
-        // Refresh to get updated states
-        await onRefresh();
       } else {
-        const errorMsg = response.error || response.data?.message || "Falha ao aplicar alterações.";
-        setFeedback({ error: true, message: errorMsg });
+        const errorMsg =
+          response.error ||
+          response.data?.message ||
+          "Não foi possível concluir a aplicação. As alterações foram revertidas.";
+        setFeedback({ tone: "error", message: errorMsg });
+        // Reconsulta estados após falha/rollback automático para nunca exibir estado otimista incorreto
+        if (onSelectUser) {
+          await onSelectUser(selectedUserSid ?? null);
+        } else {
+          await onRefresh();
+        }
       }
     } catch (error) {
       setFeedback({
-        error: true,
-        message: error instanceof Error ? error.message : "Erro ao aplicar alterações."
+        tone: "error",
+        message: error instanceof Error ? error.message : "Erro inesperado ao aplicar alterações."
       });
     } finally {
       setBusy(false);
     }
-  }, [realConnected, pendingPolicies, selectedUserSid, hasUserScopedPolicies, sendIpc, onRefresh]);
+  }, [
+    canOperateAgent,
+    pendingPolicies,
+    displayPolicies,
+    selectedUserSid,
+    inventory?.localUsers,
+    sendIpc,
+    onSelectUser,
+    onRefresh,
+    mode
+  ]);
 
-  // Discard pending changes
+  const handleRollbackTransaction = useCallback(
+    async (tx: SessionTransactionEntry) => {
+      if (tx.status === "RolledBack") return;
+      setBusy(true);
+      setFeedback(null);
+      try {
+        const res = await sendIpc<RollbackResultDto>(IPC_CONSTANTS.ACTION_ROLLBACK_TRANSACTION, {
+          transactionId: tx.transactionId,
+          targetUserSid: tx.targetUserSid
+        });
+        if (res.success && res.data?.success) {
+          setTransactionHistory((prev) =>
+            prev.map((entry) =>
+              entry.transactionId === tx.transactionId ? { ...entry, status: "RolledBack" } : entry
+            )
+          );
+          if (onSelectUser) {
+            await onSelectUser(selectedUserSid ?? null);
+          } else {
+            await onRefresh();
+          }
+          setFeedback({
+            tone: "success",
+            message: `Alterações desfeitas com sucesso (${res.data.restoredCount} item(ns) restaurado(s) ao backup anterior).`
+          });
+        } else {
+          setFeedback({
+            tone: "error",
+            message: res.error || res.data?.message || "Falha ao desfazer transação."
+          });
+        }
+      } catch (err) {
+        setFeedback({
+          tone: "error",
+          message: err instanceof Error ? err.message : "Erro ao desfazer alterações."
+        });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sendIpc, onSelectUser, selectedUserSid, onRefresh]
+  );
+
   const discardPendingChanges = useCallback(() => {
     setPendingPolicies({});
-    setFeedback({ error: false, message: "Alterações pendentes descartadas." });
+    setFeedback({ tone: "success", message: "Alterações pendentes descartadas." });
   }, []);
 
-  // Get pending count
-  const pendingCount = Object.keys(pendingPolicies).length;
+  const handleCreateAccount = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (!canOperateAgent) {
+        setFeedback({
+          tone: "error",
+          message: "Conecte ao Windows no aplicativo instalado antes de criar contas locais."
+        });
+        return;
+      }
+      const trimmedName = accountName.trim();
+      if (trimmedName.length < 1 || trimmedName.length > 20 || /["/\\[\]:;|=,+*?<>@]/.test(trimmedName)) {
+        setFeedback({
+          tone: "error",
+          message: "Informe um nome de conta entre 1 e 20 caracteres, sem símbolos reservados do Windows."
+        });
+        return;
+      }
+      if (!accountPassword || accountPassword !== repeatPassword) {
+        setFeedback({
+          tone: "error",
+          message: "A senha e a confirmação de senha precisam coincidir."
+        });
+        return;
+      }
+      if (accountPassword.length < 8) {
+        setFeedback({
+          tone: "error",
+          message: "Use uma senha com pelo menos 8 caracteres."
+        });
+        return;
+      }
+
+      setBusy(true);
+      setFeedback(null);
+      try {
+        const res = await sendIpc<{ name?: string; sid?: string; message?: string }>(
+          IPC_CONSTANTS.ACTION_CREATE_LOCAL_ACCOUNT,
+          {
+            name: trimmedName,
+            password: accountPassword,
+            isAdmin: accountRole === "admin"
+          }
+        );
+        if (res.success) {
+          setAccountName("");
+          setConfig({
+            ...config,
+            [accountRole === "admin" ? "adminUser" : "studentUser"]: trimmedName
+          });
+          await onRefresh();
+          if (accountRole === "standard" && res.data?.sid && onSelectUser) {
+            await onSelectUser(res.data.sid);
+          }
+          setFeedback({
+            tone: "success",
+            message: res.data?.message || `Conta '${trimmedName}' criada com sucesso.`
+          });
+        } else {
+          setFeedback({
+            tone: "error",
+            message: res.error || "Não foi possível criar a conta local."
+          });
+        }
+      } catch (err) {
+        setFeedback({
+          tone: "error",
+          message: err instanceof Error ? err.message : "Erro ao criar conta local."
+        });
+      } finally {
+        // Senhas jamais permanecem em estado ou memória após o envio
+        setAccountPassword("");
+        setRepeatPassword("");
+        setBusy(false);
+      }
+    },
+    [
+      canOperateAgent,
+      accountName,
+      accountPassword,
+      repeatPassword,
+      accountRole,
+      sendIpc,
+      setConfig,
+      config,
+      onRefresh,
+      onSelectUser
+    ]
+  );
+
+  const downloadNetworkScript = useCallback(
+    (kind: "server" | "client") => {
+      const errors = validateNetworkShare(network);
+      if (errors.length > 0) {
+        setFeedback({ tone: "error", message: errors.join(" ") });
+        return;
+      }
+      const content =
+        kind === "server"
+          ? generateShareServerScript(network)
+          : generateShareClientScript(network);
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download =
+        kind === "server"
+          ? "winlab-servidor-pasta-alunos.ps1"
+          : "winlab-conectar-pasta-alunos.ps1";
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setFeedback({
+        tone: "success",
+        message:
+          kind === "server"
+            ? "Script do servidor gerado. Execute como Administrador no servidor de arquivos."
+            : "Script da estação gerado. Execute na conta comum que acessará a pasta de rede."
+      });
+    },
+    [network]
+  );
+
+  const applyPresetToPending = useCallback(
+    (presetId: PresetId) => {
+      const presetCfg = getPreset(presetId);
+      setConfig(presetCfg);
+      if (!displayPolicies || displayPolicies.length === 0) return;
+
+      const desiredMap: Record<string, boolean> = {
+        "browser.chrome.incognito": presetCfg.blockChromeIncognito,
+        "browser.chrome.guest": presetCfg.blockChromeGuest,
+        "personalization.wallpaper": presetCfg.blockWallpaper,
+        "personalization.sounds": presetCfg.blockSoundScheme,
+        "personalization.mouse_pointers": presetCfg.blockMousePointers
+      };
+
+      const nextPending: Record<string, boolean> = {};
+      for (const policy of displayPolicies) {
+        if (desiredMap[policy.id] !== undefined) {
+          const desired = desiredMap[policy.id];
+          if (desired !== isPolicyCurrentlyEnabled(policy)) {
+            nextPending[policy.id] = desired;
+          }
+        }
+      }
+      setPendingPolicies(nextPending);
+      const count = Object.keys(nextPending).length;
+      setFeedback({
+        tone: "success",
+        message:
+          count > 0
+            ? `Perfil "${presetCfg.profileName}" carregado com ${count} alteração(ões) pronta(s) para revisão.`
+            : `O computador já corresponde às políticas ativas do perfil "${presetCfg.profileName}".`
+      });
+    },
+    [displayPolicies, setConfig]
+  );
+
+  const sectionTitle = NAVIGATION_ITEMS.find((item) => item.id === section)?.label ?? "Início";
+
+  // Contagens reais derivadas exclusivamente dos dados consultados
+  const adminUsersCount = inventory?.localUsers.filter((u) => u.enabled && u.isAdmin).length ?? 0;
+  const standardUsersCount = nonAdminUsers.length;
+  const appliedPoliciesCount = (displayPolicies ?? []).filter((p) => isPolicyCurrentlyEnabled(p)).length;
+  const totalPoliciesCount = displayPolicies?.length ?? 0;
+  const systemDisk = inventory?.disks?.[0] ?? null;
+  const latestCommittedTx = transactionHistory.find((t) => t.status === "Committed") ?? null;
+
+  function renderUserSelectorBar() {
+    return (
+      <div className="wl-user-selector">
+        <div className="wl-user-selector-info">
+          <label htmlFor="wl-target-user-select">Conta comum alvo para políticas por usuário</label>
+          <small>
+            {nonAdminUsers.length > 0
+              ? "Contas administrativas ficam ocultas desta lista e possuem imunidade contra restrições."
+              : "Nenhuma conta comum ativa encontrada. Crie uma conta comum em Contas e permissões."}
+          </small>
+        </div>
+        <div className="wl-user-selector-controls">
+          <select
+            id="wl-target-user-select"
+            value={selectedUserSid || ""}
+            onChange={(e) => void handleUserSwitch(e.target.value)}
+            disabled={busy || nonAdminUsers.length === 0}
+          >
+            <option value="">Selecione um usuário...</option>
+            {nonAdminUsers.map((user) => (
+              <option key={user.sid} value={user.sid}>
+                {user.name} ({user.sid})
+              </option>
+            ))}
+          </select>
+          {hasInconclusiveUserPolicies && native && mode === "Real" && (
+            <button
+              type="button"
+              className="wl-button secondary"
+              onClick={() => void handleQueryOfflineProfile()}
+              disabled={busy}
+            >
+              Consultar perfil offline (Admin)
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderPolicyCategorySection(sec: Section) {
+    const items = policiesBySection[sec];
+    const containsUserScoped = items.some((p) => p.scope === "User");
+
+    return (
+      <div className="wl-section-content">
+        {containsUserScoped && renderUserSelectorBar()}
+        <div className="wl-section-header">
+          <h2>{sectionTitle}</h2>
+          <span className="wl-policy-count">{items.length} política(s)</span>
+        </div>
+        {items.length === 0 ? (
+          <div className="wl-empty-state">
+            Nenhuma política disponível nesta categoria no momento.
+          </div>
+        ) : (
+          <div className="wl-settings-list">
+            {items.map((policy) => (
+              <PolicySetting
+                key={policy.id}
+                policy={policy}
+                pendingPolicies={pendingPolicies}
+                isApplying={busy}
+                hasSelectedStandardUser={selectedUser !== null}
+                onToggle={handleTogglePolicy}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="wl-shell">
-      {/* Sidebar Navigation */}
       <aside className="wl-side">
         <div className="wl-logo">
           <span>W</span>
           <div>
             <strong>WinLab</strong>
-            <small>Desktop</small>
+            <small>Painel Desktop</small>
           </div>
         </div>
-        
-        <div className="wl-side-label">MENU PRINCIPAL</div>
+
+        <div className="wl-side-label">GERENCIAMENTO</div>
         <nav aria-label="Menu principal">
           {NAVIGATION_ITEMS.map((item) => (
             <button
@@ -332,7 +889,9 @@ export function DesktopControlCenter({
               onClick={() => setSection(item.id)}
               className={`wl-nav ${section === item.id ? "current" : ""}`}
             >
-              <span>{item.icon}</span>
+              <span className="wl-nav-icon">
+                <SectionIcon id={item.id} />
+              </span>
               {item.label}
             </button>
           ))}
@@ -342,112 +901,634 @@ export function DesktopControlCenter({
           <button
             type="button"
             className="wl-button secondary"
-            onClick={onRefresh}
-            disabled={isScanning}
+            onClick={() => void onRefresh()}
+            disabled={isScanning || busy}
           >
-            {isScanning ? "Atualizando..." : "Atualizar"}
+            {isScanning ? "Consultando..." : "Atualizar leitura"}
           </button>
+          {onAdvanced && (
+            <button type="button" className="wl-advanced" onClick={onAdvanced}>
+              Inspeção técnica e logs IPC
+            </button>
+          )}
+          <small>
+            {realConnected
+              ? `Conectado a ${inventory?.computerName}`
+              : mode === "Demo"
+                ? "Ambiente de Demonstração"
+                : "Prévia sem agente nativo"}
+          </small>
         </div>
       </aside>
 
-      {/* Main Content */}
       <div className="wl-main">
-        {/* Header */}
         <header className="wl-header">
           <div>
-            <span className="wl-overline">PAINEL DE CONTROLE</span>
+            <span className="wl-overline">WINLAB DESKTOP</span>
             <h1>{sectionTitle}</h1>
           </div>
           <div className="wl-head-actions">
-            <span className={`wl-state ${realConnected ? "online" : "offline"}`}>
-              {realConnected ? "Windows conectado" : mode === "Demo" ? "Modo Demonstração" : "Aguardando conexão"}
+            <span
+              className={`wl-state ${
+                realConnected ? "online" : mode === "Demo" ? "demo" : "offline"
+              }`}
+            >
+              {realConnected
+                ? "Computador Real Conectado"
+                : mode === "Demo"
+                  ? "Modo Demonstração (Simulação)"
+                  : "Aguardando Conexão"}
             </span>
-            
-            {/* Pending changes indicator */}
+
             {pendingCount > 0 && (
-              <span className="wl-pending-badge">{pendingCount} pendente(s)</span>
+              <span className="wl-pending-badge">{pendingCount} alteração(ões) pendente(s)</span>
             )}
-            
-            {/* Connection/Mode controls */}
+
             {native && mode === "Demo" && (
               <button
                 type="button"
                 className="wl-button primary"
-                onClick={() => onChangeMode("Real")}
-                disabled={isScanning}
+                onClick={() => void onChangeMode("Real")}
+                disabled={isScanning || busy}
               >
-                Conectar ao Windows
+                Conectar ao Windows Real
+              </button>
+            )}
+            {native && mode === "Real" && (
+              <button
+                type="button"
+                className="wl-button secondary"
+                onClick={() => void onChangeMode("Demo")}
+                disabled={isScanning || busy}
+              >
+                Usar Demonstração
               </button>
             )}
           </div>
         </header>
 
-        {/* Feedback Message */}
         {feedback && (
-          <div role={feedback.error ? "alert" : "status"} className={`wl-feedback ${feedback.error ? "error" : ""}`}>
-            {feedback.message}
+          <div
+            role={feedback.tone === "error" ? "alert" : "status"}
+            className={`wl-feedback ${feedback.tone === "error" ? "error" : feedback.tone === "warning" ? "warning" : ""}`}
+          >
+            <span>{feedback.message}</span>
+            {latestCommittedTx && feedback.tone !== "error" && (
+              <button
+                type="button"
+                className="wl-button secondary"
+                onClick={() => void handleRollbackTransaction(latestCommittedTx)}
+                disabled={busy}
+              >
+                Desfazer última aplicação
+              </button>
+            )}
           </div>
         )}
 
-        {/* Scan Error */}
-        {scanError && !realConnected && (
+        {scanError && (
           <div role="alert" className="wl-feedback error">
-            Não foi possível ler o Windows: {scanError}
+            <span>Não foi possível ler os dados deste computador: {scanError}</span>
           </div>
         )}
 
-        {/* Not Connected State */}
-        {!realConnected && mode === "Demo" && (
+        {mode === "Demo" && (
           <div className="wl-connect">
             <div>
-              <strong>Modo de Demonstração</strong>
-              <p>Este modo não altera seu computador. Conecte ao modo Real para administrar o Windows.</p>
+              <strong>Modo Demonstração ativo</strong>
+              <p>
+                Você pode testar seleção de contas, revisão, aplicação e reversão com segurança em memória. Nenhuma chave de registro ou conta do Windows real será modificada neste modo.
+              </p>
+            </div>
+            {native && (
+              <button
+                type="button"
+                className="wl-button primary"
+                onClick={() => void onChangeMode("Real")}
+                disabled={isScanning || busy}
+              >
+                Alternar para Computador Real
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* SEÇÃO 1: INÍCIO */}
+        {section === "home" && (
+          <div className="wl-section-content">
+            <section className="wl-welcome">
+              <div>
+                <span className="wl-overline">ADMINISTRAÇÃO LOCAL SEGURA</span>
+                <h2>
+                  {inventory?.computerName
+                    ? `Estação ${inventory.computerName}`
+                    : "Painel de Controle do Computador"}
+                </h2>
+                <p>
+                  Consulte o estado atual do Windows, escolha a conta comum que receberá as políticas, revise o impacto antes de confirmar e reverta alterações com um clique quando precisar.
+                </p>
+              </div>
+              {latestCommittedTx && (
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => void handleRollbackTransaction(latestCommittedTx)}
+                  disabled={busy}
+                >
+                  Desfazer última aplicação
+                </button>
+              )}
+            </section>
+
+            <div className="wl-stats">
+              <div>
+                <span>Sistema Operacional</span>
+                <strong>{inventory?.windows.caption || "Não consultado"}</strong>
+                <small>
+                  {inventory?.windows.buildNumber
+                    ? `Build ${inventory.windows.buildNumber} · ${inventory.windows.architecture}`
+                    : "Aguardando leitura do inventário"}
+                </small>
+              </div>
+              <div>
+                <span>Contas Locais Ativas</span>
+                <strong>
+                  {inventory ? `${standardUsersCount} comum(ns) · ${adminUsersCount} admin` : "—"}
+                </strong>
+                <small>
+                  {selectedUser
+                    ? `Alvo atual: ${selectedUser.name}`
+                    : "Selecione ou crie uma conta comum"}
+                </small>
+              </div>
+              <div>
+                <span>Políticas Verificadas</span>
+                <strong>
+                  {displayPolicies ? `${appliedPoliciesCount} de ${totalPoliciesCount} ativas` : "—"}
+                </strong>
+                <small>
+                  {pendingCount > 0
+                    ? `${pendingCount} alteração(ões) aguardando revisão`
+                    : "Nenhuma alteração pendente"}
+                </small>
+              </div>
+              <div>
+                <span>Armazenamento & Prontidão</span>
+                <strong>
+                  {systemDisk
+                    ? `${systemDisk.freeGb} GB livres (${systemDisk.freePercent}%)`
+                    : preflightData?.status || "—"}
+                </strong>
+                <small>
+                  {preflightData?.readinessMessage || "Leitura sem privilégios administrativos contínuos"}
+                </small>
+              </div>
+            </div>
+
+            {renderUserSelectorBar()}
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Ações rápidas</h2>
+                  <p>Acesse diretamente a área que deseja configurar neste computador.</p>
+                </div>
+              </div>
+              <div className="wl-shortcuts">
+                <button type="button" onClick={() => setSection("accounts")}>
+                  <strong>Gerenciar contas locais</strong>
+                  <span>Criar conta de aluno ou professor e escolher conta-alvo</span>
+                </button>
+                <button type="button" onClick={() => setSection("internet")}>
+                  <strong>Proteger navegadores</strong>
+                  <span>Bloquear janela anônima e modo visitante no Chrome e Edge</span>
+                </button>
+                <button type="button" onClick={() => setSection("system")}>
+                  <strong>Restringir personalização e sistema</strong>
+                  <span>Fixar papel de parede, sons e cursores na conta comum</span>
+                </button>
+                <button type="button" onClick={() => setSection("diagnostics")}>
+                  <strong>Relatório de diagnóstico</strong>
+                  <span>Inspecionar compatibilidade e exportar relatório JSON</span>
+                </button>
+              </div>
             </div>
           </div>
         )}
 
-        {/* Main Section Content */}
-        {realConnected ? (
-          <Section
-            id={section}
-            title={sectionTitle}
-            policies={policiesBySection[section]}
-            pendingPolicies={pendingPolicies}
-            onTogglePolicy={handleTogglePolicy}
-          />
-        ) : (
+        {/* SEÇÃO 2: CONTAS E PERMISSÕES */}
+        {section === "accounts" && (
           <div className="wl-section-content">
-            <p className="wl-empty-state">
-              {mode === "Real" ? "Conectando ao Windows..." : "Conecte ao Windows para ver as políticas disponíveis."}
-            </p>
+            {renderUserSelectorBar()}
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Contas encontradas neste computador</h2>
+                  <p>
+                    Contas administrativas possuem imunidade automática no WinLab para evitar bloqueio acidental do administrador.
+                  </p>
+                </div>
+              </div>
+
+              {inventory && inventory.localUsers.length > 0 ? (
+                <div className="wl-account-list">
+                  {inventory.localUsers.map((user) => (
+                    <div key={user.sid || user.name} className="wl-account">
+                      <div className="wl-avatar">{user.name.slice(0, 1).toUpperCase()}</div>
+                      <div>
+                        <strong>{user.name}</strong>
+                        <small>
+                          {user.enabled ? "Conta ativa" : "Conta desativada"} · SID: {user.sid || "Local"}
+                        </small>
+                      </div>
+                      {!user.enabled && <span className="wl-pill disabled">Desativada</span>}
+                      <span className={`wl-pill ${user.isAdmin ? "admin" : ""}`}>
+                        {user.isAdmin ? "Administrador (Protegido)" : "Conta comum"}
+                      </span>
+                      {!user.isAdmin && user.enabled && user.sid && (
+                        <button
+                          type="button"
+                          className={`wl-button ${selectedUserSid === user.sid ? "primary" : "secondary"}`}
+                          onClick={() => void handleUserSwitch(user.sid!)}
+                          disabled={busy || selectedUserSid === user.sid}
+                        >
+                          {selectedUserSid === user.sid ? "Alvo selecionado" : "Selecionar como alvo"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="wl-muted">Nenhuma conta local carregada ainda.</p>
+              )}
+            </div>
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Criar nova conta local no Windows</h2>
+                  <p>
+                    A senha é enviada apenas no momento da criação para a API nativa do Windows e nunca fica gravada em arquivos ou histórico.
+                  </p>
+                </div>
+              </div>
+              <form className="wl-account-form" onSubmit={(e) => void handleCreateAccount(e)}>
+                <div className="wl-role-choice">
+                  <button
+                    type="button"
+                    className={accountRole === "standard" ? "chosen" : ""}
+                    onClick={() => setAccountRole("standard")}
+                  >
+                    <span>Conta comum (Recomendado para alunos)</span>
+                    <small>Não instala programas do sistema e pode receber políticas por usuário.</small>
+                  </button>
+                  <button
+                    type="button"
+                    className={accountRole === "admin" ? "chosen" : ""}
+                    onClick={() => setAccountRole("admin")}
+                  >
+                    <span>Conta de Administrador (Suporte / TI)</span>
+                    <small>Controle total da máquina e imunidade contra restrições de laboratório.</small>
+                  </button>
+                </div>
+                <div className="wl-fields">
+                  <label>
+                    Nome da conta
+                    <input
+                      type="text"
+                      maxLength={20}
+                      placeholder="Ex.: Aluno01"
+                      value={accountName}
+                      onChange={(e) => setAccountName(e.target.value)}
+                      disabled={busy}
+                    />
+                  </label>
+                  <label>
+                    Senha inicial (mínimo 8 caracteres)
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={accountPassword}
+                      onChange={(e) => setAccountPassword(e.target.value)}
+                      disabled={busy}
+                    />
+                  </label>
+                  <label>
+                    Confirmar senha
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={repeatPassword}
+                      onChange={(e) => setRepeatPassword(e.target.value)}
+                      disabled={busy}
+                    />
+                  </label>
+                </div>
+                <div>
+                  <button type="submit" className="wl-button primary" disabled={busy || !canOperateAgent}>
+                    {busy ? "Criando conta..." : "Criar conta local"}
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {policiesBySection.accounts.length > 0 && renderPolicyCategorySection("accounts")}
           </div>
         )}
 
-        {/* User Selection for User-Scoped Policies */}
-        {hasUserScopedPolicies && nonAdminUsers.length > 0 && (
-          <div className="wl-user-selector">
-            <label>Usuário alvo para políticas de usuário:</label>
-            <select
-              value={selectedUserSid || ""}
-              onChange={(e) => setSelectedUserSid(e.target.value)}
-              disabled={busy}
-            >
-              <option value="">Selecione um usuário...</option>
-              {nonAdminUsers.map(user => (
-                <option key={user.sid} value={user.sid}>
-                  {user.name} ({user.sid})
-                </option>
-              ))}
-            </select>
+        {/* SEÇÃO 3: APLICATIVOS */}
+        {section === "apps" && (
+          <div className="wl-section-content">
+            {policiesBySection.apps.length > 0 && renderPolicyCategorySection("apps")}
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Programas detectados nesta estação</h2>
+                  <p>Leitura local dos aplicativos de sala de aula e softwares instalados no Windows.</p>
+                </div>
+              </div>
+              {inventory && inventory.detectedApps.length > 0 ? (
+                <div className="wl-account-list">
+                  {inventory.detectedApps.map((app) => (
+                    <div key={app.id} className="wl-account">
+                      <div>
+                        <strong>{app.name}</strong>
+                        <small>{app.path}</small>
+                      </div>
+                      <span className={`wl-status-badge ${app.detected ? "active" : "inactive"}`}>
+                        {app.detected ? "Instalado" : "Não encontrado"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="wl-muted">Nenhum aplicativo catalogado retornado na leitura atual.</p>
+              )}
+            </div>
           </div>
         )}
 
-        {/* Action Bar - Apply/Discard */}
-        {pendingCount > 0 && realConnected && (
+        {/* SEÇÃO 4: INTERNET E NAVEGADORES */}
+        {section === "internet" && renderPolicyCategorySection("internet")}
+
+        {/* SEÇÃO 5: SISTEMA WINDOWS */}
+        {section === "system" && renderPolicyCategorySection("system")}
+
+        {/* SEÇÃO 6: REDE E COMPARTILHAMENTO */}
+        {section === "network" && (
+          <div className="wl-section-content">
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Pasta compartilhada de laboratório (SMB)</h2>
+                  <p>
+                    Gere os scripts administrativos para configurar a pasta no computador servidor e mapear automaticamente a unidade nas estações de aula.
+                  </p>
+                </div>
+              </div>
+              <div className="wl-fields">
+                <label>
+                  Nome ou IP do servidor
+                  <input
+                    type="text"
+                    placeholder="Ex.: SERVIDOR-LAB"
+                    value={network.server}
+                    onChange={(e) => setNetwork({ ...network, server: e.target.value })}
+                  />
+                </label>
+                <label>
+                  Nome do compartilhamento
+                  <input
+                    type="text"
+                    value={network.shareName}
+                    onChange={(e) => setNetwork({ ...network, shareName: e.target.value })}
+                  />
+                </label>
+                <label>
+                  Caminho físico no servidor
+                  <input
+                    type="text"
+                    value={network.rootPath}
+                    onChange={(e) => setNetwork({ ...network, rootPath: e.target.value })}
+                  />
+                </label>
+                <label>
+                  Letra da unidade nas estações
+                  <input
+                    type="text"
+                    maxLength={1}
+                    value={network.driveLetter}
+                    onChange={(e) => setNetwork({ ...network, driveLetter: e.target.value.toUpperCase() })}
+                  />
+                </label>
+              </div>
+              <div className="wl-network-steps">
+                <div>
+                  <strong>1. No computador servidor</strong>
+                  <p className="wl-muted">
+                    Cria a pasta local, aplica permissões NTFS seguras e publica o compartilhamento SMB sem acesso anônimo.
+                  </p>
+                  <button
+                    type="button"
+                    className="wl-button primary"
+                    onClick={() => downloadNetworkScript("server")}
+                  >
+                    Baixar script do servidor (.ps1)
+                  </button>
+                </div>
+                <div>
+                  <strong>2. Nas estações dos alunos</strong>
+                  <p className="wl-muted">
+                    Testa conectividade com <code>\\{network.server || "SERVIDOR"}\{network.shareName}</code> e mapeia a unidade persistente.
+                  </p>
+                  <button
+                    type="button"
+                    className="wl-button secondary"
+                    onClick={() => downloadNetworkScript("client")}
+                  >
+                    Baixar script das estações (.ps1)
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* SEÇÃO 7: DIAGNÓSTICO */}
+        {section === "diagnostics" && (
+          <div className="wl-card">
+            <DiagnosticReport
+              mode={mode}
+              inventory={inventory}
+              policySummary={
+                policySummary ??
+                (displayPolicies
+                  ? {
+                      totalPolicies: displayPolicies.length,
+                      appliedCount: appliedPoliciesCount,
+                      notConfiguredCount: displayPolicies.filter(
+                        (p) => p.currentState === "NotConfigured"
+                      ).length,
+                      pendingCount: displayPolicies.filter((p) =>
+                        ["PendingLogoff", "PendingReboot", "PendingAppRestart", "PendingFirstLogon"].includes(
+                          p.effectiveState ?? p.currentState
+                        )
+                      ).length,
+                      items: displayPolicies
+                    }
+                  : null)
+              }
+              preflightData={preflightData ?? null}
+              isScanning={isScanning}
+              scanError={scanError}
+            />
+          </div>
+        )}
+
+        {/* SEÇÃO 8: CONFIGURAÇÕES DO WINLAB */}
+        {section === "settings" && (
+          <div className="wl-section-content">
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Perfis rápidos de sala de aula</h2>
+                  <p>
+                    Carregue um perfil pré-configurado para selecionar automaticamente as restrições recomendadas e revisá-las antes de aplicar.
+                  </p>
+                </div>
+              </div>
+              <div className="wl-shortcuts">
+                {presets.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => applyPresetToPending(preset.id)}
+                  >
+                    <strong>{preset.name}</strong>
+                    <span>{preset.description}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Importar ou exportar perfil JSON</h2>
+                  <p>
+                    Compatível com o configurador WinLab Web. Nenhuma senha é exportada no arquivo JSON.
+                  </p>
+                </div>
+              </div>
+              <div className="wl-head-actions">
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => {
+                    const blob = new Blob([serializeConfig(config)], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `winlab-perfil-${config.profileName.toLowerCase().replace(/\s+/g, "-")}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                >
+                  Exportar perfil (.json)
+                </button>
+                <label className="wl-button secondary" style={{ display: "inline-flex", alignItems: "center" }}>
+                  Importar perfil (.json)
+                  <input
+                    type="file"
+                    accept="application/json,.json"
+                    style={{ display: "none" }}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      try {
+                        const imported = parseConfigJson(await file.text());
+                        setConfig(imported);
+                        setFeedback({
+                          tone: "success",
+                          message: `Perfil "${imported.profileName}" importado com sucesso.`
+                        });
+                      } catch (err) {
+                        setFeedback({
+                          tone: "error",
+                          message: `Arquivo JSON inválido: ${(err as Error).message}`
+                        });
+                      }
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Histórico de aplicações nesta sessão</h2>
+                  <p>
+                    Cada aplicação cria um snapshot prévio dos valores originais e permite desfazer as alterações com restauração verificada.
+                  </p>
+                </div>
+              </div>
+              {transactionHistory.length === 0 ? (
+                <p className="wl-muted">Nenhuma aplicação registrada nesta sessão ainda.</p>
+              ) : (
+                <div className="wl-tx-list">
+                  {transactionHistory.map((tx) => (
+                    <div key={tx.transactionId} className="wl-tx-item">
+                      <div>
+                        <strong>
+                          {tx.appliedCount} política(s) ·{" "}
+                          {tx.targetUserName ? `Conta ${tx.targetUserName}` : "Escopo do computador"}
+                        </strong>
+                        <small>
+                          {new Date(tx.appliedAt).toLocaleTimeString()} · ID {tx.transactionId.slice(0, 8)}
+                        </small>
+                      </div>
+                      <div className="wl-head-actions">
+                        <span
+                          className={`wl-status-badge ${
+                            tx.status === "Committed" ? "active" : "inactive"
+                          }`}
+                        >
+                          {tx.status === "Committed" ? "Aplicada" : "Revertida"}
+                        </span>
+                        {tx.status === "Committed" && (
+                          <button
+                            type="button"
+                            className="wl-button secondary"
+                            onClick={() => void handleRollbackTransaction(tx)}
+                            disabled={busy}
+                          >
+                            Desfazer
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* BARRA DE AÇÃO FIXA DE ALTERAÇÕES PENDENTES */}
+        {pendingCount > 0 && canOperateAgent && (
           <div className="wl-action-bar">
             <div className="wl-action-info">
-              <strong>{pendingCount} alteração(ões) pendente(s)</strong>
-              <span>Revisar e aplicar as mudanças selecionadas</span>
+              <strong>{pendingCount} alteração(ões) selecionada(s) para revisão</strong>
+              <span>
+                {hasUserScopedPending && !selectedUser
+                  ? "Selecione uma conta comum válida antes de revisar e aplicar."
+                  : selectedUser && hasUserScopedPending
+                    ? `Alvo das políticas de usuário: ${selectedUser.name}`
+                    : "Políticas globais do computador prontas para revisão."}
+              </span>
             </div>
             <div className="wl-action-buttons">
               <button
@@ -463,7 +1544,7 @@ export function DesktopControlCenter({
                 className="wl-button primary"
                 onClick={() => setShowReviewModal(true)}
                 disabled={busy || !canApply}
-                title={!canApply ? "Selecione um usuário para políticas de usuário" : undefined}
+                title={!canApply ? "Selecione um usuário comum válido para políticas por usuário" : undefined}
               >
                 {busy ? "Aplicando..." : "Revisar e aplicar"}
               </button>
@@ -471,44 +1552,76 @@ export function DesktopControlCenter({
           </div>
         )}
 
-        {/* Review Modal */}
+        {/* MODAL DE REVISÃO E CONFIRMAÇÃO */}
         {showReviewModal && (
           <div className="wl-modal-overlay" onClick={() => setShowReviewModal(false)}>
-            <div className="wl-modal" onClick={(e) => e.stopPropagation()}>
-              <h2>Revisar Alterações</h2>
+            <div
+              className="wl-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="wl-review-modal-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 id="wl-review-modal-title">Revisar Alterações</h2>
+              <p className="wl-modal-sub">
+                {mode === "Real"
+                  ? "O WinLab salvará um ponto de restauração dos valores atuais antes de aplicar. O Windows solicitará confirmação administrativa (UAC)."
+                  : "Simulação em Modo Demonstração: nenhuma alteração será gravada no Windows real."}
+              </p>
+
+              <div className="wl-review-target">
+                <strong>
+                  {hasUserScopedPending && selectedUser
+                    ? `Conta-alvo de usuário: ${selectedUser.name}`
+                    : "Escopo: Todo o computador"}
+                </strong>
+                {hasUserScopedPending && selectedUser?.sid && (
+                  <span className="wl-muted">SID verificado: {selectedUser.sid}</span>
+                )}
+              </div>
+
               <div className="wl-review-list">
                 {Object.entries(pendingPolicies).map(([policyId, enabled]) => {
-                  const policy = policyStates?.find(p => p.id === policyId);
+                  const policy = displayPolicies?.find((p) => p.id === policyId);
                   return (
                     <div key={policyId} className="wl-review-item">
                       <strong>{policy?.title || policyId}</strong>
                       <span>
-                        {enabled ? "Ativar (Bloquear)" : "Desativar (Remover bloqueio)"}
+                        {enabled
+                          ? "Estado atual → Ativar restrição (Blocked)"
+                          : "Estado atual → Remover restrição (NotConfigured)"}
                       </span>
                       {policy && (
                         <small>
-                          {policy.requiresRestart && "Requer reinício"}
-                          {policy.requiresLogoff && !policy.requiresRestart && "Requer logoff"}
-                          {policy.requiresAppRestart && !policy.requiresRestart && !policy.requiresLogoff && "Requer reiniciar apps"}
+                          {policy.scope === "User" ? "Aplica-se somente à conta selecionada · " : "Aplica-se ao computador · "}
+                          {policy.requiresRestart
+                            ? "Requer reiniciar o computador"
+                            : policy.requiresLogoff
+                              ? "Requer encerrar sessão (logoff)"
+                              : policy.requiresAppRestart
+                                ? "Requer fechar e reabrir o navegador"
+                                : "Efeito imediato após verificação"}
                         </small>
                       )}
                     </div>
                   );
                 })}
               </div>
+
               <div className="wl-modal-actions">
                 <button
                   type="button"
                   className="wl-button secondary"
                   onClick={() => setShowReviewModal(false)}
+                  disabled={busy}
                 >
                   Cancelar
                 </button>
                 <button
                   type="button"
                   className="wl-button primary"
-                  onClick={applyPendingChanges}
-                  disabled={busy}
+                  onClick={() => void applyPendingChanges()}
+                  disabled={busy || !canApply}
                 >
                   {busy ? "Aplicando..." : "Confirmar e aplicar"}
                 </button>
