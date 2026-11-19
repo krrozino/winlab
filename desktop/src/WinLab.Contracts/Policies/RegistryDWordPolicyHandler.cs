@@ -190,15 +190,30 @@ namespace WinLab.Contracts.Policies
 
         public PolicyApplyResult Apply(string? targetUserSid, PolicyDesiredState desiredState, IRegistryService registry, IUserHiveManager hiveManager)
         {
-            if (Scope == PolicyScope.User && hiveManager.IsUserAdministrator(targetUserSid))
+            if (Scope == PolicyScope.User && !string.IsNullOrWhiteSpace(targetUserSid))
             {
-                return new PolicyApplyResult
+                var privilege = hiveManager.ClassifyAccountPrivilege(targetUserSid);
+                if (privilege == AccountPrivilegeClassification.Administrator)
                 {
-                    PolicyId = PolicyId,
-                    Success = false,
-                    Error = "Violação de segurança: Não é permitido aplicar bloqueios à conta de administrador (imunidade de administrador).",
-                    EffectiveState = PolicyEffectiveState.Failed
-                };
+                    return new PolicyApplyResult
+                    {
+                        PolicyId = PolicyId,
+                        Success = false,
+                        Error = "Violação de segurança: Não é permitido aplicar bloqueios à conta de administrador (imunidade de administrador).",
+                        EffectiveState = PolicyEffectiveState.Failed
+                    };
+                }
+
+                if (privilege == AccountPrivilegeClassification.Unknown)
+                {
+                    return new PolicyApplyResult
+                    {
+                        PolicyId = PolicyId,
+                        Success = false,
+                        Error = "Operação bloqueada: não foi possível confirmar os privilégios da conta-alvo (classificação desconhecida).",
+                        EffectiveState = PolicyEffectiveState.Failed
+                    };
+                }
             }
 
             IUserHiveScope? hiveScope = null;

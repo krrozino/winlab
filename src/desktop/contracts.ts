@@ -111,10 +111,14 @@ export interface InstalledAppDto {
   isAppx?: boolean;
 }
 
+export type AccountPrivilegeClassification = "Unknown" | "StandardUser" | "Administrator";
+
 export interface LocalUserDto {
   name: string;
   enabled: boolean;
   isAdmin: boolean;
+  privilegeClassification?: AccountPrivilegeClassification;
+  classificationDetail?: string | null;
   sid?: string;
 }
 

@@ -341,25 +341,33 @@ namespace WinLab.Executor
                             ? inv.LocalUsers
                             : null;
 
+                        bool hasUserScopedPolicy = applyReq.Policies != null && applyReq.Policies.Any(op =>
+                        {
+                            var handler = _catalog.GetPolicy(op.PolicyId);
+                            return handler != null && handler.Scope == PolicyScope.User;
+                        });
+
                         if (knownAccounts != null)
                         {
                             var adminNameCheck = SecurityValidator.ValidateTargetNotAdministrator(applyReq.TargetUserName, knownAccounts);
                             if (!adminNameCheck.IsValid)
                             {
-                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, adminNameCheck.Error!, "ADMIN_TARGET_FORBIDDEN"));
+                                bool isUnknown = knownAccounts.Any(u =>
+                                    u != null &&
+                                    string.Equals(u.Name?.Trim(), applyReq.TargetUserName?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                                    u.GetEffectivePrivilegeClassification() == AccountPrivilegeClassification.Unknown);
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, adminNameCheck.Error!, isUnknown ? "TARGET_PRIVILEGE_UNKNOWN" : "ADMIN_TARGET_FORBIDDEN"));
                             }
 
                             var adminSidCheck = SecurityValidator.ValidateTargetNotAdministrator(applyReq.TargetUserSid, knownAccounts);
                             if (!adminSidCheck.IsValid)
                             {
-                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, adminSidCheck.Error!, "ADMIN_TARGET_FORBIDDEN"));
+                                bool isUnknown = knownAccounts.Any(u =>
+                                    u != null &&
+                                    string.Equals(u.Sid?.Trim(), applyReq.TargetUserSid?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                                    u.GetEffectivePrivilegeClassification() == AccountPrivilegeClassification.Unknown);
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, adminSidCheck.Error!, isUnknown ? "TARGET_PRIVILEGE_UNKNOWN" : "ADMIN_TARGET_FORBIDDEN"));
                             }
-
-                            bool hasUserScopedPolicy = applyReq.Policies != null && applyReq.Policies.Any(op =>
-                            {
-                                var handler = _catalog.GetPolicy(op.PolicyId);
-                                return handler != null && handler.Scope == PolicyScope.User;
-                            });
 
                             if (hasUserScopedPolicy && !string.IsNullOrWhiteSpace(applyReq.TargetUserSid))
                             {
@@ -383,13 +391,49 @@ namespace WinLab.Executor
                                         "TARGET_USER_DISABLED"));
                                 }
 
-                                if (matched.IsAdmin)
+                                var matchedPrivilege = matched.GetEffectivePrivilegeClassification();
+                                if (matchedPrivilege == AccountPrivilegeClassification.Administrator)
                                 {
                                     return JsonSerializer.Serialize(IpcResponse<object>.Fail(
                                         id,
                                         $"A conta '{matched.Name}' é administradora e possui imunidade.",
                                         "ADMIN_TARGET_FORBIDDEN"));
                                 }
+
+                                if (matchedPrivilege == AccountPrivilegeClassification.Unknown)
+                                {
+                                    return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                        id,
+                                        matched.ClassificationDetail ?? $"Não foi possível confirmar os privilégios da conta '{matched.Name}' (classificação desconhecida).",
+                                        "TARGET_PRIVILEGE_UNKNOWN"));
+                                }
+                            }
+                        }
+                        else if (hasUserScopedPolicy && (OperatingSystem.IsWindows() || _hasCustomScanner))
+                        {
+                            return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                id,
+                                "Não foi possível confirmar a elegibilidade da conta-alvo porque a enumeração de usuários locais não retornou contas.",
+                                "TARGET_PRIVILEGE_UNKNOWN"));
+                        }
+
+                        if (hasUserScopedPolicy && !string.IsNullOrWhiteSpace(applyReq.TargetUserSid))
+                        {
+                            var hivePrivilege = _hiveManager.ClassifyAccountPrivilege(applyReq.TargetUserSid);
+                            if (hivePrivilege == AccountPrivilegeClassification.Administrator)
+                            {
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                    id,
+                                    "Violação de segurança: Contas de Administrador possuem imunidade e não podem receber restrições de laboratório.",
+                                    "ADMIN_TARGET_FORBIDDEN"));
+                            }
+
+                            if (hivePrivilege == AccountPrivilegeClassification.Unknown)
+                            {
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                    id,
+                                    "Operação bloqueada: não foi possível confirmar os privilégios da conta-alvo (classificação desconhecida).",
+                                    "TARGET_PRIVILEGE_UNKNOWN"));
                             }
                         }
 

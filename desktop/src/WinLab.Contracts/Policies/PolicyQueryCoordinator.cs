@@ -49,11 +49,12 @@ namespace WinLab.Contracts.Policies
 
             if (hasTargetSid)
             {
+                var hivePrivilege = hiveManager.ClassifyAccountPrivilege(targetUserSid);
                 var adminCheck = SecurityValidator.ValidateTargetNotAdministrator(targetUserSid, knownAccounts);
-                if (!adminCheck.IsValid || hiveManager.IsUserAdministrator(targetUserSid))
+                if (hivePrivilege == AccountPrivilegeClassification.Administrator)
                 {
                     return PolicyQueryOutcome.Fail(
-                        adminCheck.Error ?? "Contas administrativas possuem imunidade e não podem ser selecionadas como alvo de restrições.",
+                        "Contas administrativas possuem imunidade e não podem ser selecionadas como alvo de restrições.",
                         "ADMIN_TARGET_FORBIDDEN");
                 }
 
@@ -85,12 +86,34 @@ namespace WinLab.Contracts.Policies
                             "TARGET_USER_DISABLED");
                     }
 
-                    if (matched.IsAdmin)
+                    var matchedPrivilege = matched.GetEffectivePrivilegeClassification();
+                    if (matchedPrivilege == AccountPrivilegeClassification.Administrator)
                     {
                         return PolicyQueryOutcome.Fail(
                             $"A conta '{matched.Name}' pertence ao grupo de Administradores e está protegida pelo WinLab.",
                             "ADMIN_TARGET_FORBIDDEN");
                     }
+
+                    if (matchedPrivilege == AccountPrivilegeClassification.Unknown)
+                    {
+                        return PolicyQueryOutcome.Fail(
+                            matched.ClassificationDetail ?? $"Não foi possível confirmar os privilégios da conta '{matched.Name}' (classificação desconhecida).",
+                            "TARGET_PRIVILEGE_UNKNOWN");
+                    }
+                }
+
+                if (!adminCheck.IsValid)
+                {
+                    return PolicyQueryOutcome.Fail(
+                        adminCheck.Error ?? "Contas administrativas possuem imunidade e não podem ser selecionadas como alvo de restrições.",
+                        "ADMIN_TARGET_FORBIDDEN");
+                }
+
+                if (hivePrivilege == AccountPrivilegeClassification.Unknown)
+                {
+                    return PolicyQueryOutcome.Fail(
+                        "Não foi possível confirmar os privilégios da conta-alvo (classificação desconhecida). Operação bloqueada por segurança.",
+                        "TARGET_PRIVILEGE_UNKNOWN");
                 }
             }
 
@@ -127,7 +150,11 @@ namespace WinLab.Contracts.Policies
 
                 var probe = policy.Probe(cleanSid, registry, hiveManager);
                 var mappedCurrentState = MapEffectiveToPolicyState(probe);
-                var configuredState = probe.IsActive ? PolicyState.Applied : PolicyState.NotConfigured;
+                var configuredState = probe.IsActive
+                    ? PolicyState.Applied
+                    : (probe.EffectiveState == PolicyEffectiveState.NotConfigured
+                        ? PolicyState.NotConfigured
+                        : mappedCurrentState);
 
                 items.Add(new PolicyItemDto
                 {
@@ -191,8 +218,8 @@ namespace WinLab.Contracts.Policies
                 PolicyEffectiveState.Inconclusive => PolicyState.Inconclusive,
                 PolicyEffectiveState.Failed => PolicyState.Failed,
                 PolicyEffectiveState.NotSupported => PolicyState.NotSupported,
-                PolicyEffectiveState.NotConfigured => probe.IsActive ? PolicyState.Applied : PolicyState.NotConfigured,
-                _ => probe.IsActive ? PolicyState.Applied : PolicyState.NotConfigured
+                PolicyEffectiveState.NotConfigured => probe.IsActive ? PolicyState.Inconclusive : PolicyState.NotConfigured,
+                _ => probe.IsActive ? PolicyState.Applied : PolicyState.Inconclusive
             };
         }
     }
