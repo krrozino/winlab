@@ -1,21 +1,7 @@
 import { APP_CATALOG } from "./apps";
 import { serializeConfig } from "./config-io";
+import { psArray, psBool, psBoundedInt, psCommentText, psEnum, psString, withPsUtf8Bom } from "./powershell";
 import { Config } from "./types";
-
-function psBool(value: boolean) {
-  return value ? "$true" : "$false";
-}
-
-function psString(value: string) {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-function psArray(values: string[]) {
-  if (!values.length) return "@()";
-  return `@(
-${values.map((value) => `    ${psString(value)}`).join(",\n")}
-)`;
-}
 
 function getAllowedPaths(config: Config) {
   return [
@@ -27,16 +13,17 @@ function getAllowedPaths(config: Config) {
 function commonHeader(config: Config, title: string, parameterBlock = "") {
   const renderedParameters = parameterBlock ? `${parameterBlock}\n\n` : "";
 
-  return `#requires -version 5.1
+  return withPsUtf8Bom(`#requires -version 5.1
 <#
 ${title}
 Gerado por WinLab Configurator
-Perfil: ${config.profileName}
+Perfil: ${psCommentText(config.profileName)}
 
 Teste primeiro em uma máquina piloto.
 Nenhuma senha é armazenada neste arquivo.
 #>
 ${renderedParameters}$ErrorActionPreference = "Stop"
+$ProfileName = ${psString(config.profileName)}
 $Aluno = ${psString(config.studentUser)}
 $Admin = ${psString(config.adminUser)}
 
@@ -143,15 +130,19 @@ function Invoke-WithUserHive {
         }
     }
 }
-`;
+`);
 }
 
 export function generateSetupScript(config: Config): string {
   const allowedPaths = getAllowedPaths(config);
-  const enforcement = config.enforcementMode;
+  const enforcement = psEnum(config.enforcementMode, ["AuditOnly", "Enabled"] as const, "enforcementMode");
+  const browserUrlMode = psEnum(
+    config.browserUrlMode,
+    ["Unrestricted", "BlockList", "AllowListOnly"] as const,
+    "browserUrlMode"
+  );
 
   return `${commonHeader(config, "SETUP", `[CmdletBinding()]\nparam([switch]$Apply, [switch]$UserPoliciesOnly)`)}
-$ProfileName = ${psString(config.profileName)}
 $CreateAccounts = ${psBool(config.createAccounts)}
 $BlockInstallers = ${psBool(config.blockInstallers)}
 $BlockStoreApps = ${psBool(config.blockStoreApps)}
@@ -166,7 +157,7 @@ $BlockChromeNewProfiles = ${psBool(config.blockChromeNewProfiles)}
 $BlockChromeIncognito = ${psBool(config.blockChromeIncognito)}
 $BlockChromePasswordManager = ${psBool(config.blockChromePasswordManager)}
 
-$BrowserUrlMode = "${config.browserUrlMode}"
+$BrowserUrlMode = "${browserUrlMode}"
 $BlockedUrls = ${psArray(config.blockedUrls)}
 $AllowedUrls = ${psArray(config.allowedUrls)}
 
@@ -880,7 +871,7 @@ $denyRules
 
 function Show-WinLabPlan {
     Write-Host "=== WinLab - PREVIEW do setup ===" -ForegroundColor Cyan
-    Write-Host ("Perfil: ${config.profileName}")
+    Write-Host ("Perfil: {0}" -f $ProfileName)
     Write-Host ("Usuário restrito: {0}" -f $Aluno)
     Write-Host ("Administrador: {0}" -f $Admin)
     Write-Host ("AppLocker: {0}" -f $EnforcementMode)
@@ -1127,25 +1118,46 @@ if ($Apply) {
     Assert-WinLabPackageIntegrity
     $state = Get-WinLabRollbackState
 
-    Restore-AppLockerBaseline -State $state
+    $appLockerRestored = $false
+    $userPoliciesCleared = $false
+    $registryRestored = $false
 
-    if (Test-StudentProfileExists) {
-        Remove-StudentPolicies
-        Restore-RegistryBaseline -State $state
+    try {
+        Restore-AppLockerBaseline -State $state
+        $appLockerRestored = $true
+
+        if (Test-StudentProfileExists) {
+            Remove-StudentPolicies
+            $userPoliciesCleared = $true
+            Restore-RegistryBaseline -State $state
+            $registryRestored = $true
+        }
+        else {
+            Write-Host "Perfil do usuário '$Aluno' não existe; não há hive de usuário para limpar." -ForegroundColor DarkGray
+            Restore-RegistryBaseline -State $state
+            $registryRestored = $true
+        }
+
+        Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
+
+        gpupdate /force | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning ("gpupdate /force retornou codigo {0}." -f $LASTEXITCODE)
+        }
+        Archive-WinLabState -State $state
+
+        Write-Host "Rollback WinLab concluído. As contas locais foram preservadas." -ForegroundColor Green
+        Write-Host "Reinicie o computador." -ForegroundColor Yellow
     }
-    else {
-        Write-Host "Perfil do usuário '$Aluno' não existe; não há hive de usuário para limpar." -ForegroundColor DarkGray
-        Restore-RegistryBaseline -State $state
+    catch {
+        $rollbackError = $_.Exception.Message
+        if ($appLockerRestored -or $userPoliciesCleared -or $registryRestored) {
+            Write-Warning ("[ROLLBACK INCOMPLETO] A reversao foi interrompida apos alteracoes parciais (AppLocker={0}, PoliciesCleared={1}, Registry={2}). Erro: {3}" -f $appLockerRestored, $userPoliciesCleared, $registryRestored, $rollbackError)
+            exit 4
+        }
+        throw
     }
-
-    Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
-
-    gpupdate /force | Out-Null
-    Archive-WinLabState -State $state
-
-    Write-Host "Rollback WinLab concluído. As contas locais foram preservadas." -ForegroundColor Green
-    Write-Host "Reinicie o computador." -ForegroundColor Yellow
 }
 else {
     Write-Host "=== WinLab - PREVIEW do rollback ===" -ForegroundColor Cyan
@@ -1257,8 +1269,8 @@ export function generateAuditScript(config: Config): string {
 Assert-Administrator
 
 Write-Host "=== WinLab - Auditoria AppLocker ===" -ForegroundColor Cyan
-Write-Host "Perfil: ${config.profileName}"
-Write-Host "Usuário restrito: $Aluno"
+Write-Host ("Perfil: {0}" -f $ProfileName)
+Write-Host ("Usuário restrito: {0}" -f $Aluno)
 Write-Host ""
 
 $logs = @(
@@ -1298,7 +1310,7 @@ export function generateVerifyScript(config: Config): string {
     )
     .join(",\n");
 
-  return `${commonHeader(config, "VERIFICAÇÃO DO PC")}
+  return `${commonHeader(config, "VERIFICAÇÃO DO PC", `[CmdletBinding()]\nparam([switch]$PostApply)`)}
 
 Assert-Administrator
 
@@ -1306,21 +1318,27 @@ $KnownApps = @(
 ${appBlocks}
 )
 $CustomAllowedPaths = ${psArray(config.customAllowedPaths)}
+$criticalFailures = 0
 
 function Write-Check {
     param(
         [string]$Name,
         [bool]$Ok,
-        [string]$Details
+        [string]$Details,
+        [switch]$Critical
     )
 
-    $status = if ($Ok) { "OK" } else { "ATENÇÃO" }
-    $color = if ($Ok) { "Green" } else { "Yellow" }
+    if (-not $Ok -and $Critical) {
+        $script:criticalFailures++
+    }
+
+    $status = if ($Ok) { "OK" } elseif ($Critical) { "FALHA" } else { "ATENÇÃO" }
+    $color = if ($Ok) { "Green" } elseif ($Critical) { "Red" } else { "Yellow" }
     Write-Host ("[{0}] {1} - {2}" -f $status, $Name, $Details) -ForegroundColor $color
 }
 
 Write-Host "=== WinLab - Verificação da máquina ===" -ForegroundColor Cyan
-Write-Host "Perfil: ${config.profileName}"
+Write-Host ("Perfil: {0}" -f $ProfileName)
 Write-Host ""
 
 $os = Get-CimInstance Win32_OperatingSystem
@@ -1332,15 +1350,17 @@ Write-Host ("Arquitetura: {0}" -f $os.OSArchitecture)
 Write-Host ""
 
 $hasAppLocker = $null -ne (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyContinue)
-Write-Check "AppLocker" $hasAppLocker $(if ($hasAppLocker) { "cmdlets disponíveis" } else { "cmdlets não encontrados" })
+Write-Check "AppLocker" $hasAppLocker $(if ($hasAppLocker) { "cmdlets disponíveis" } else { "cmdlets não encontrados" }) -Critical
 
 $service = Get-Service AppIDSvc -ErrorAction SilentlyContinue
-Write-Check "Application Identity" ($null -ne $service) $(if ($service) { "serviço encontrado: $($service.Status)" } else { "serviço não encontrado" })
+Write-Check "Application Identity" ($null -ne $service) $(if ($service) { "serviço encontrado: $($service.Status)" } else { "serviço não encontrado" }) -Critical
 
 $student = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
 $admin = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
-Write-Check "Conta restrita" ($null -ne $student -or ${psBool(config.createAccounts)}) $(if ($student) { "existe: $Aluno" } else { "será criada pelo setup: $Aluno" })
-Write-Check "Conta administrativa" ($null -ne $admin -or ${psBool(config.createAccounts)}) $(if ($admin) { "existe: $Admin" } else { "será criada pelo setup: $Admin" })
+$studentOk = ($null -ne $student) -or (-not $PostApply -and ${psBool(config.createAccounts)})
+$adminOk = ($null -ne $admin) -or (-not $PostApply -and ${psBool(config.createAccounts)})
+Write-Check "Conta restrita" $studentOk $(if ($student) { "existe: $Aluno" } elseif (-not $PostApply -and ${psBool(config.createAccounts)}) { "será criada pelo setup: $Aluno" } else { "não encontrada: $Aluno" }) -Critical
+Write-Check "Conta administrativa" $adminOk $(if ($admin) { "existe: $Admin" } elseif (-not $PostApply -and ${psBool(config.createAccounts)}) { "será criada pelo setup: $Admin" } else { "não encontrada: $Admin" }) -Critical
 
 Write-Host ""
 Write-Host "=== Safety & Recovery ===" -ForegroundColor Cyan
@@ -1351,28 +1371,34 @@ $statePath = Join-Path $winLabRoot "state.json"
 if (Test-Path $statePath) {
     try {
         $state = Get-Content -Path $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
-        Write-Check "state.json" $true ("status: {0}; aplicações: {1}" -f $state.status, $state.applyCount)
+        $stateHealthy = ($state.status -eq "Applied") -or (-not $PostApply -and $state.status -ne "RecoveryFailed" -and $state.status -ne "Applying")
+        Write-Check "state.json" $stateHealthy ("status: {0}; aplicações: {1}" -f $state.status, $state.applyCount) -Critical
 
-        $appLockerBaselineOk = $state.baselineAppLockerBackup -and (Test-Path ([string]$state.baselineAppLockerBackup))
-        Write-Check "Baseline AppLocker" ([bool]$appLockerBaselineOk) $(if ($appLockerBaselineOk) { [string]$state.baselineAppLockerBackup } else { "ausente ou inválido" })
+        $appLockerBaselineOk = [bool]($state.baselineAppLockerBackup -and (Test-Path ([string]$state.baselineAppLockerBackup)))
+        Write-Check "Baseline AppLocker" $appLockerBaselineOk $(if ($appLockerBaselineOk) { [string]$state.baselineAppLockerBackup } else { "ausente ou inválido" }) -Critical
 
-        $registryBaselineOk = $state.registryBaselineDir -and (Test-Path ([string]$state.registryBaselineDir))
-        Write-Check "Baseline de registro" ([bool]$registryBaselineOk) $(if ($registryBaselineOk) { [string]$state.registryBaselineDir } else { "ausente ou inválido" })
+        $registryBaselineOk = [bool]($state.registryBaselineDir -and (Test-Path ([string]$state.registryBaselineDir)))
+        Write-Check "Baseline de registro" $registryBaselineOk $(if ($registryBaselineOk) { [string]$state.registryBaselineDir } else { "ausente ou inválido" }) -Critical
 
         $task = Get-ScheduledTask -TaskName "WinLab-Apply-UserPolicies" -ErrorAction SilentlyContinue
         if ($state.userPoliciesDeferred) {
-            Write-Check "Primeiro login" ($null -ne $task) $(if ($task) { "políticas HKCU pendentes; tarefa agendada" } else { "estado indica pendência, mas a tarefa não foi encontrada" })
+            Write-Check "Primeiro login" ($null -ne $task) $(if ($task) { "políticas HKCU pendentes; tarefa agendada" } else { "estado indica pendência, mas a tarefa não foi encontrada" }) -Critical
         }
         else {
             Write-Check "Primeiro login" ($null -eq $task) $(if ($task) { "tarefa ainda existe apesar de não haver pendência" } else { "sem pendência" })
         }
     }
     catch {
-        Write-Check "state.json" $false $_.Exception.Message
+        Write-Check "state.json" $false $_.Exception.Message -Critical
     }
 }
 else {
-    Write-Check "state.json" $true "nenhuma aplicação WinLab registrada ainda"
+    if ($PostApply) {
+        Write-Check "state.json" $false "state.json ausente após execução com -Apply" -Critical
+    }
+    else {
+        Write-Check "state.json" $true "nenhuma aplicação WinLab registrada ainda"
+    }
 }
 
 Write-Host ""
@@ -1404,10 +1430,19 @@ if ($CustomAllowedPaths.Count -gt 0) {
 
 Write-Host ""
 Write-Host "Use este relatório antes de ativar o AppLocker em modo Enabled." -ForegroundColor Yellow
+
+if ($criticalFailures -gt 0) {
+    Write-Host ("Verificação final encontrou {0} falha(s) crítica(s)." -f $criticalFailures) -ForegroundColor Red
+    exit 1
+}
 `;
 }
 
 export function generateMaintenanceScript(config: Config): string {
+  const cleanupMode = psEnum(config.profileCleanupMode, ["Off", "ReportOnly", "Delete"] as const, "profileCleanupMode");
+  const days = psBoundedInt(config.profileCleanupDays, 90, 1, 3650);
+  const storageWarningFreePercent = psBoundedInt(config.storageWarningFreePercent, 15, 1, 99);
+
   return `${commonHeader(config, "MANUTENÇÃO E LIMPEZA DE PERFIS", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 
 Assert-Administrator
@@ -1416,9 +1451,9 @@ if ($Apply) {
     Assert-WinLabPackageIntegrity
 }
 
-$Mode = "${config.profileCleanupMode}"
-$Days = ${config.profileCleanupDays}
-$StorageWarningFreePercent = ${config.storageWarningFreePercent}
+$Mode = "${cleanupMode}"
+$Days = ${days}
+$StorageWarningFreePercent = ${storageWarningFreePercent}
 
 function Get-WinLabLastUseTime {
     param($Value)
