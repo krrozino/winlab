@@ -797,6 +797,168 @@ namespace WinLab.Tests
             }
         }
 
+        [Fact]
+        public void Task3_WindowsRegistryAdapters_PreserveLiteralRegExpandSzEnvironmentVariables()
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                return;
+            }
+
+            var winRegistry = new WindowsRegistryService();
+            var liveReader = new LiveWindowsRegistryService();
+            string tempSubKey = $@"Software\WinLab\TestTemp_ExpandSz_{Guid.NewGuid():N}";
+            const string valueName = "TestExpandPath";
+            const string literalValue = @"%SystemRoot%\System32\winlab-test.exe";
+
+            try
+            {
+                winRegistry.SetValue(RegistryHiveType.CurrentUser, tempSubKey, valueName, literalValue, RegistryValueType.ExpandString);
+
+                Assert.Equal(RegistryValueType.ExpandString, winRegistry.GetValueKind(RegistryHiveType.CurrentUser, tempSubKey, valueName));
+                Assert.Equal(literalValue, winRegistry.GetValue(RegistryHiveType.CurrentUser, tempSubKey, valueName));
+                Assert.Equal(literalValue, winRegistry.SnapshotKey(RegistryHiveType.CurrentUser, tempSubKey)[valueName]);
+
+                Assert.Equal(RegistryValueType.ExpandString, liveReader.GetValueKind(RegistryHiveType.CurrentUser, tempSubKey, valueName));
+                Assert.Equal(literalValue, liveReader.GetValue(RegistryHiveType.CurrentUser, tempSubKey, valueName));
+                Assert.Equal(literalValue, liveReader.SnapshotKey(RegistryHiveType.CurrentUser, tempSubKey)[valueName]);
+
+                // Verify BaselineSnapshotManager also captures the unexpanded literal value
+                var snapshotMgr = new BaselineSnapshotManager(winRegistry, new MockUserHiveManager());
+                var tempHandler = new RegistryDWordPolicyHandler(
+                    policyId: "test.temp.expand",
+                    category: "Test",
+                    title: "Test",
+                    description: "Test",
+                    relativeSubKeyPath: tempSubKey,
+                    valueName: valueName,
+                    scope: PolicyScope.User);
+
+                var (snapshot, rollbackPlan) = snapshotMgr.CaptureBaseline(new IPolicyHandler[] { tempHandler }, null);
+                var entry = Assert.Single(snapshot.Entries);
+                Assert.Equal(BaselineValueState.Exists, entry.State);
+                Assert.Equal(nameof(RegistryValueType.ExpandString), entry.ValueKind);
+                Assert.Equal(literalValue, entry.OriginalValue);
+
+                var step = Assert.Single(rollbackPlan);
+                Assert.Equal("RestoreValue", step.Operation);
+                Assert.Equal(nameof(RegistryValueType.ExpandString), step.RestoreKind);
+                Assert.Equal(literalValue, step.RestoreValue);
+            }
+            finally
+            {
+                winRegistry.DeleteSubKeyTree(RegistryHiveType.CurrentUser, tempSubKey);
+            }
+        }
+
+        [Fact]
+        public async Task Task3_LegacyTransactionRecord_WithoutReliableTarget_RejectsRecoveryInsteadOfAssumingHkcu()
+        {
+            var registry = new InMemoryRegistryService();
+            var hiveManager = new MockUserHiveManager();
+            var catalog = new PolicyCatalog(processChecker: _ => false);
+            string testDir = CreateTempTransactionDir();
+
+            try
+            {
+                // Seed HKCU value that must NEVER be touched by a user-scoped transaction missing TargetUserSid
+                registry.SetValue(RegistryHiveType.CurrentUser, @"Software\Policies\Microsoft\Windows\Personalization", "NoChangingSoundScheme", 1, RegistryValueType.DWord);
+
+                // Legacy record (no Scope/RelativeSubKey, TargetUserSid = null)
+                var legacyMissingSid = new TransactionDto
+                {
+                    TransactionId = "tx-legacy-missing-sid",
+                    Status = TransactionStatus.Committed,
+                    TargetUserSid = null,
+                    RollbackPlan = new List<RollbackStepDto>
+                    {
+                        new()
+                        {
+                            Sequence = 1,
+                            PolicyId = "personalization.sounds",
+                            Operation = "DeleteValue",
+                            Hive = "Users",
+                            SubKey = @"Software\Policies\Microsoft\Windows\Personalization",
+                            ValueName = "NoChangingSoundScheme"
+                        }
+                    }
+                };
+                await File.WriteAllTextAsync(
+                    Path.Combine(testDir, "tx-legacy-missing-sid.json"),
+                    JsonSerializer.Serialize(legacyMissingSid));
+
+                // Legacy record with unknown/empty Hive and unknown PolicyId
+                var legacyUnknownHive = new TransactionDto
+                {
+                    TransactionId = "tx-legacy-unknown-hive",
+                    Status = TransactionStatus.Committed,
+                    RollbackPlan = new List<RollbackStepDto>
+                    {
+                        new()
+                        {
+                            Sequence = 1,
+                            PolicyId = "unknown.legacy.policy",
+                            Operation = "DeleteValue",
+                            Hive = "",
+                            SubKey = @"SOFTWARE\Policies\Example",
+                            ValueName = "ExampleValue"
+                        }
+                    }
+                };
+                await File.WriteAllTextAsync(
+                    Path.Combine(testDir, "tx-legacy-unknown-hive.json"),
+                    JsonSerializer.Serialize(legacyUnknownHive));
+
+                var engine = new TransactionEngine(catalog, registry, hiveManager, testDir);
+
+                var resMissingSid = await engine.RollbackTransactionAsync(new RollbackTransactionRequestDto { TransactionId = "tx-legacy-missing-sid" });
+                Assert.False(resMissingSid.Success);
+                Assert.Equal(TransactionStatus.Failed, resMissingSid.Status);
+                Assert.Contains("HKCU", resMissingSid.Error);
+                // HKCU remained untouched!
+                Assert.Equal(1, registry.GetValue(RegistryHiveType.CurrentUser, @"Software\Policies\Microsoft\Windows\Personalization", "NoChangingSoundScheme"));
+
+                var resUnknownHive = await engine.RollbackTransactionAsync(new RollbackTransactionRequestDto { TransactionId = "tx-legacy-unknown-hive" });
+                Assert.False(resUnknownHive.Success);
+                Assert.Equal(TransactionStatus.Failed, resUnknownHive.Status);
+                Assert.Contains("Hive de destino inválido", resUnknownHive.Error);
+
+                // Valid legacy record with explicit TargetUserSid and known PolicyId still recovers cleanly
+                const string validSid = "S-1-5-21-5555-1002";
+                registry.SetValue(RegistryHiveType.Users, $@"{validSid}\Software\Policies\Microsoft\Windows\Personalization", "NoChangingSoundScheme", 1, RegistryValueType.DWord);
+                var legacyValid = new TransactionDto
+                {
+                    TransactionId = "tx-legacy-valid",
+                    Status = TransactionStatus.Committed,
+                    TargetUserSid = validSid,
+                    RollbackPlan = new List<RollbackStepDto>
+                    {
+                        new()
+                        {
+                            Sequence = 1,
+                            PolicyId = "personalization.sounds",
+                            Operation = "DeleteValue",
+                            Hive = "Users",
+                            SubKey = $@"{validSid}\Software\Policies\Microsoft\Windows\Personalization",
+                            ValueName = "NoChangingSoundScheme"
+                        }
+                    }
+                };
+                await File.WriteAllTextAsync(
+                    Path.Combine(testDir, "tx-legacy-valid.json"),
+                    JsonSerializer.Serialize(legacyValid));
+
+                var resValid = await engine.RollbackTransactionAsync(new RollbackTransactionRequestDto { TransactionId = "tx-legacy-valid" });
+                Assert.True(resValid.Success);
+                Assert.Equal(TransactionStatus.RolledBack, resValid.Status);
+                Assert.False(registry.ValueExists(RegistryHiveType.Users, $@"{validSid}\Software\Policies\Microsoft\Windows\Personalization", "NoChangingSoundScheme"));
+            }
+            finally
+            {
+                if (Directory.Exists(testDir)) Directory.Delete(testDir, true);
+            }
+        }
+
         // =========================================================================
         // Task 4 — Administrative Protection (No silent fallback to StandardUser)
         // =========================================================================

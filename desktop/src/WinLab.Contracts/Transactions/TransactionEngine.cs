@@ -833,19 +833,64 @@ namespace WinLab.Contracts.Transactions
             string? targetUserSid,
             IUserHiveScope? hiveScope)
         {
-            if (!IsUserScopedStep(step, targetUserSid))
+            if (string.IsNullOrWhiteSpace(step.ValueName))
             {
-                return (RegistryHiveType.LocalMachine, step.SubKey);
+                throw new InvalidOperationException("Nome do valor de registro ausente no plano de rollback.");
             }
 
-            if (!string.IsNullOrWhiteSpace(targetUserSid) && (hiveScope == null || !hiveScope.IsAvailable))
+            if (IsUserScopedStep(step, targetUserSid))
+            {
+                if (string.IsNullOrWhiteSpace(targetUserSid))
+                {
+                    throw new InvalidOperationException(
+                        $"Registro de transação sem TargetUserSid confiável para '{step.PolicyId}'; recuperação bloqueada para evitar mutação acidental em HKCU.");
+                }
+
+                var sidValidation = SecurityValidator.ValidateTargetUserSid(targetUserSid);
+                if (!sidValidation.IsValid)
+                {
+                    throw new InvalidOperationException(
+                        sidValidation.Error ?? $"TargetUserSid inválido para recuperação: '{targetUserSid}'.");
+                }
+
+                if (hiveScope == null || !hiveScope.IsAvailable)
+                {
+                    throw new InvalidOperationException(
+                        hiveScope?.ErrorMessage ?? $"Hive do usuário '{targetUserSid}' indisponível no momento da recuperação.");
+                }
+
+                string relativeSubKey = ResolveRelativeSubKey(step, targetUserSid);
+                if (string.IsNullOrWhiteSpace(relativeSubKey))
+                {
+                    throw new InvalidOperationException(
+                        $"Subchave relativa ausente ou não confiável no plano de rollback para '{step.PolicyId}'.");
+                }
+
+                return BaselineSnapshotManager.ResolveTargetKey(relativeSubKey, targetUserSid, hiveScope);
+            }
+
+            if (!IsExplicitLocalMachineHive(step.Hive))
             {
                 throw new InvalidOperationException(
-                    hiveScope?.ErrorMessage ?? $"Hive do usuário '{targetUserSid}' indisponível no momento da recuperação.");
+                    $"Hive de destino inválido ou não confiável no plano de rollback: '{step.Hive}'.");
             }
 
-            string relativeSubKey = ResolveRelativeSubKey(step, targetUserSid);
-            return BaselineSnapshotManager.ResolveTargetKey(relativeSubKey, targetUserSid, hiveScope);
+            if (string.IsNullOrWhiteSpace(step.SubKey))
+            {
+                throw new InvalidOperationException(
+                    $"Subchave ausente no plano de rollback para '{step.PolicyId}'.");
+            }
+
+            return (RegistryHiveType.LocalMachine, step.SubKey);
+        }
+
+        private static bool IsExplicitLocalMachineHive(string? hive)
+        {
+            if (string.IsNullOrWhiteSpace(hive)) return false;
+            string trimmed = hive.Trim();
+            return string.Equals(trimmed, nameof(RegistryHiveType.LocalMachine), StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("HKLM", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("HKEY_LOCAL_MACHINE", StringComparison.OrdinalIgnoreCase);
         }
 
         private string ResolveRelativeSubKey(RollbackStepDto step, string? targetUserSid)
@@ -877,7 +922,8 @@ namespace WinLab.Contracts.Transactions
                 }
             }
 
-            return subKey;
+            // Earlier record with unknown PolicyId and without SID prefix or RelativeSubKey cannot be reliably mapped
+            return string.Empty;
         }
 
         private RegistryValueSnapshotDto? FindMatchingSnapshotEntry(

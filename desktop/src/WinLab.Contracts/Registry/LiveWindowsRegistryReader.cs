@@ -94,7 +94,7 @@ namespace WinLab.Contracts.RegistryServices
             using var key = baseKey.OpenSubKey(subKeyPath, writable: false);
             if (key == null) return defaultValue;
 
-            return key.GetValue(valueName, defaultValue);
+            return key.GetValue(valueName, defaultValue, RegistryValueOptions.DoNotExpandEnvironmentNames);
         }
 
         public RegistryValueType? GetValueKind(RegistryHiveType hive, string subKeyPath, string valueName)
@@ -205,7 +205,7 @@ namespace WinLab.Contracts.RegistryServices
             {
                 foreach (var valName in key.GetValueNames())
                 {
-                    dict[valName] = key.GetValue(valName);
+                    dict[valName] = key.GetValue(valName, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
                 }
             }
 
