@@ -376,23 +376,31 @@ namespace WinLab.Desktop.Services
                 ? inv.LocalUsers
                 : null;
 
-            var adminNameCheck = SecurityValidator.ValidateTargetNotAdministrator(req.TargetUserName, knownAccounts);
-            if (!adminNameCheck.IsValid)
-            {
-                return (false, adminNameCheck.Error, "ADMIN_TARGET_FORBIDDEN");
-            }
-
-            var adminSidCheck = SecurityValidator.ValidateTargetNotAdministrator(req.TargetUserSid, knownAccounts);
-            if (!adminSidCheck.IsValid)
-            {
-                return (false, adminSidCheck.Error, "ADMIN_TARGET_FORBIDDEN");
-            }
-
             bool hasUserPolicy = req.Policies.Any(op =>
             {
                 var handler = _catalog.GetPolicy(op.PolicyId);
                 return handler != null && handler.Scope == PolicyScope.User;
             });
+
+            var adminNameCheck = SecurityValidator.ValidateTargetNotAdministrator(req.TargetUserName, knownAccounts);
+            if (!adminNameCheck.IsValid)
+            {
+                bool isUnknown = knownAccounts != null && knownAccounts.Any(u =>
+                    u != null &&
+                    string.Equals(u.Name?.Trim(), req.TargetUserName?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                    u.GetEffectivePrivilegeClassification() == AccountPrivilegeClassification.Unknown);
+                return (false, adminNameCheck.Error, isUnknown ? "TARGET_PRIVILEGE_UNKNOWN" : "ADMIN_TARGET_FORBIDDEN");
+            }
+
+            var adminSidCheck = SecurityValidator.ValidateTargetNotAdministrator(req.TargetUserSid, knownAccounts);
+            if (!adminSidCheck.IsValid)
+            {
+                bool isUnknown = knownAccounts != null && knownAccounts.Any(u =>
+                    u != null &&
+                    string.Equals(u.Sid?.Trim(), req.TargetUserSid?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                    u.GetEffectivePrivilegeClassification() == AccountPrivilegeClassification.Unknown);
+                return (false, adminSidCheck.Error, isUnknown ? "TARGET_PRIVILEGE_UNKNOWN" : "ADMIN_TARGET_FORBIDDEN");
+            }
 
             if (hasUserPolicy)
             {
@@ -418,10 +426,31 @@ namespace WinLab.Desktop.Services
                         return (false, $"A conta '{matched.Name}' está desativada e não pode receber políticas.", "TARGET_USER_DISABLED");
                     }
 
-                    if (matched.IsAdmin)
+                    var matchedPrivilege = matched.GetEffectivePrivilegeClassification();
+                    if (matchedPrivilege == AccountPrivilegeClassification.Administrator)
                     {
                         return (false, $"A conta '{matched.Name}' pertence ao grupo de Administradores e está protegida.", "ADMIN_TARGET_FORBIDDEN");
                     }
+
+                    if (matchedPrivilege == AccountPrivilegeClassification.Unknown)
+                    {
+                        return (false, matched.ClassificationDetail ?? $"Não foi possível confirmar os privilégios da conta '{matched.Name}' (classificação desconhecida).", "TARGET_PRIVILEGE_UNKNOWN");
+                    }
+                }
+                else if (_isWindows || _hasCustomScanner)
+                {
+                    return (false, "Não foi possível confirmar a elegibilidade da conta-alvo porque nenhuma conta local foi enumerada.", "TARGET_PRIVILEGE_UNKNOWN");
+                }
+
+                var hivePrivilege = _hiveManager.ClassifyAccountPrivilege(req.TargetUserSid);
+                if (hivePrivilege == AccountPrivilegeClassification.Administrator)
+                {
+                    return (false, "Violação de segurança: Contas de Administrador possuem imunidade e não podem receber restrições de laboratório.", "ADMIN_TARGET_FORBIDDEN");
+                }
+
+                if (hivePrivilege == AccountPrivilegeClassification.Unknown)
+                {
+                    return (false, "Operação bloqueada: não foi possível confirmar os privilégios da conta-alvo (classificação desconhecida).", "TARGET_PRIVILEGE_UNKNOWN");
                 }
             }
 
@@ -468,8 +497,9 @@ namespace WinLab.Desktop.Services
                 warn++;
             }
 
-            bool hasActiveAdmin = inv.LocalUsers.Any(u => u.Enabled && u.IsAdmin);
-            bool hasActiveStandard = inv.LocalUsers.Any(u => u.Enabled && !u.IsAdmin);
+            bool hasActiveAdmin = inv.LocalUsers.Any(u => u.Enabled && u.GetEffectivePrivilegeClassification() == AccountPrivilegeClassification.Administrator);
+            bool hasActiveStandard = inv.LocalUsers.Any(u => u.Enabled && u.GetEffectivePrivilegeClassification() == AccountPrivilegeClassification.StandardUser);
+            bool hasUnknownAccounts = inv.LocalUsers.Any(u => u.Enabled && u.GetEffectivePrivilegeClassification() == AccountPrivilegeClassification.Unknown);
 
             if (hasActiveAdmin || inv.LocalUsers.Count == 0)
             {
@@ -479,6 +509,12 @@ namespace WinLab.Desktop.Services
             {
                 block++;
                 notes.Add("Nenhuma conta de administrador ativa encontrada.");
+            }
+
+            if (hasUnknownAccounts)
+            {
+                warn++;
+                notes.Add("Algumas contas locais possuem classificação de privilégio desconhecida e foram bloqueadas para restrições.");
             }
 
             if (hasActiveStandard)

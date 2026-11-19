@@ -241,9 +241,18 @@ namespace WinLab.Contracts
             var matchingUser = accounts.FirstOrDefault(u =>
                 u != null && string.Equals(u.Name?.Trim(), trimmed, StringComparison.OrdinalIgnoreCase));
 
-            if (matchingUser != null && matchingUser.IsAdmin)
+            if (matchingUser != null)
             {
-                return (false, "A conta selecionada possui privilégios de Administrador. O WinLab impede restrições em contas administrativas para prevenir perda de controle do computador.");
+                var classification = matchingUser.GetEffectivePrivilegeClassification();
+                if (classification == AccountPrivilegeClassification.Administrator)
+                {
+                    return (false, "A conta selecionada possui privilégios de Administrador. O WinLab impede restrições em contas administrativas para prevenir perda de controle do computador.");
+                }
+
+                if (classification == AccountPrivilegeClassification.Unknown)
+                {
+                    return (false, $"Não foi possível confirmar os privilégios da conta '{matchingUser.Name}' (classificação desconhecida). Operações restritivas foram bloqueadas por segurança.");
+                }
             }
 
             return (true, null);
@@ -271,9 +280,18 @@ namespace WinLab.Contracts
                     u != null && (string.Equals(u.Name?.Trim(), trimmed, StringComparison.OrdinalIgnoreCase) ||
                                  string.Equals(u.Sid?.Trim(), trimmed, StringComparison.OrdinalIgnoreCase)));
 
-                if (matchingUser != null && matchingUser.IsAdmin)
+                if (matchingUser != null)
                 {
-                    return (false, "A conta selecionada possui privilégios de Administrador. O WinLab impede restrições em contas administrativas para prevenir perda de controle do computador.");
+                    var classification = matchingUser.GetEffectivePrivilegeClassification();
+                    if (classification == AccountPrivilegeClassification.Administrator)
+                    {
+                        return (false, "A conta selecionada possui privilégios de Administrador. O WinLab impede restrições em contas administrativas para prevenir perda de controle do computador.");
+                    }
+
+                    if (classification == AccountPrivilegeClassification.Unknown)
+                    {
+                        return (false, $"Não foi possível confirmar os privilégios da conta '{matchingUser.Name}' (classificação desconhecida). Operações restritivas foram bloqueadas por segurança.");
+                    }
                 }
             }
 

@@ -233,6 +233,7 @@ export function getEligibleTargetUsers(users: LocalUserDto[] | undefined | null)
   if (!users || !Array.isArray(users)) return [];
   return users.filter((u) => {
     if (!u || !u.enabled || u.isAdmin) return false;
+    if (u.privilegeClassification && u.privilegeClassification !== "StandardUser") return false;
     const sid = u.sid?.trim() ?? "";
     if (!sid || !CANONICAL_SID_REGEX.test(sid)) return false;
     if (sid === "S-1-5-32-544" || sid.endsWith("-500")) return false;
@@ -414,10 +415,21 @@ export function buildValidatedTransactionRequest(params: {
           requiresAppRestart
         };
       }
-      if (matched.isAdmin) {
+      if (matched.isAdmin || matched.privilegeClassification === "Administrator") {
         return {
           valid: false,
           error: `A conta '${matched.name}' é administradora e está protegida pelo WinLab.`,
+          requiresLogoff,
+          requiresRestart,
+          requiresAppRestart
+        };
+      }
+      if (matched.privilegeClassification === "Unknown") {
+        return {
+          valid: false,
+          error:
+            matched.classificationDetail ??
+            `Não foi possível confirmar os privilégios da conta '${matched.name}' (classificação desconhecida).`,
           requiresLogoff,
           requiresRestart,
           requiresAppRestart

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 
@@ -7,183 +8,56 @@ using System.Security.Principal;
 
 namespace WinLab.Contracts.Scanning
 {
-    public class LocalAccountsScanner : ILocalAccountsScanner
+    public sealed record EnumeratedLocalUser(
+        string Name,
+        bool Enabled,
+        bool IsPrivilegeAdminFlag,
+        string? Sid);
+
+    public interface ILocalAccountsProbe
     {
-        public List<LocalUserDto> ScanAccounts()
+        bool IsWindowsPlatform { get; }
+        bool IsCurrentProcessElevated { get; }
+        string CurrentUserName { get; }
+        string? CurrentUserSid { get; }
+        string? LocalizedAdministratorsGroupName { get; }
+        AdminGroupMembersSnapshot QueryAdminGroupMembers();
+        (bool Succeeded, IReadOnlyList<EnumeratedLocalUser> Users, string? Error) EnumerateNormalUsers();
+        UserLocalGroupsSnapshot QueryUserLocalGroups(string userName);
+    }
+
+    internal sealed class WindowsLocalAccountsProbe : ILocalAccountsProbe
+    {
+        public bool IsWindowsPlatform => OperatingSystem.IsWindows();
+
+        public bool IsCurrentProcessElevated
         {
-            if (!OperatingSystem.IsWindows())
+            get
             {
-                return new List<LocalUserDto>
-                {
-                    new LocalUserDto
-                    {
-                        Name = Environment.UserName,
-                        Enabled = true,
-                        IsAdmin = true,
-                        Sid = "S-1-5-21-NON-WINDOWS"
-                    }
-                };
-            }
-
-            var adminSids = GetAdminMemberSids();
-            var users = new List<LocalUserDto>();
-
-            IntPtr bufPtr = IntPtr.Zero;
-            try
-            {
-                uint entriesRead = 0;
-                uint totalEntries = 0;
-                uint resumeHandle = 0;
-
-                // Nível 1: USER_INFO_1
-                uint status = NativeNetApi.NetUserEnum(
-                    null,
-                    1,
-                    NativeNetApi.FILTER_NORMAL_ACCOUNT,
-                    out bufPtr,
-                    NativeNetApi.MAX_PREFERRED_LENGTH,
-                    out entriesRead,
-                    out totalEntries,
-                    ref resumeHandle
-                );
-
-                if (status == 0 && bufPtr != IntPtr.Zero)
-                {
-                    int structSize = Marshal.SizeOf<NativeNetApi.USER_INFO_1>();
-                    for (int i = 0; i < entriesRead; i++)
-                    {
-                        IntPtr currentPtr = IntPtr.Add(bufPtr, i * structSize);
-                        var user = Marshal.PtrToStructure<NativeNetApi.USER_INFO_1>(currentPtr);
-
-                        string name = user.usri1_name ?? string.Empty;
-                        if (string.IsNullOrWhiteSpace(name)) continue;
-
-                        bool isEnabled = (user.usri1_flags & NativeNetApi.UF_ACCOUNTDISABLE) == 0;
-                        string? sid = ResolveUserSid(name);
-
-                        // Administrador se estiver no grupo Administradores ou se for a conta de RID 500
-                        bool isAdmin = (sid != null && adminSids.Contains(sid)) ||
-                                       (sid != null && sid.EndsWith("-500", StringComparison.OrdinalIgnoreCase));
-
-                        users.Add(new LocalUserDto
-                        {
-                            Name = name,
-                            Enabled = isEnabled,
-                            IsAdmin = isAdmin,
-                            Sid = sid
-                        });
-                    }
-                }
-            }
-            catch
-            {
-                // Fallback defensivo: conta atual
-                users.Add(new LocalUserDto
-                {
-                    Name = Environment.UserName,
-                    Enabled = true,
-                    IsAdmin = IsCurrentProcessElevated(),
-                    Sid = WindowsIdentity.GetCurrent().User?.Value
-                });
-            }
-            finally
-            {
-                if (bufPtr != IntPtr.Zero)
-                {
-                    NativeNetApi.NetApiBufferFree(bufPtr);
-                }
-            }
-
-            if (users.Count == 0)
-            {
-                users.Add(new LocalUserDto
-                {
-                    Name = Environment.UserName,
-                    Enabled = true,
-                    IsAdmin = true,
-                    Sid = "S-1-5-21-FALLBACK"
-                });
-            }
-
-            return users;
-        }
-
-        private HashSet<string> GetAdminMemberSids()
-        {
-            var adminSids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!OperatingSystem.IsWindows()) return adminSids;
-
-            IntPtr bufPtr = IntPtr.Zero;
-            try
-            {
-                // 1. Resolução do nome localizado do grupo a partir do SID canônico S-1-5-32-544
-                var adminGroupSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-                var adminGroupAccount = (NTAccount)adminGroupSid.Translate(typeof(NTAccount));
-                string groupFullName = adminGroupAccount.Value;
-                string groupName = groupFullName.Contains('\\') ? groupFullName.Split('\\')[1] : groupFullName;
-
-                uint entriesRead = 0;
-                uint totalEntries = 0;
-                IntPtr resumeHandle = IntPtr.Zero;
-
-                // Nível 2: LOCALGROUP_MEMBERS_INFO_2 (contém o ponteiro de SID lgrmi2_sid)
-                uint status = NativeNetApi.NetLocalGroupGetMembers(
-                    null,
-                    groupName,
-                    2,
-                    out bufPtr,
-                    NativeNetApi.MAX_PREFERRED_LENGTH,
-                    out entriesRead,
-                    out totalEntries,
-                    ref resumeHandle
-                );
-
-                if (status == 0 && bufPtr != IntPtr.Zero)
-                {
-                    int structSize = Marshal.SizeOf<NativeNetApi.LOCALGROUP_MEMBERS_INFO_2>();
-                    for (int i = 0; i < entriesRead; i++)
-                    {
-                        IntPtr currentPtr = IntPtr.Add(bufPtr, i * structSize);
-                        var member = Marshal.PtrToStructure<NativeNetApi.LOCALGROUP_MEMBERS_INFO_2>(currentPtr);
-                        if (member.lgrmi2_sid != IntPtr.Zero)
-                        {
-                            try
-                            {
-                                var sid = new SecurityIdentifier(member.lgrmi2_sid);
-                                adminSids.Add(sid.Value);
-                            }
-                            catch { }
-                        }
-                    }
-                }
-            }
-            catch { }
-            finally
-            {
-                if (bufPtr != IntPtr.Zero)
-                {
-                    NativeNetApi.NetApiBufferFree(bufPtr);
-                }
-            }
-
-            return adminSids;
-        }
-
-        private static string? ResolveUserSid(string userName)
-        {
-            if (!OperatingSystem.IsWindows()) return null;
-
-            try
-            {
-                var account = new NTAccount(Environment.MachineName, userName);
-                return ((SecurityIdentifier)account.Translate(typeof(SecurityIdentifier))).Value;
-            }
-            catch
-            {
+                if (!OperatingSystem.IsWindows()) return false;
                 try
                 {
-                    var account = new NTAccount(userName);
-                    return ((SecurityIdentifier)account.Translate(typeof(SecurityIdentifier))).Value;
+                    var identity = WindowsIdentity.GetCurrent();
+                    var principal = new WindowsPrincipal(identity);
+                    return principal.IsInRole(WindowsBuiltInRole.Administrator);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+
+        public string CurrentUserName => Environment.UserName;
+
+        public string? CurrentUserSid
+        {
+            get
+            {
+                if (!OperatingSystem.IsWindows()) return null;
+                try
+                {
+                    return WindowsIdentity.GetCurrent().User?.Value;
                 }
                 catch
                 {
@@ -192,73 +66,242 @@ namespace WinLab.Contracts.Scanning
             }
         }
 
-        private static bool IsCurrentProcessElevated()
+        public string? LocalizedAdministratorsGroupName
         {
-            if (!OperatingSystem.IsWindows()) return false;
-
-            try
+            get
             {
-                var identity = WindowsIdentity.GetCurrent();
-                var principal = new WindowsPrincipal(identity);
-                return principal.IsInRole(WindowsBuiltInRole.Administrator);
-            }
-            catch
-            {
-                return false;
+                WindowsAccountPrivilegeHelper.TryGetLocalizedAdministratorsGroupName(out string? groupName, out _);
+                return groupName;
             }
         }
 
-        private static class NativeNetApi
+        public AdminGroupMembersSnapshot QueryAdminGroupMembers()
         {
-            public const uint FILTER_NORMAL_ACCOUNT = 0x0002;
-            public const uint MAX_PREFERRED_LENGTH = 0xFFFFFFFF;
-            public const uint UF_ACCOUNTDISABLE = 0x0002;
+            return WindowsAccountPrivilegeHelper.QueryAdminGroupMembers();
+        }
 
-            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-            public struct USER_INFO_1
+        public (bool Succeeded, IReadOnlyList<EnumeratedLocalUser> Users, string? Error) EnumerateNormalUsers()
+        {
+            if (!OperatingSystem.IsWindows())
             {
-                public string usri1_name;
-                public string usri1_password;
-                public uint usri1_password_age;
-                public uint usri1_priv;
-                public string usri1_home_dir;
-                public string usri1_comment;
-                public uint usri1_flags;
-                public string usri1_script_path;
+                return (false, Array.Empty<EnumeratedLocalUser>(), "Plataforma não é Windows.");
             }
 
-            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-            public struct LOCALGROUP_MEMBERS_INFO_2
+            var users = new List<EnumeratedLocalUser>();
+            IntPtr bufPtr = IntPtr.Zero;
+
+            try
             {
-                public IntPtr lgrmi2_sid;
-                public int lgrmi2_sidusage;
-                public string lgrmi2_domainandname;
+                uint entriesRead = 0;
+                uint totalEntries = 0;
+                uint resumeHandle = 0;
+
+                uint status = WindowsAccountPrivilegeHelper.NativeNetApi.NetUserEnum(
+                    null,
+                    1,
+                    WindowsAccountPrivilegeHelper.NativeNetApi.FILTER_NORMAL_ACCOUNT,
+                    out bufPtr,
+                    WindowsAccountPrivilegeHelper.NativeNetApi.MAX_PREFERRED_LENGTH,
+                    out entriesRead,
+                    out totalEntries,
+                    ref resumeHandle
+                );
+
+                if (status != 0 || (entriesRead > 0 && bufPtr == IntPtr.Zero))
+                {
+                    return (false, Array.Empty<EnumeratedLocalUser>(), $"NetUserEnum falhou com código Win32 {status}.");
+                }
+
+                if (bufPtr != IntPtr.Zero)
+                {
+                    int structSize = Marshal.SizeOf<WindowsAccountPrivilegeHelper.NativeNetApi.USER_INFO_1>();
+                    for (int i = 0; i < entriesRead; i++)
+                    {
+                        IntPtr currentPtr = IntPtr.Add(bufPtr, i * structSize);
+                        var user = Marshal.PtrToStructure<WindowsAccountPrivilegeHelper.NativeNetApi.USER_INFO_1>(currentPtr);
+
+                        string name = user.usri1_name ?? string.Empty;
+                        if (string.IsNullOrWhiteSpace(name)) continue;
+
+                        bool isEnabled = (user.usri1_flags & WindowsAccountPrivilegeHelper.NativeNetApi.UF_ACCOUNTDISABLE) == 0;
+                        bool isPrivAdmin = user.usri1_priv == WindowsAccountPrivilegeHelper.NativeNetApi.USER_PRIV_ADMIN;
+                        string? sid = WindowsAccountPrivilegeHelper.ResolveUserSid(name);
+
+                        users.Add(new EnumeratedLocalUser(name, isEnabled, isPrivAdmin, sid));
+                    }
+                }
+
+                return (true, users, null);
+            }
+            catch (Exception ex)
+            {
+                return (false, Array.Empty<EnumeratedLocalUser>(), $"Exceção ao enumerar contas locais: {ex.Message}");
+            }
+            finally
+            {
+                if (bufPtr != IntPtr.Zero)
+                {
+                    WindowsAccountPrivilegeHelper.NativeNetApi.NetApiBufferFree(bufPtr);
+                }
+            }
+        }
+
+        public UserLocalGroupsSnapshot QueryUserLocalGroups(string userName)
+        {
+            return WindowsAccountPrivilegeHelper.QueryUserLocalGroups(userName);
+        }
+    }
+
+    public class LocalAccountsScanner : ILocalAccountsScanner
+    {
+        private readonly ILocalAccountsProbe _probe;
+
+        public LocalAccountsScanner() : this(new WindowsLocalAccountsProbe())
+        {
+        }
+
+        public LocalAccountsScanner(ILocalAccountsProbe probe)
+        {
+            _probe = probe ?? throw new ArgumentNullException(nameof(probe));
+        }
+
+        public List<LocalUserDto> ScanAccounts()
+        {
+            if (!_probe.IsWindowsPlatform)
+            {
+                return new List<LocalUserDto>
+                {
+                    new LocalUserDto
+                    {
+                        Name = _probe.CurrentUserName,
+                        Enabled = true,
+                        IsAdmin = true,
+                        PrivilegeClassification = AccountPrivilegeClassification.Administrator,
+                        ClassificationDetail = "Ambiente não-Windows (execução de desenvolvimento).",
+                        Sid = "S-1-5-21-NON-WINDOWS"
+                    }
+                };
             }
 
-            [DllImport("netapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-            public static extern uint NetUserEnum(
-                string? servername,
-                uint level,
-                uint filter,
-                out IntPtr bufptr,
-                uint prefmaxlen,
-                out uint entriesread,
-                out uint totalentries,
-                ref uint resume_handle);
+            var adminSnapshot = _probe.QueryAdminGroupMembers();
+            var adminSids = new HashSet<string>(adminSnapshot.MemberSids ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            string? adminGroupName = _probe.LocalizedAdministratorsGroupName;
 
-            [DllImport("netapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-            public static extern uint NetLocalGroupGetMembers(
-                string? servername,
-                string groupname,
-                uint level,
-                out IntPtr bufptr,
-                uint prefmaxlen,
-                out uint entriesread,
-                out uint totalentries,
-                ref IntPtr resumehandle);
+            var (enumSucceeded, rawUsers, enumError) = _probe.EnumerateNormalUsers();
+            var users = new List<LocalUserDto>();
 
-            [DllImport("netapi32.dll", SetLastError = true)]
-            public static extern uint NetApiBufferFree(IntPtr buffer);
+            if (!enumSucceeded)
+            {
+                bool isElevated = _probe.IsCurrentProcessElevated;
+                string? currentSid = _probe.CurrentUserSid;
+                bool isKnownAdmin = isElevated ||
+                                    (!string.IsNullOrWhiteSpace(currentSid) &&
+                                     (adminSids.Contains(currentSid) || currentSid.EndsWith("-500", StringComparison.OrdinalIgnoreCase)));
+
+                users.Add(new LocalUserDto
+                {
+                    Name = _probe.CurrentUserName,
+                    Enabled = true,
+                    IsAdmin = isKnownAdmin,
+                    PrivilegeClassification = isKnownAdmin
+                        ? AccountPrivilegeClassification.Administrator
+                        : AccountPrivilegeClassification.Unknown,
+                    ClassificationDetail = isKnownAdmin
+                        ? null
+                        : (enumError ?? "Falha ao enumerar contas locais; classificação de privilégio desconhecida."),
+                    Sid = currentSid
+                });
+                return users;
+            }
+
+            foreach (var raw in rawUsers)
+            {
+                if (string.IsNullOrWhiteSpace(raw.Name)) continue;
+
+                bool isRid500 = !string.IsNullOrWhiteSpace(raw.Sid) &&
+                                raw.Sid.EndsWith("-500", StringComparison.OrdinalIgnoreCase);
+                bool isDirectAdmin = !string.IsNullOrWhiteSpace(raw.Sid) &&
+                                     adminSids.Contains(raw.Sid);
+
+                var localGroups = _probe.QueryUserLocalGroups(raw.Name);
+                bool isIndirectAdmin = localGroups.Succeeded &&
+                                       !string.IsNullOrWhiteSpace(adminGroupName) &&
+                                       localGroups.GroupNames.Contains(adminGroupName, StringComparer.OrdinalIgnoreCase);
+
+                if (isRid500 || raw.IsPrivilegeAdminFlag || isDirectAdmin || isIndirectAdmin)
+                {
+                    users.Add(new LocalUserDto
+                    {
+                        Name = raw.Name,
+                        Enabled = raw.Enabled,
+                        IsAdmin = true,
+                        PrivilegeClassification = AccountPrivilegeClassification.Administrator,
+                        Sid = raw.Sid
+                    });
+                }
+                else if (string.IsNullOrWhiteSpace(raw.Sid))
+                {
+                    users.Add(new LocalUserDto
+                    {
+                        Name = raw.Name,
+                        Enabled = raw.Enabled,
+                        IsAdmin = false,
+                        PrivilegeClassification = AccountPrivilegeClassification.Unknown,
+                        ClassificationDetail = "Não foi possível resolver o SID da conta; classificação desconhecida.",
+                        Sid = null
+                    });
+                }
+                else if (!adminSnapshot.Succeeded)
+                {
+                    users.Add(new LocalUserDto
+                    {
+                        Name = raw.Name,
+                        Enabled = raw.Enabled,
+                        IsAdmin = false,
+                        PrivilegeClassification = AccountPrivilegeClassification.Unknown,
+                        ClassificationDetail = adminSnapshot.Error ?? "Falha ao consultar o grupo Administradores; conta não classificada como comum.",
+                        Sid = raw.Sid
+                    });
+                }
+                else if (adminSnapshot.HasNestedGroupMembers && !localGroups.Succeeded)
+                {
+                    users.Add(new LocalUserDto
+                    {
+                        Name = raw.Name,
+                        Enabled = raw.Enabled,
+                        IsAdmin = false,
+                        PrivilegeClassification = AccountPrivilegeClassification.Unknown,
+                        ClassificationDetail = localGroups.Error ?? "Grupo Administradores contém grupos aninhados e a associação indireta não pôde ser verificada.",
+                        Sid = raw.Sid
+                    });
+                }
+                else
+                {
+                    users.Add(new LocalUserDto
+                    {
+                        Name = raw.Name,
+                        Enabled = raw.Enabled,
+                        IsAdmin = false,
+                        PrivilegeClassification = AccountPrivilegeClassification.StandardUser,
+                        Sid = raw.Sid
+                    });
+                }
+            }
+
+            if (users.Count == 0)
+            {
+                users.Add(new LocalUserDto
+                {
+                    Name = _probe.CurrentUserName,
+                    Enabled = true,
+                    IsAdmin = false,
+                    PrivilegeClassification = AccountPrivilegeClassification.Unknown,
+                    ClassificationDetail = "Nenhuma conta local retornada na enumeração; elegibilidade desconhecida.",
+                    Sid = null
+                });
+            }
+
+            return users;
         }
     }
 }
