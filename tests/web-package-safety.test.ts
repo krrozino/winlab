@@ -33,6 +33,23 @@ import type { Config } from "../src/lib/types";
 
 const isWindows = process.platform === "win32";
 
+function getCleanWindowsPowerShellEnv(): NodeJS.ProcessEnv {
+  const systemRoot = process.env.SystemRoot || "C:\\Windows";
+  const ps51Modules = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules");
+  const rawModulePath = process.env.PSModulePath || "";
+  const filteredEntries = rawModulePath
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .filter((entry) => !/powershell\\7/i.test(entry) && !/program files\\powershell/i.test(entry));
+
+  const deduped = [ps51Modules, ...filteredEntries.filter((e) => e.toLowerCase() !== ps51Modules.toLowerCase())];
+  return {
+    ...process.env,
+    PSModulePath: deduped.join(";")
+  };
+}
+
 function runPowerShell(script: string): { status: number | null; stdout: string; stderr: string } {
   const dir = makeTempDir("winlab-ps-run-");
   const scriptPath = path.join(dir, "run.ps1");
@@ -42,7 +59,7 @@ function runPowerShell(script: string): { status: number | null; stdout: string;
     const result = spawnSync(
       "powershell.exe",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
-      { encoding: "utf8" }
+      { encoding: "utf8", env: getCleanWindowsPowerShellEnv() }
     );
     return {
       status: result.status,
@@ -143,8 +160,8 @@ test("SMB: preserva SYSTEM e Administradores, valida antes de mutar e isola past
   assert.match(script, /S-1-5-32-544/);
   assert.match(script, /S-1-5-11/);
   assert.match(script, /ReparsePoint/);
-  assert.match(script, /GetSecurityDescriptorSddlForm/);
-  assert.match(script, /SetSecurityDescriptorSddlForm/);
+  assert.match(script, /Assert-AppliedDirectoryAcl/);
+  assert.match(script, /\$smbMutationStarted = \$true/);
 
   if (!isWindows) return;
 
@@ -263,7 +280,7 @@ ${serverScript.replace(
     assert.match(adminStudentRes.stderr + adminStudentRes.stdout, /Conta administrativa nao pode ser usada/);
     assert.equal(existsSync(shareRoot), false);
 
-    // 2b) Diretório preexistente não gerenciado pelo WinLab deve ser rejeitado
+    // 2b) Para a beta, diretório preexistente deve ser rejeitado antes de qualquer mutação
     const unmanagedRoot = path.join(tempDir, "UnmanagedShare");
     mkdirSync(unmanagedRoot, { recursive: true });
     const unmanagedScript = generateShareServerScript({
@@ -272,10 +289,9 @@ ${serverScript.replace(
     }).replace(/^\uFEFF/, "");
     const unmanagedHarness = `
 $ErrorActionPreference = 'Stop'
-$env:ProgramData = ${psString(stateDir)}
 function Get-SmbServerConfiguration { param($ErrorAction) $null }
 function Get-SmbShare { param([string]$Name, $ErrorAction) $null }
-function New-SmbShare { throw 'Nao deveria criar share em pasta nao gerenciada' }
+function New-SmbShare { throw 'Nao deveria criar share em pasta preexistente' }
 ${unmanagedScript.replace(
   "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {",
   "if ($false) {"
@@ -283,7 +299,7 @@ ${unmanagedScript.replace(
 `;
     const unmanagedRes = runPowerShell(unmanagedHarness);
     assert.notEqual(unmanagedRes.status, 0);
-    assert.match(unmanagedRes.stderr + unmanagedRes.stdout, /nao gerenciado pelo WinLab/i);
+    assert.match(unmanagedRes.stderr + unmanagedRes.stdout, /diretorio raiz novo/i);
 
     // 3) Reparse point (NTFS Junction) deve ser bloqueado antes de qualquer mutação
     const targetDir = path.join(tempDir, "RealTarget");
@@ -324,6 +340,15 @@ function Write-Warning { param([Parameter(ValueFromRemainingArguments=$true)]$Ar
 function Get-SmbServerConfiguration { param($ErrorAction) $null }
 function Get-SmbShare { param([string]$Name, $ErrorAction) $null }
 function New-SmbShare { param($Name, $Path, $ChangeAccess, $FullAccess) [void]$script:eventOrder.Add('New-SmbShare') }
+function Get-SmbShareAccess {
+  param([string]$Name, $ErrorAction)
+  $adm = ([System.Security.Principal.SecurityIdentifier]'S-1-5-32-544').Translate([System.Security.Principal.NTAccount]).Value
+  $aut = ([System.Security.Principal.SecurityIdentifier]'S-1-5-11').Translate([System.Security.Principal.NTAccount]).Value
+  @(
+    [PSCustomObject]@{ AccountName = $adm; AccessRight = 'Full' },
+    [PSCustomObject]@{ AccountName = $aut; AccessRight = 'Change' }
+  )
+}
 function Remove-SmbShare { param($Name, [switch]$Force, $ErrorAction) }
 function Get-LocalGroup { param($SID, $ErrorAction) [PSCustomObject]@{ Name = 'Administrators'; SID = (New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')) } }
 function Get-LocalGroupMember { param($Group, $ErrorAction) @() }
@@ -400,62 +425,37 @@ $a2AclCheck = $script:capturedAcls[${psString(path.join(isolatedRoot, "Aluno02")
     assert.ok(aclReport.a2Rules.some((r: string) => r.startsWith("S-1-5-21-999999999-1-1-1002:Modify")));
     assert.ok(!aclReport.a2Rules.some((r: string) => r.includes("1001")));
 
-    // 4b) Migração insegura de modelo (per_student -> collective) em diretório gerenciado deve ser bloqueada
-    const migrationScript = generateShareServerScript({
+    // 4b) Compartilhamento SMB preexistente deve ser bloqueado na beta antes de mutar
+    const existingShareRoot = path.join(tempDir, "NewRootForExistingShare");
+    const existingShareScript = generateShareServerScript({
       ...plan,
-      model: "collective",
-      rootPath: isolatedRoot
+      rootPath: existingShareRoot
     }).replace(/^\uFEFF/, "");
-    const migrationHarness = `
+    const existingShareHarness = `
 $ErrorActionPreference = 'Stop'
-$env:ProgramData = ${psString(stateDir)}
 function Get-SmbServerConfiguration { param($ErrorAction) $null }
-function Get-SmbShare { param([string]$Name, $ErrorAction) $null }
-function New-SmbShare { throw 'Nao deveria migrar modelo' }
-${migrationScript.replace(
+function Get-SmbShare { param([string]$Name, $ErrorAction) [PSCustomObject]@{ Name = $Name; Path = 'C:\\Outro' } }
+function New-SmbShare { throw 'Nao deveria recriar share preexistente' }
+${existingShareScript.replace(
   "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {",
   "if ($false) {"
 )}
 `;
-    const migrationRes = runPowerShell(migrationHarness);
-    assert.notEqual(migrationRes.status, 0);
-    assert.match(migrationRes.stderr + migrationRes.stdout, /Migracao insegura de modelo SMB bloqueada/i);
+    const existingShareRes = runPowerShell(existingShareHarness);
+    assert.notEqual(existingShareRes.status, 0);
+    assert.match(existingShareRes.stderr + existingShareRes.stdout, /compartilhamento novo/i);
+    assert.equal(existsSync(existingShareRoot), false);
 
-    // 5) Falha intermediária em Aluno02 restaura e confirma ACL original de raiz e Aluno01, remove Aluno02 vazia
+    // 5) Falha intermediária em Aluno02 remove pastas recém-criadas (Aluno01 e raiz) e confirma limpeza
     const rollbackRoot = path.join(tempDir, "RollbackShare");
-    const preAluno01 = path.join(rollbackRoot, "Aluno01");
-    mkdirSync(preAluno01, { recursive: true });
-    writeFileSync(path.join(preAluno01, "prova.txt"), "dados existentes", "utf8");
-    const rbStateDir = path.join(tempDir, "WinLabRbState", "WinLab", "Shares");
-    mkdirSync(rbStateDir, { recursive: true });
-    writeFileSync(
-      path.join(rbStateDir, "Alunos.json"),
-      JSON.stringify({
-        schemaVersion: 1,
-        managedBy: "WinLab",
-        shareName: "Alunos",
-        rootPath: rollbackRoot,
-        model: "per_student",
-        students: ["Aluno01"]
-      }),
-      "utf8"
-    );
-
     const rollbackScript = generateShareServerScript({
       ...plan,
       rootPath: rollbackRoot
     }).replace(/^\uFEFF/, "");
     const rollbackHarness = `
 $ErrorActionPreference = 'Stop'
-$env:ProgramData = ${psString(path.join(tempDir, "WinLabRbState"))}
 function Write-Host { param([Parameter(ValueFromRemainingArguments=$true)]$Args) }
 function Write-Warning { param([Parameter(ValueFromRemainingArguments=$true)]$Args) }
-$markerSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-21-999999999-1-1-1555')
-$markerRule = New-Object System.Security.AccessControl.FileSystemAccessRule($markerSid, 'ReadAndExecute', 'None', 'None', 'Allow')
-$initA1 = Get-Acl -LiteralPath ${psString(preAluno01)}
-$initA1.AddAccessRule($markerRule)
-Set-Acl -LiteralPath ${psString(preAluno01)} -AclObject $initA1
-
 function Get-SmbServerConfiguration { param($ErrorAction) $null }
 function Get-SmbShare { param([string]$Name, $ErrorAction) $null }
 function New-SmbShare { throw 'Nao deveria criar share antes de finalizar ACLs' }
@@ -492,53 +492,54 @@ ${rollbackScript.replace(
 } catch {
   $caughtMessage = $_.Exception.Message
 }
-$afterA1 = Get-Acl -LiteralPath ${psString(preAluno01)}
-$hasMarker = @($afterA1.Access | Where-Object {
-  try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-21-999999999-1-1-1555' } catch { $false }
-}).Count -gt 0
 [PSCustomObject]@{
   caughtMessage = $caughtMessage
-  hasMarkerAfterRollback = $hasMarker
+  rootExists = Test-Path -LiteralPath ${psString(rollbackRoot)}
+  aluno01Exists = Test-Path -LiteralPath ${psString(path.join(rollbackRoot, "Aluno01"))}
   aluno02Exists = Test-Path -LiteralPath ${psString(path.join(rollbackRoot, "Aluno02"))}
-  provaExists = Test-Path -LiteralPath ${psString(path.join(preAluno01, "prova.txt"))}
 } | ConvertTo-Json
 `;
     const rbRes = runPowerShell(rollbackHarness);
     assert.equal(rbRes.status, 0, rbRes.stderr);
     const rbReport = JSON.parse(rbRes.stdout);
     assert.match(rbReport.caughtMessage, /restaurado e confirmado/i);
-    assert.equal(rbReport.hasMarkerAfterRollback, true, "Deve restaurar ACL original de Aluno01");
-    assert.equal(rbReport.aluno02Exists, false, "Deve remover subpasta vazia recém-criada em falha");
-    assert.equal(rbReport.provaExists, true, "Não deve apagar arquivos preexistentes");
+    assert.equal(rbReport.rootExists, false, "Deve remover raiz recém-criada em falha intermediária");
+    assert.equal(rbReport.aluno01Exists, false, "Deve remover subpasta Aluno01 recém-criada em falha intermediária");
+    assert.equal(rbReport.aluno02Exists, false, "Deve remover subpasta Aluno02 recém-criada em falha intermediária");
 
-    // 6) Diretório preexistente pertencente a conta não-administrativa estranha é bloqueado antes de mutar
-    const foreignRoot = path.join(tempDir, "ForeignShare");
-    const foreignSub = path.join(foreignRoot, "Aluno01");
-    mkdirSync(foreignSub, { recursive: true });
-    const foreignStateDir = path.join(tempDir, "WinLabForeignState", "WinLab", "Shares");
-    mkdirSync(foreignStateDir, { recursive: true });
-    writeFileSync(
-      path.join(foreignStateDir, "Alunos.json"),
-      JSON.stringify({
-        schemaVersion: 1,
-        managedBy: "WinLab",
-        shareName: "Alunos",
-        rootPath: foreignRoot,
-        model: "per_student",
-        students: ["Aluno01"]
-      }),
-      "utf8"
-    );
-    const foreignScript = generateShareServerScript({
+    // 6) Falha parcial de permissões SMB após iniciar mutação SMB aciona remoção do share e limpeza completa
+    const partialSmbRoot = path.join(tempDir, "PartialSmbShare");
+    const partialSmbScript = generateShareServerScript({
       ...plan,
-      rootPath: foreignRoot
+      rootPath: partialSmbRoot
     }).replace(/^\uFEFF/, "");
-    const foreignHarness = `
+    const partialSmbHarness = `
 $ErrorActionPreference = 'Stop'
-$env:ProgramData = ${psString(path.join(tempDir, "WinLabForeignState"))}
+$script:simShareExists = $false
+$script:removeShareCalled = $false
+function Write-Host { param([Parameter(ValueFromRemainingArguments=$true)]$Args) }
+function Write-Warning { param([Parameter(ValueFromRemainingArguments=$true)]$Args) }
 function Get-SmbServerConfiguration { param($ErrorAction) $null }
-function Get-SmbShare { param([string]$Name, $ErrorAction) $null }
-function New-SmbShare { throw 'Nao deveria criar share quando dono preexistente e estranho' }
+function Get-SmbShare {
+  param([string]$Name, $ErrorAction)
+  if ($script:simShareExists) { return [PSCustomObject]@{ Name = $Name; Path = ${psString(partialSmbRoot)} } }
+  return $null
+}
+function New-SmbShare {
+  param($Name, $Path, $ChangeAccess, $FullAccess)
+  $script:simShareExists = $true
+  # Simula criação parcial onde apenas FullAccess foi aplicado e ChangeAccess falhou
+}
+function Get-SmbShareAccess {
+  param([string]$Name, $ErrorAction)
+  $adm = ([System.Security.Principal.SecurityIdentifier]'S-1-5-32-544').Translate([System.Security.Principal.NTAccount]).Value
+  @([PSCustomObject]@{ AccountName = $adm; AccessRight = 'Full' })
+}
+function Remove-SmbShare {
+  param($Name, [switch]$Force, $ErrorAction)
+  $script:removeShareCalled = $true
+  $script:simShareExists = $false
+}
 function Get-LocalGroup { param($SID, $ErrorAction) [PSCustomObject]@{ Name = 'Administrators'; SID = (New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')) } }
 function Get-LocalGroupMember { param($Group, $ErrorAction) @() }
 function Get-LocalUser {
@@ -546,24 +547,42 @@ function Get-LocalUser {
   $rid = if ($Name -eq 'Aluno01') { '1001' } else { '1002' }
   [PSCustomObject]@{ Name = $Name; Enabled = $true; SID = (New-Object System.Security.Principal.SecurityIdentifier("S-1-5-21-999999999-1-1-" + $rid)) }
 }
-function Get-Acl {
-  param([string]$LiteralPath)
-  $real = Microsoft.PowerShell.Security\\Get-Acl -LiteralPath $LiteralPath
-  if ($LiteralPath -like '*Aluno01') {
-    $fake = New-Object System.Security.AccessControl.DirectorySecurity
-    $fake.SetSecurityDescriptorSddlForm('O:S-1-5-21-999999999-1-1-1999D:AI')
-    return $fake
+$isElevatedPs = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+function Set-Acl {
+  param([string]$LiteralPath, $AclObject)
+  if ($isElevatedPs) {
+    Microsoft.PowerShell.Security\\Set-Acl -LiteralPath $LiteralPath -AclObject $AclObject
+  } else {
+    $clone = New-Object System.Security.AccessControl.DirectorySecurity
+    $clone.SetSecurityDescriptorSddlForm($AclObject.GetSecurityDescriptorSddlForm('All'))
+    $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $clone.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    Microsoft.PowerShell.Security\\Set-Acl -LiteralPath $LiteralPath -AclObject $clone
   }
-  return $real
 }
-${foreignScript.replace(
+$caughtMessage = ''
+try {
+${partialSmbScript.replace(
   "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {",
   "if ($false) {"
 )}
+} catch {
+  $caughtMessage = $_.Exception.Message
+}
+[PSCustomObject]@{
+  caughtMessage = $caughtMessage
+  removeShareCalled = $script:removeShareCalled
+  shareStillExists = $script:simShareExists
+  rootExists = Test-Path -LiteralPath ${psString(partialSmbRoot)}
+} | ConvertTo-Json
 `;
-    const foreignRes = runPowerShell(foreignHarness);
-    assert.notEqual(foreignRes.status, 0);
-    assert.match(foreignRes.stderr + foreignRes.stdout, /Diretorio preexistente pertence a outra conta/i);
+    const partialSmbRes = runPowerShell(partialSmbHarness);
+    assert.equal(partialSmbRes.status, 0, partialSmbRes.stderr);
+    const partialSmbReport = JSON.parse(partialSmbRes.stdout);
+    assert.match(partialSmbReport.caughtMessage, /Validacao pos-SMB falhou.*restaurado e confirmado|restaurado e confirmado/i);
+    assert.equal(partialSmbReport.removeShareCalled, true, "Deve remover compartilhamento criado parcialmente");
+    assert.equal(partialSmbReport.shareStillExists, false);
+    assert.equal(partialSmbReport.rootExists, false, "Deve remover raiz recém-criada após falha SMB");
 
     // 7) Falha durante rollback não é silenciada e impede anúncio de recuperação completa
     const rbFailRoot = path.join(tempDir, "RollbackFailureShare");
@@ -573,12 +592,16 @@ ${foreignScript.replace(
     }).replace(/^\uFEFF/, "");
     const rbFailHarness = `
 $ErrorActionPreference = 'Stop'
-$env:ProgramData = ${psString(path.join(tempDir, "WinLabRbFailState"))}
+$script:simFailShare = $false
 function Write-Host { param([Parameter(ValueFromRemainingArguments=$true)]$Args) }
 function Write-Warning { param([Parameter(ValueFromRemainingArguments=$true)]$Args) }
 function Get-SmbServerConfiguration { param($ErrorAction) $null }
-function Get-SmbShare { param([string]$Name, $ErrorAction) $null }
-function New-SmbShare { param($Name, $Path, $ChangeAccess, $FullAccess) }
+function Get-SmbShare {
+  param([string]$Name, $ErrorAction)
+  if ($script:simFailShare) { return [PSCustomObject]@{ Name = $Name; Path = ${psString(rbFailRoot)} } }
+  return $null
+}
+function New-SmbShare { param($Name, $Path, $ChangeAccess, $FullAccess) $script:simFailShare = $true; throw 'Falha simulada apos registrar share' }
 function Remove-SmbShare { param($Name, [switch]$Force, $ErrorAction) throw 'Falha simulada ao remover share' }
 function Set-Content { param($LiteralPath, $Value, $Encoding) throw 'Falha simulada ao gravar estado' }
 function Get-LocalGroup { param($SID, $ErrorAction) [PSCustomObject]@{ Name = 'Administrators'; SID = (New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')) } }
