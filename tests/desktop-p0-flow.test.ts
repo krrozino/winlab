@@ -624,3 +624,32 @@ test("External drift detection surfaces warning banner and computes exact saved 
   assert.match(html, /Bloquear papel de parede/);
 });
 
+test("Account privilege classification: Unknown classification is excluded from eligible targets and blocked on apply", () => {
+  const users: LocalUserDto[] = [
+    ...SAMPLE_USERS,
+    {
+      name: "ContaIncerta",
+      enabled: true,
+      isAdmin: false,
+      privilegeClassification: "Unknown",
+      classificationDetail: "Falha ao consultar grupos administrativos.",
+      sid: "S-1-5-21-1000-1099"
+    }
+  ];
+
+  const eligible = getEligibleTargetUsers(users);
+  assert.equal(eligible.some((u) => u.sid === "S-1-5-21-1000-1099"), false);
+  assert.equal(eligible.some((u) => u.sid === "S-1-5-21-1000-1002"), true);
+
+  const policy = makePolicy({ id: "personalization.wallpaper", scope: "User" });
+  const txValidation = buildValidatedTransactionRequest({
+    pendingPolicies: { "personalization.wallpaper": true },
+    policies: [policy],
+    selectedUserSid: "S-1-5-21-1000-1099",
+    localUsers: users
+  });
+  assert.equal(txValidation.valid, false);
+  assert.match(txValidation.error ?? "", /grupos administrativos|privilégios/i);
+});
+
+
