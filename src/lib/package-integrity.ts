@@ -10,6 +10,7 @@ import {
   generateVerifyScript
 } from "./generator";
 import { generatePreflightScript } from "./preflight-script";
+import { cmdSafeLabel, withPsUtf8Bom } from "./powershell";
 import type { Config } from "./types";
 
 export const PACKAGE_MANIFEST_SCHEMA_VERSION = 1;
@@ -56,7 +57,7 @@ export async function sha256Text(content: string): Promise<string> {
 }
 
 export function generateVerifyPackageScript(): string {
-  return `#requires -version 5.1
+  return withPsUtf8Bom(`#requires -version 5.1
 [CmdletBinding()]
 param(
     [string]$PackageRoot = $PSScriptRoot
@@ -129,16 +130,26 @@ Write-Host ("Arquivos verificados: " + @($manifest.files).Count)
 if ($manifest.integrity.authenticity -eq "unsigned") {
     Write-Host "Nota: os hashes verificam integridade, não autenticidade/assinatura do pacote." -ForegroundColor Yellow
 }
-`;
+`);
 }
 
+export const CMD_EXIT_CODES = {
+  SUCCESS: 0,
+  EXECUTION_ERROR: 1,
+  INTEGRITY_FAILURE: 2,
+  VERIFICATION_FAILURE: 3,
+  ROLLBACK_INCOMPLETE: 4,
+  CANCELLED: 5
+} as const;
+
 export function generateLauncherCmdScript(config: Config): string {
-  const safeProfile = config.profileName.replace(/["&|<>^%\r\n]/g, "").trim() || "WinLab";
+  const safeProfile = cmdSafeLabel(config.profileName);
   return [
     "@echo off",
     "setlocal EnableExtensions",
     "chcp 65001 >nul 2>&1",
     `title WinLab - Configurar Computador (${safeProfile})`,
+    "rem Codigos de saida: 0=sucesso, 1=erro de execucao, 2=falha SHA-256, 3=falha verify.ps1, 5=cancelado",
     "echo ================================================================",
     `echo   WinLab - Configuracao Pos-Formatacao (${safeProfile})`,
     "echo ================================================================",
@@ -160,21 +171,17 @@ export function generateLauncherCmdScript(config: Config): string {
     "  exit /b 1",
     ")",
     "net session >nul 2>&1",
-    "if not %errorLevel%==0 (",
-    "  echo Solicitando permissao de Administrador do Windows ^(UAC^)...",
-    "  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Start-Process -FilePath '%~f0' -WorkingDirectory '%~dp0' -Verb RunAs\"",
-    "  exit /b %errorLevel%",
-    ")",
+    "if not %errorLevel%==0 goto :winlab_elevate",
     "echo [1/4] Verificando integridade SHA-256 do pacote...",
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0verify-package.ps1\"",
     "if not %errorLevel%==0 (",
     "  echo.",
     "  echo [BLOQUEADO] A verificacao de integridade do pacote falhou. Nenhuma alteracao foi feita.",
     "  pause",
-    "  exit /b 1",
+    "  exit /b 2",
     ")",
     "echo.",
-    "echo [2/4] Exibindo plano de configuracao (modo simulacao)...",
+    "echo [2/4] Exibindo plano de configuracao ^(modo simulacao^)...",
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0setup.ps1\"",
     "if not %errorLevel%==0 (",
     "  echo.",
@@ -183,12 +190,16 @@ export function generateLauncherCmdScript(config: Config): string {
     "  exit /b 1",
     ")",
     "echo.",
+    "set \"WINLAB_CONFIRM=\"",
     "set /p WINLAB_CONFIRM=\"Deseja aplicar esta configuracao neste computador agora? (S/N): \"",
-    "if /I not \"%WINLAB_CONFIRM%\"==\"S\" (",
+    "setlocal EnableDelayedExpansion",
+    "if /I not \"!WINLAB_CONFIRM!\"==\"S\" (",
+    "  endlocal",
     "  echo Operacao cancelada pelo operador. Nenhuma alteracao foi aplicada.",
     "  pause",
-    "  exit /b 0",
+    "  exit /b 5",
     ")",
+    "endlocal",
     "echo.",
     "echo [3/4] Aplicando configuracao e preservando baseline para reversao...",
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0setup.ps1\" -Apply",
@@ -200,52 +211,99 @@ export function generateLauncherCmdScript(config: Config): string {
     ")",
     "echo.",
     "echo [4/4] Verificando estado final aplicado...",
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0verify.ps1\"",
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0verify.ps1\" -PostApply",
+    "set \"WINLAB_EXIT=%errorLevel%\"",
+    "if not \"%WINLAB_EXIT%\"==\"0\" (",
+    "  echo.",
+    "  echo [ERRO] A verificacao final ^(verify.ps1^) falhou com codigo %WINLAB_EXIT%. A configuracao nao foi validada.",
+    "  pause",
+    "  exit /b 3",
+    ")",
     "echo.",
     "echo ================================================================",
     "echo   Concluido! Se solicitado acima, reinicie o computador ou",
     "echo   encerre a sessao da conta comum para efetivar todas as regras.",
     "echo ================================================================",
     "pause",
-    "exit /b 0"
+    "exit /b 0",
+    ":winlab_elevate",
+    "echo Solicitando permissao de Administrador do Windows ^(UAC^)...",
+    "set \"WINLAB_ELEVATE_SCRIPT=%~f0\"",
+    "set \"WINLAB_ELEVATE_DIR=%~dp0\"",
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"try { $p = Start-Process -FilePath $env:WINLAB_ELEVATE_SCRIPT -WorkingDirectory $env:WINLAB_ELEVATE_DIR -Verb RunAs -Wait -PassThru; exit $p.ExitCode } catch { exit 1 }\"",
+    "exit /b %errorLevel%"
   ].join("\r\n") + "\r\n";
 }
 
 export function generateRollbackCmdScript(config: Config): string {
-  const safeProfile = config.profileName.replace(/["&|<>^%\r\n]/g, "").trim() || "WinLab";
+  const safeProfile = cmdSafeLabel(config.profileName);
   return [
     "@echo off",
     "setlocal EnableExtensions",
     "chcp 65001 >nul 2>&1",
     `title WinLab - Reverter Configuracao (${safeProfile})`,
+    "rem Codigos de saida: 0=sucesso, 1=erro de execucao, 2=falha SHA-256, 4=rollback incompleto, 5=cancelado",
+    "if not \"%OS%\"==\"Windows_NT\" (",
+    "  echo [ERRO] Este pacote deve ser executado em um computador Windows.",
+    "  pause",
+    "  exit /b 1",
+    ")",
     "cd /d \"%~dp0\"",
     "if not exist \"%~dp0rollback.ps1\" (",
     "  echo [ERRO] Extraia todos os arquivos do pacote ZIP antes de executar Reverter-Configuracao.cmd.",
     "  pause",
     "  exit /b 1",
     ")",
-    "net session >nul 2>&1",
-    "if not %errorLevel%==0 (",
-    "  echo Solicitando permissao de Administrador do Windows ^(UAC^)...",
-    "  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Start-Process -FilePath '%~f0' -WorkingDirectory '%~dp0' -Verb RunAs\"",
-    "  exit /b %errorLevel%",
+    "if not exist \"%~dp0manifest.json\" (",
+    "  echo [ERRO] manifest.json nao encontrado. Extraia o pacote ZIP completo antes de continuar.",
+    "  pause",
+    "  exit /b 1",
     ")",
+    "net session >nul 2>&1",
+    "if not %errorLevel%==0 goto :winlab_elevate",
     "echo [1/2] Verificando integridade SHA-256 do pacote...",
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0verify-package.ps1\"",
     "if not %errorLevel%==0 (",
     "  echo [BLOQUEADO] Integridade do pacote invalida.",
     "  pause",
-    "  exit /b 1",
+    "  exit /b 2",
     ")",
+    "set \"WINLAB_RB=\"",
     "set /p WINLAB_RB=\"Confirma a reversao para o baseline anterior deste computador? (S/N): \"",
-    "if /I not \"%WINLAB_RB%\"==\"S\" (",
-    "  echo Operacao cancelada.",
+    "setlocal EnableDelayedExpansion",
+    "if /I not \"!WINLAB_RB!\"==\"S\" (",
+    "  endlocal",
+    "  echo Operacao cancelada pelo operador.",
     "  pause",
-    "  exit /b 0",
+    "  exit /b 5",
     ")",
+    "endlocal",
     "echo [2/2] Executando rollback.ps1 -Apply...",
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0rollback.ps1\" -Apply",
+    "set \"WINLAB_EXIT=%errorLevel%\"",
+    "if \"%WINLAB_EXIT%\"==\"4\" (",
+    "  echo.",
+    "  echo [ERRO] Rollback incompleto! Apenas parte das politicas foi revertida. Consulte as mensagens acima e C:\\ProgramData\\WinLab.",
+    "  pause",
+    "  exit /b 4",
+    ")",
+    "if not \"%WINLAB_EXIT%\"==\"0\" (",
+    "  echo.",
+    "  echo [ERRO] O rollback falhou ^(codigo %WINLAB_EXIT%^). Nenhuma conclusao foi confirmada.",
+    "  pause",
+    "  exit /b %WINLAB_EXIT%",
+    ")",
+    "echo.",
+    "echo ================================================================",
+    "echo   Rollback concluido com sucesso! Reinicie o computador.",
+    "echo ================================================================",
     "pause",
+    "exit /b 0",
+    ":winlab_elevate",
+    "echo Solicitando permissao de Administrador do Windows ^(UAC^)...",
+    "set \"WINLAB_ELEVATE_SCRIPT=%~f0\"",
+    "set \"WINLAB_ELEVATE_DIR=%~dp0\"",
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"try { $p = Start-Process -FilePath $env:WINLAB_ELEVATE_SCRIPT -WorkingDirectory $env:WINLAB_ELEVATE_DIR -Verb RunAs -Wait -PassThru; exit $p.ExitCode } catch { exit 1 }\"",
     "exit /b %errorLevel%"
   ].join("\r\n") + "\r\n";
 }
