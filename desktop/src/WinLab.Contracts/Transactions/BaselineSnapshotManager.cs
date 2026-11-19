@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using WinLab.Contracts.Policies;
 using WinLab.Contracts.RegistryServices;
 
@@ -37,6 +38,11 @@ namespace WinLab.Contracts.Transactions
                 if (needsUserHive)
                 {
                     hiveScope = _hiveManager.OpenUserHive(targetUserSid);
+                    if (hiveScope == null || !hiveScope.IsAvailable)
+                    {
+                        throw new InvalidOperationException(
+                            hiveScope?.ErrorMessage ?? $"Hive do usuário '{targetUserSid}' indisponível para captura de baseline.");
+                    }
                 }
 
                 foreach (var policy in policyList)
@@ -46,7 +52,13 @@ namespace WinLab.Contracts.Transactions
                         var (hive, subKey) = dwordPolicy.Scope == PolicyScope.Machine
                             ? (RegistryHiveType.LocalMachine, dwordPolicy.RelativeSubKeyPath)
                             : ResolveTargetKey(dwordPolicy.RelativeSubKeyPath, targetUserSid, hiveScope);
-                        var entry = CaptureEntry(dwordPolicy.PolicyId, hive, subKey, dwordPolicy.ValueName);
+                        var entry = CaptureEntry(
+                            dwordPolicy.PolicyId,
+                            dwordPolicy.Scope,
+                            hive,
+                            subKey,
+                            dwordPolicy.RelativeSubKeyPath,
+                            dwordPolicy.ValueName);
                         snapshot.Entries.Add(entry);
 
                         rollbackSteps.Add(CreateRollbackStep(entry));
@@ -56,7 +68,9 @@ namespace WinLab.Contracts.Transactions
                         // Chrome entry
                         var chromeEntry = CaptureEntry(
                             browserPolicy.PolicyId,
+                            PolicyScope.Machine,
                             RegistryHiveType.LocalMachine,
+                            browserPolicy.ChromeSubKey,
                             browserPolicy.ChromeSubKey,
                             browserPolicy.ChromeValueName);
                         snapshot.Entries.Add(chromeEntry);
@@ -65,7 +79,9 @@ namespace WinLab.Contracts.Transactions
                         // Edge entry
                         var edgeEntry = CaptureEntry(
                             browserPolicy.PolicyId,
+                            PolicyScope.Machine,
                             RegistryHiveType.LocalMachine,
+                            browserPolicy.EdgeSubKey,
                             browserPolicy.EdgeSubKey,
                             browserPolicy.EdgeValueName);
                         snapshot.Entries.Add(edgeEntry);
@@ -90,8 +106,10 @@ namespace WinLab.Contracts.Transactions
 
         private RegistryValueSnapshotDto CaptureEntry(
             string policyId,
+            PolicyScope scope,
             RegistryHiveType hive,
             string subKey,
+            string relativeSubKey,
             string valueName)
         {
             if (!_registry.KeyExists(hive, subKey))
@@ -99,8 +117,10 @@ namespace WinLab.Contracts.Transactions
                 return new RegistryValueSnapshotDto
                 {
                     PolicyId = policyId,
+                    Scope = scope,
                     Hive = hive.ToString(),
                     SubKey = subKey,
+                    RelativeSubKey = relativeSubKey,
                     ValueName = valueName,
                     State = BaselineValueState.KeyDoesNotExist,
                     ValueKind = null,
@@ -113,8 +133,10 @@ namespace WinLab.Contracts.Transactions
                 return new RegistryValueSnapshotDto
                 {
                     PolicyId = policyId,
+                    Scope = scope,
                     Hive = hive.ToString(),
                     SubKey = subKey,
+                    RelativeSubKey = relativeSubKey,
                     ValueName = valueName,
                     State = BaselineValueState.DoesNotExist,
                     ValueKind = null,
@@ -123,17 +145,35 @@ namespace WinLab.Contracts.Transactions
             }
 
             var valKind = _registry.GetValueKind(hive, subKey, valueName);
-            var val = _registry.GetValue(hive, subKey, valueName);
+            if (!valKind.HasValue)
+            {
+                throw new InvalidOperationException(
+                    $"Não foi possível determinar o tipo do valor de registro '{hive}\\{subKey}\\{valueName}' durante a captura de baseline.");
+            }
+
+            var val = CloneSnapshotValue(_registry.GetValue(hive, subKey, valueName));
 
             return new RegistryValueSnapshotDto
             {
                 PolicyId = policyId,
+                Scope = scope,
                 Hive = hive.ToString(),
                 SubKey = subKey,
+                RelativeSubKey = relativeSubKey,
                 ValueName = valueName,
                 State = BaselineValueState.Exists,
-                ValueKind = valKind?.ToString() ?? "DWord",
+                ValueKind = valKind.Value.ToString(),
                 OriginalValue = val
+            };
+        }
+
+        private static object? CloneSnapshotValue(object? value)
+        {
+            return value switch
+            {
+                byte[] bytes => bytes.ToArray(),
+                string[] strings => strings.ToArray(),
+                _ => value
             };
         }
 
@@ -144,12 +184,14 @@ namespace WinLab.Contracts.Transactions
                 return new RollbackStepDto
                 {
                     PolicyId = entry.PolicyId,
+                    Scope = entry.Scope,
                     Hive = entry.Hive,
                     SubKey = entry.SubKey,
+                    RelativeSubKey = entry.RelativeSubKey,
                     ValueName = entry.ValueName,
                     Operation = "RestoreValue",
-                    RestoreKind = entry.ValueKind ?? "DWord",
-                    RestoreValue = entry.OriginalValue,
+                    RestoreKind = entry.ValueKind,
+                    RestoreValue = CloneSnapshotValue(entry.OriginalValue),
                     Status = "Pending"
                 };
             }
@@ -158,8 +200,10 @@ namespace WinLab.Contracts.Transactions
             return new RollbackStepDto
             {
                 PolicyId = entry.PolicyId,
+                Scope = entry.Scope,
                 Hive = entry.Hive,
                 SubKey = entry.SubKey,
+                RelativeSubKey = entry.RelativeSubKey,
                 ValueName = entry.ValueName,
                 Operation = "DeleteValue",
                 RestoreKind = null,
@@ -168,23 +212,26 @@ namespace WinLab.Contracts.Transactions
             };
         }
 
-        private static (RegistryHiveType hive, string subKey) ResolveTargetKey(
+        public static (RegistryHiveType hive, string subKey) ResolveTargetKey(
             string relativeSubKey,
             string? targetUserSid,
             IUserHiveScope? hiveScope)
         {
+            string cleanRelative = (relativeSubKey ?? string.Empty).Trim('\\');
             if (string.IsNullOrWhiteSpace(targetUserSid))
             {
-                return (RegistryHiveType.CurrentUser, relativeSubKey.Trim('\\'));
+                return (RegistryHiveType.CurrentUser, cleanRelative);
             }
 
-            string root = hiveScope == null || string.IsNullOrWhiteSpace(hiveScope.RootPath) ? targetUserSid : hiveScope.RootPath;
+            string root = hiveScope == null || string.IsNullOrWhiteSpace(hiveScope.RootPath)
+                ? targetUserSid.Trim()
+                : hiveScope.RootPath.Trim();
             if (root.Equals("Software", StringComparison.OrdinalIgnoreCase))
             {
-                return (RegistryHiveType.CurrentUser, relativeSubKey.Trim('\\'));
+                return (RegistryHiveType.CurrentUser, cleanRelative);
             }
 
-            return (RegistryHiveType.Users, $@"{root}\{relativeSubKey.Trim('\\')}");
+            return (RegistryHiveType.Users, $@"{root}\{cleanRelative}");
         }
     }
 }

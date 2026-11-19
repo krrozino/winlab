@@ -48,11 +48,17 @@ namespace WinLab.Contracts.Transactions
         [JsonPropertyName("policyId")]
         public string PolicyId { get; set; } = string.Empty;
 
+        [JsonPropertyName("scope")]
+        public PolicyScope? Scope { get; set; }
+
         [JsonPropertyName("hive")]
         public string Hive { get; set; } = string.Empty; // "HKLM", "HKCU", "HKU"
 
         [JsonPropertyName("subKey")]
         public string SubKey { get; set; } = string.Empty;
+
+        [JsonPropertyName("relativeSubKey")]
+        public string? RelativeSubKey { get; set; }
 
         [JsonPropertyName("valueName")]
         public string ValueName { get; set; } = string.Empty;
@@ -117,6 +123,9 @@ namespace WinLab.Contracts.Transactions
         [JsonPropertyName("policyId")]
         public string PolicyId { get; set; } = string.Empty;
 
+        [JsonPropertyName("scope")]
+        public PolicyScope? Scope { get; set; }
+
         [JsonPropertyName("operation")]
         public string Operation { get; set; } = "DeleteValue"; // "RestoreValue" or "DeleteValue"
 
@@ -125,6 +134,9 @@ namespace WinLab.Contracts.Transactions
 
         [JsonPropertyName("subKey")]
         public string SubKey { get; set; } = string.Empty;
+
+        [JsonPropertyName("relativeSubKey")]
+        public string? RelativeSubKey { get; set; }
 
         [JsonPropertyName("valueName")]
         public string ValueName { get; set; } = string.Empty;

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Microsoft.Win32;
 using WinLab.Contracts.RegistryServices;
@@ -104,7 +105,7 @@ namespace WinLab.Executor.Services
                 var kind = key.GetValueKind(valueName);
                 return FromWin32Kind(kind);
             }
-            catch
+            catch (IOException)
             {
                 return null;
             }
@@ -137,15 +138,8 @@ namespace WinLab.Executor.Services
             using var key = baseKey.OpenSubKey(subKeyPath, writable: true);
             if (key != null)
             {
-                try
-                {
-                    key.DeleteValue(valueName, throwOnMissingValue: false);
-                    key.Flush();
-                }
-                catch
-                {
-                    // Ignore if missing
-                }
+                key.DeleteValue(valueName, throwOnMissingValue: false);
+                key.Flush();
             }
         }
 

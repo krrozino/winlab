@@ -105,6 +105,14 @@ namespace WinLab.Contracts
         public bool IsAppx { get; set; }
     }
 
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public enum AccountPrivilegeClassification
+    {
+        Unknown = 0,
+        StandardUser = 1,
+        Administrator = 2
+    }
+
     public class LocalUserDto
     {
         [JsonPropertyName("name")]
@@ -116,8 +124,29 @@ namespace WinLab.Contracts
         [JsonPropertyName("isAdmin")]
         public bool IsAdmin { get; set; }
 
+        [JsonPropertyName("privilegeClassification")]
+        public AccountPrivilegeClassification? PrivilegeClassification { get; set; }
+
+        [JsonPropertyName("classificationDetail")]
+        public string? ClassificationDetail { get; set; }
+
         [JsonPropertyName("sid")]
         public string? Sid { get; set; }
+
+        public AccountPrivilegeClassification GetEffectivePrivilegeClassification()
+        {
+            if (IsAdmin)
+            {
+                return AccountPrivilegeClassification.Administrator;
+            }
+
+            if (PrivilegeClassification.HasValue)
+            {
+                return PrivilegeClassification.Value;
+            }
+
+            return AccountPrivilegeClassification.StandardUser;
+        }
     }
 
     public class DiskInfoDto
