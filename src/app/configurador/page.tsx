@@ -601,14 +601,14 @@ export default function Home() {
               }
             >
               <option value="AuditOnly">Auditoria — não bloqueia ainda</option>
-              <option value="Enabled">Bloqueio ativo</option>
+              <option value="Enabled" disabled>Bloqueio ativo (indisponível nesta homologação)</option>
             </select>
           </label>
 
           <p className="notice">
             {config.enforcementMode === "AuditOnly"
               ? "Recomendado no primeiro teste: o Windows registra o que seria bloqueado sem interromper a aula."
-              : "Bloqueio real ativado. Use somente depois de validar a allowlist em um PC piloto."}
+              : "O perfil solicita bloqueio ativo. Selecione AuditOnly antes de aplicar nesta homologação."}
           </p>
         </section>
 

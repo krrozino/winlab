@@ -972,6 +972,9 @@ function Assert-WinLabAppLockerBaselineAvailable {
 }
 
 function Install-WinLabProfile {
+    if ($EnforcementMode -ne "AuditOnly") {
+        throw "Esta homologação aceita somente AppLocker AuditOnly. Selecione AuditOnly ou gere o pacote piloto."
+    }
     Assert-WinLabAppLockerBaselineAvailable
     Write-WinLabMachinePolicyNotice
     Ensure-Accounts

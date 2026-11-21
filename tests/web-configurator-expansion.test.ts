@@ -80,7 +80,7 @@ test("Web setup and rollback coordinate the machine AppLocker store with Desktop
     assert.match(script, /\$gate = Enter-WinLabAppLockerOperation/);
   }
   assert.match(setup, /\$gate = Enter-WinLabAppLockerOperation\s+try \{\s+Install-WinLabProfile/);
-  assert.match(setup, /function Install-WinLabProfile \{\s+Assert-WinLabAppLockerBaselineAvailable\s+Write-WinLabMachinePolicyNotice\s+Ensure-Accounts/);
+  assert.match(setup, /function Install-WinLabProfile \{\s+if \(\$EnforcementMode -ne "AuditOnly"\) \{\s+throw [^\n]+\s+\}\s+Assert-WinLabAppLockerBaselineAvailable\s+Write-WinLabMachinePolicyNotice\s+Ensure-Accounts/);
   assert.match(rollback, /\$gate = Enter-WinLabAppLockerOperation\s+try \{\s+Restore-AppLockerBaseline/);
   assert.match(generateVerifyScript(defaultConfig), /Write-WinLabMachinePolicyNotice/);
 });

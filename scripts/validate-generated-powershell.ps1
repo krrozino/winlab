@@ -131,7 +131,16 @@ if (-not $baselineFixture) {
         throw "A política institucional deveria impedir a aplicação Web."
     }
     catch {
-        if ($_.Exception.Message -notlike "Já existe política AppLocker*") { throw }
+        if ($_.Exception.Message -notlike "*AppLocker local ou efetiva*") { throw }
+    }
+
+    $EnforcementMode = "Enabled"
+    try {
+        Install-WinLabProfile
+        throw "Enabled should be rejected before any Web setup change."
+    }
+    catch {
+        if ($_.Exception.Message -notlike "*somente AppLocker AuditOnly*") { throw }
     }
 } $baselineFixture.FullName
 

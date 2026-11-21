@@ -448,11 +448,11 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                     onChange={(e) => updateField("enforcementMode", e.target.value as EnforcementMode)}
                   >
                     <option value="AuditOnly">Auditoria segura (Recomendado na 1ª máquina piloto)</option>
-                    <option value="Enabled">Bloqueio ativo (Após validar todos os programas da aula)</option>
+                    <option value="Enabled" disabled>Bloqueio ativo (indisponível nesta homologação)</option>
                   </select>
                 </label>
               </div>
-              <p className="muted">Para escolas, comece em auditoria. Teste os programas de aula e o acesso administrativo em um PC piloto antes de ativar o bloqueio.</p>
+              <p className="muted">O setup desta homologação exige AuditOnly. Teste os programas de aula e o acesso administrativo em uma VM Windows.</p>
             </div>
           )}
 
