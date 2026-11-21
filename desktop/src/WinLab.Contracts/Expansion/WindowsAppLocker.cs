@@ -149,9 +149,9 @@ public sealed class WindowsAppLocker(IWindowsScanner scanner) : IAppLockerAuditB
             $ProgressPreference = 'SilentlyContinue'
             [Console]::OutputEncoding = [Text.Encoding]::UTF8
             $PSModuleAutoloadingPreference = 'None'
-            Import-Module (Join-Path $PSHOME 'Modules\AppLocker\AppLocker.psd1')
-            Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1')
-            Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')
+            Import-Module ([IO.Path]::Combine($PSHOME, 'Modules\AppLocker\AppLocker.psd1'))
+            Import-Module ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1'))
+            Import-Module ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'))
             """;
         foreach (string argument in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
             Convert.ToBase64String(Encoding.Unicode.GetBytes(setup + "\n" + script)) })
