@@ -3,7 +3,8 @@ export function WindowsPolicyHelp() {
     <details className="web-policy-help">
       <summary>Compatibilidade com Windows e AppLocker</summary>
       <ul>
-        <li>Comece em auditoria numa máquina piloto. Esse modo registra as regras do AppLocker. As regras de navegador, personalização e leitura ou gravação de USB já valem após aplicar o perfil.</li>
+        <li>Use o pacote piloto em AuditOnly para registrar eventos do AppLocker. O perfil Web grava navegador, personalização e leitura ou gravação de USB no registro da conta restrita. Confira as políticas efetivas após aplicar e reiniciar. Políticas de máquina, como as do Desktop e de GPO, podem prevalecer.</li>
+        <li>O AppLocker é compartilhado pela máquina. Restaure a linha de base no Desktop antes de usar o setup ou a reversão Web de AppLocker.</li>
         <li>
           O AppLocker requer o serviço Application Identity e os comandos de administração. O Windows 11 e o Windows 10 2004 ou mais recente com KB5024351 admitem aplicação em todas as edições. Builds anteriores têm restrições de edição e gerenciamento.
           {" "}<a href="https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/applocker/requirements-to-use-applocker">Requisitos do AppLocker</a>

@@ -41,6 +41,59 @@ const clearBrowserPolicies = `function Clear-WinLabBrowserPolicies {
 }
 `;
 
+const appLockerCoexistence = `function Test-WinLabDesktopAppLockerState {
+    $machine = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $key = $machine.OpenSubKey("SOFTWARE\\WinLab\\PolicyExpansion")
+        if (-not $key) { return $false }
+        try { return $key.GetValueNames() -contains "apps" }
+        finally { $key.Dispose() }
+    }
+    finally { $machine.Dispose() }
+}
+
+function Enter-WinLabAppLockerOperation {
+    $gate = [Threading.Semaphore]::new(1, 1, "Global\\WinLab.PolicyExpansion")
+    if (-not $gate.WaitOne(0)) {
+        $gate.Dispose()
+        throw "Outra operação de política WinLab está em andamento. Tente novamente após sua conclusão."
+    }
+
+    try {
+        if (Test-WinLabDesktopAppLockerState) {
+            throw "O Desktop gerencia o AppLocker ou possui uma restauração pendente. Restaure a linha de base no Desktop antes de usar este pacote."
+        }
+        return $gate
+    }
+    catch {
+        [void]$gate.Release()
+        $gate.Dispose()
+        throw
+    }
+}
+`;
+
+const machinePolicyNotice = `function Write-WinLabMachinePolicyNotice {
+    $roots = @(
+        "Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Google\\Chrome",
+        "Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Edge",
+        "Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\RemovableStorageDevices"
+    )
+    foreach ($root in $roots) {
+        if (Test-Path -LiteralPath $root) {
+            $key = Get-Item -LiteralPath $root
+            try {
+                if ($key.ValueCount -gt 0 -or $key.SubKeyCount -gt 0) {
+                    Write-Warning "Política de máquina encontrada em $root. Ela pode prevalecer sobre o perfil por usuário. Confira a política efetiva no navegador ou no Windows."
+                }
+            }
+            finally { $key.Dispose() }
+        }
+    }
+}
+`;
+
 function commonHeader(config: Config, title: string, parameterBlock = "") {
   const renderedParameters = parameterBlock ? `${parameterBlock}\n\n` : "";
 
@@ -900,7 +953,27 @@ function Show-WinLabPlan {
     Write-Host "Para aplicar de verdade, execute novamente com -Apply." -ForegroundColor Yellow
 }
 
+${appLockerCoexistence}
+${machinePolicyNotice}
+function Assert-WinLabAppLockerBaselineAvailable {
+    $state = Get-WinLabState
+    if ($state -and $state.baselineAppLockerBackup) { return }
+
+    $policies = @((Get-AppLockerPolicy -Local -Xml), (Get-AppLockerPolicy -Effective -Xml))
+    foreach ($policy in $policies) {
+        [xml]$document = $policy
+        if ($document.DocumentElement.Name -ne "AppLockerPolicy") {
+            throw "Não foi possível confirmar a política AppLocker antes de aplicar."
+        }
+        if ($document.SelectSingleNode("/AppLockerPolicy/*[not(self::RuleCollection) or * or (@EnforcementMode and @EnforcementMode != 'NotConfigured')]")) {
+            throw "Já existe política AppLocker local ou efetiva. A instalação WinLab preserva essa política e foi interrompida."
+        }
+    }
+}
+
 function Install-WinLabProfile {
+    Assert-WinLabAppLockerBaselineAvailable
+    Write-WinLabMachinePolicyNotice
     Ensure-Accounts
 
     $baseline = Ensure-AppLockerBaseline
@@ -969,7 +1042,14 @@ if ($Apply) {
         Complete-DeferredUserPolicies
     }
     else {
-${options.confirmApply ? confirmStandaloneApply("Aplicar este perfil ao computador?", "        ") : ""}        Install-WinLabProfile
+${options.confirmApply ? confirmStandaloneApply("Aplicar este perfil ao computador?", "        ") : ""}        $gate = Enter-WinLabAppLockerOperation
+        try {
+            Install-WinLabProfile
+        }
+        finally {
+            [void]$gate.Release()
+            $gate.Dispose()
+        }
     }
 }
 else {
@@ -1092,6 +1172,7 @@ function Restore-RegistryBaseline {
     Write-Host "Baseline de registro restaurado a partir de $baselineDir" -ForegroundColor Green
 }
 
+${appLockerCoexistence}
 function Restore-AppLockerBaseline {
     param([Parameter(Mandatory=$true)]$State)
 
@@ -1126,6 +1207,7 @@ ${options.confirmApply ? confirmStandaloneApply("Reverter as políticas deste co
     $userPoliciesCleared = $false
     $registryRestored = $false
 
+    $gate = Enter-WinLabAppLockerOperation
     try {
         Restore-AppLockerBaseline -State $state
         $appLockerRestored = $true
@@ -1161,6 +1243,10 @@ ${options.confirmApply ? confirmStandaloneApply("Reverter as políticas deste co
             exit 4
         }
         throw
+    }
+    finally {
+        [void]$gate.Release()
+        $gate.Dispose()
     }
 }
 else {
@@ -1324,6 +1410,7 @@ ${appBlocks}
 $CustomAllowedPaths = ${psArray(config.customAllowedPaths)}
 $criticalFailures = 0
 
+${machinePolicyNotice}
 function Write-Check {
     param(
         [string]$Name,
@@ -1368,6 +1455,8 @@ Write-Check "Conta administrativa" $adminOk $(if ($admin) { "existe: $Admin" } e
 
 Write-Host ""
 Write-Host "=== Safety & Recovery ===" -ForegroundColor Cyan
+
+Write-WinLabMachinePolicyNotice
 
 $winLabRoot = "C:\\ProgramData\\WinLab"
 $statePath = Join-Path $winLabRoot "state.json"

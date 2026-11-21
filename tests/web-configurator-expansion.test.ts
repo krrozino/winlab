@@ -68,3 +68,19 @@ test("standalone scripts keep UTF-8 BOM and require explicit confirmation before
     assert.doesNotMatch(packaged.find((item) => item.name === name)!.content, /Digite S para confirmar/);
   }
 });
+
+test("Web setup and rollback coordinate the machine AppLocker store with Desktop", () => {
+  const setup = generateSetupScript(defaultConfig);
+  const rollback = generateRollbackScript(defaultConfig);
+  for (const script of [setup, rollback]) {
+    assert.match(script, /RegistryView\]::Registry64/);
+    assert.match(script, /OpenSubKey\("SOFTWARE\\WinLab\\PolicyExpansion"\)/);
+    assert.match(script, /GetValueNames\(\) -contains "apps"/);
+    assert.match(script, /Semaphore\]::new\(1, 1, "Global\\WinLab\.PolicyExpansion"\)/);
+    assert.match(script, /\$gate = Enter-WinLabAppLockerOperation/);
+  }
+  assert.match(setup, /\$gate = Enter-WinLabAppLockerOperation\s+try \{\s+Install-WinLabProfile/);
+  assert.match(setup, /function Install-WinLabProfile \{\s+Assert-WinLabAppLockerBaselineAvailable\s+Write-WinLabMachinePolicyNotice\s+Ensure-Accounts/);
+  assert.match(rollback, /\$gate = Enter-WinLabAppLockerOperation\s+try \{\s+Restore-AppLockerBaseline/);
+  assert.match(generateVerifyScript(defaultConfig), /Write-WinLabMachinePolicyNotice/);
+});
