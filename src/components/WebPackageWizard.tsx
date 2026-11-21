@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { BrowserSettings } from "./BrowserSettings";
+import { StandalonePowerShell } from "./StandalonePowerShell";
+import { WindowsPolicyHelp } from "./WindowsPolicyHelp";
 import { APP_CATALOG } from "@/lib/apps";
 import { parseConfigJson, serializeConfig } from "@/lib/config-io";
-import { generateSetupScript } from "@/lib/generator";
 import {
   DEFAULT_NETWORK_SHARE,
   NetworkShareModel,
@@ -17,8 +19,10 @@ import {
 import { buildWinLabPackageFiles, getBasePackageFiles, PackageFile } from "@/lib/package-integrity";
 import { getPreset, presets } from "@/lib/presets";
 import { getConfigReview } from "@/lib/review";
-import { AllowedAppId, BrowserUrlMode, Config, EnforcementMode, PresetId, ProfileCleanupMode } from "@/lib/types";
+import { AllowedAppId, Config, EnforcementMode, PresetId, ProfileCleanupMode } from "@/lib/types";
 import { getConfigErrors } from "@/lib/validation";
+import { customExecutablePathError } from "@/lib/security";
+import { downloadBlob } from "@/lib/web-download";
 import { createZip } from "@/lib/zip";
 
 interface WebPackageWizardProps {
@@ -34,21 +38,96 @@ const WIZARD_STEPS = [
   { number: 5, title: "Sistema e USB", summary: "Área de trabalho, ferramentas administrativas e pendrives" },
   { number: 6, title: "Rede e pasta SMB", summary: "Pasta coletiva ou pastas privadas por aluno" },
   { number: 7, title: "Revisão de impacto", summary: "Validação de segurança antes de gerar" },
-  { number: 8, title: "Gerar pacote ZIP", summary: "Baixar pacote auditável com Configurar-Computador.cmd" }
+  { number: 8, title: "Gerar pacote ZIP e scripts", summary: "Downloads para a máquina Windows" }
 ] as const;
 
-function downloadBlob(name: string, blob: Blob) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+const featuredApps: AllowedAppId[] = ["chrome", "edge", "word", "excel", "powerpoint", "powerbi"];
+const otherApps = (Object.keys(APP_CATALOG) as AllowedAppId[]).filter((id) => !featuredApps.includes(id));
+
+const browserModes = {
+  Unrestricted: "Sem filtro de sites",
+  BlockList: "Bloquear sites da lista com exceções",
+  AllowListOnly: "Permitir somente sites autorizados"
+};
+
+const maintenanceModes = {
+  Off: "Desativada",
+  ReportOnly: "Somente relatório",
+  Delete: "Limpeza com confirmação"
+};
+
+function selectedControls(controls: Array<[string, boolean]>) {
+  return controls.filter(([, enabled]) => enabled).map(([label]) => label).join(", ") || "nenhum";
+}
+
+function ChoiceReview({ config, network, onEdit }: {
+  config: Config;
+  network?: NetworkSharePlan;
+  onEdit: (step: number) => void;
+}) {
+  const sections = [
+    { step: 1, title: "Perfil", content: <p>{config.profileName} · AppLocker em {config.enforcementMode === "AuditOnly" ? "auditoria" : "bloqueio ativo"}</p> },
+    { step: 2, title: "Contas", content: <p>Conta restrita <strong>{config.studentUser}</strong> e administrador <strong>{config.adminUser}</strong>. {config.createAccounts ? "Criar ou ajustar no setup." : "Usar contas existentes."}</p> },
+    {
+      step: 3, title: "Aplicativos", content: <>
+        <p>{config.allowedApps.map((id) => APP_CATALOG[id].label).join(", ") || "Nenhum programa do catálogo selecionado."}</p>
+        {config.customAllowedPaths.length > 0 && <p>Personalizados · {config.customAllowedPaths.join(", ")}</p>}
+        <p>Bloqueios · {selectedControls([["Windows Installer (MSI)", config.blockInstallers], ["Microsoft Store", config.blockStoreApps]])}</p>
+      </>
+    },
+    {
+      step: 4, title: "Navegadores", content: <>
+        <p>{browserModes[config.browserUrlMode]}</p>
+        {config.browserUrlMode === "BlockList" && <p>Sites bloqueados · {config.blockedUrls.join(", ") || "nenhum"}</p>}
+        {config.browserUrlMode !== "Unrestricted" && <p>Sites autorizados · {config.allowedUrls.join(", ") || "nenhum"}</p>}
+        <p>Restrições · {selectedControls([
+          ["modo anônimo e InPrivate", config.blockChromeIncognito], ["convidado", config.blockChromeGuest],
+          ["novos perfis", config.blockChromeNewProfiles], ["salvar senhas", config.blockChromePasswordManager],
+          ["extensões fora da lista", config.blockChromeExtensions]
+        ])}</p>
+        {config.blockChromeExtensions && <>
+          <p>IDs autorizados no Chrome · {config.chromeAllowedExtensionIds?.join(", ") || "nenhum"}</p>
+          <p>IDs autorizados no Edge · {config.edgeAllowedExtensionIds?.join(", ") || "nenhum"}</p>
+        </>}
+      </>
+    },
+    {
+      step: 5, title: "Windows e USB", content: <>
+        <p>Bloqueios · {selectedControls([
+          ["papel de parede", config.blockWallpaper], ["ponteiro do mouse", config.blockMousePointers],
+          ["sons", config.blockSoundScheme], ["CMD", config.blockCmd], ["PowerShell", config.blockPowerShell],
+          ["Regedit", config.blockRegedit], ["leitura USB", config.blockUsbRead], ["gravação USB", config.blockUsbWrite],
+          ["execução USB", config.blockUsbExecute]
+        ])}</p>
+        <p>Manutenção · {maintenanceModes[config.profileCleanupMode]}{config.profileCleanupMode !== "Off" && ` após ${config.profileCleanupDays} dias de inatividade`}</p>
+      </>
+    },
+    {
+      step: 6, title: "Rede SMB beta", content: network ? <>
+        <p>{network.server} · {network.shareName} ({network.driveLetter}:) · {network.rootPath}</p>
+        <p>{network.model === "per_student" ? "Pastas individuais · " + (network.studentAccounts ?? []).join(", ") : "Pasta coletiva da turma"}</p>
+      </> : <p>Sem scripts SMB no ZIP.</p>
+    }
+  ];
+
+  return (
+    <div className="web-fields">
+      {sections.map(({ step, title, content }) => (
+        <section className="web-review-card" key={step}>
+          <div className="web-review-heading">
+            <h3>{title}</h3>
+            <button type="button" className="secondary" aria-label={"Editar " + title} onClick={() => onEdit(step)}>Editar</button>
+          </div>
+          {content}
+        </section>
+      ))}
+    </div>
+  );
 }
 
 export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
   const [step, setStep] = useState<number>(1);
-  const [activePreset, setActivePreset] = useState<PresetId | null>("microlins");
+  const [activePreset, setActivePreset] = useState<PresetId | null>(null);
   const [includeNetworkInZip, setIncludeNetworkInZip] = useState<boolean>(false);
   const [networkPlan, setNetworkPlan] = useState<NetworkSharePlan>({
     ...DEFAULT_NETWORK_SHARE,
@@ -56,7 +135,9 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
   });
   const [studentAccountsInput, setStudentAccountsInput] = useState<string>(config.studentUser || "Aluno");
   const [customPathInput, setCustomPathInput] = useState<string>("");
-  const [urlInput, setUrlInput] = useState<string>("");
+  const [customPathError, setCustomPathError] = useState("");
+  const profileFileInput = useRef<HTMLInputElement>(null);
+  const stepPanel = useRef<HTMLElement>(null);
   const [statusMessage, setStatusMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [showScriptPreview, setShowScriptPreview] = useState<boolean>(false);
@@ -85,8 +166,12 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
     [configErrors, networkErrors]
   );
 
-  const previewSetupScript = useMemo(() => generateSetupScript(config), [config]);
   const basePackageFiles = useMemo(() => getBasePackageFiles(config), [config]);
+
+  function goToStep(next: number) {
+    setStep(next);
+    window.requestAnimationFrame(() => stepPanel.current?.focus());
+  }
 
   function updateField<K extends keyof Config>(key: K, value: Config[K]) {
     setActivePreset(null);
@@ -114,26 +199,16 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
 
   function addCustomAllowedPath() {
     const trimmed = customPathInput.trim();
-    if (!trimmed) return;
-    if (!config.customAllowedPaths.includes(trimmed)) {
+    const error = customExecutablePathError(trimmed);
+    if (error) {
+      setCustomPathError(error);
+      return;
+    }
+    if (!config.customAllowedPaths.some((path) => path.toLowerCase() === trimmed.toLowerCase())) {
       updateField("customAllowedPaths", [...config.customAllowedPaths, trimmed]);
     }
     setCustomPathInput("");
-  }
-
-  function addUrlEntry() {
-    const trimmed = urlInput.trim();
-    if (!trimmed) return;
-    if (config.browserUrlMode === "AllowListOnly") {
-      if (!config.allowedUrls.includes(trimmed)) {
-        updateField("allowedUrls", [...config.allowedUrls, trimmed]);
-      }
-    } else {
-      if (!config.blockedUrls.includes(trimmed)) {
-        updateField("blockedUrls", [...config.blockedUrls, trimmed]);
-      }
-    }
-    setUrlInput("");
+    setCustomPathError("");
   }
 
   async function handleImportJson(file: File | undefined) {
@@ -143,6 +218,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
       setConfig(parsed);
       setActivePreset(null);
       setStudentAccountsInput(parsed.studentUser);
+      goToStep(7);
       setStatusMessage({ tone: "success", text: `Configuração "${parsed.profileName}" importada com sucesso.` });
     } catch (err) {
       setStatusMessage({
@@ -166,7 +242,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
         tone: "error",
         text: "Corrija os itens pendentes na revisão antes de gerar o pacote ZIP."
       });
-      setStep(7);
+      goToStep(7);
       return;
     }
 
@@ -188,7 +264,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
       downloadBlob(`winlab-pos-formatacao-${slug}.zip`, zipBlob);
       setStatusMessage({
         tone: "success",
-        text: `Pacote pós-formatação gerado com ${files.length} arquivos verificados por SHA-256! Copie para um pendrive e execute Configurar-Computador.cmd na máquina Windows.`
+        text: `Pacote pós-formatação gerado com ${files.length} arquivos e manifesto SHA-256. Extraia o ZIP completo antes de executar Configurar-Computador.cmd.`
       });
     } catch (err) {
       setStatusMessage({
@@ -200,10 +276,8 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
     }
   }
 
-  const appEntries = Object.entries(APP_CATALOG) as Array<[AllowedAppId, (typeof APP_CATALOG)[AllowedAppId]]>;
-
   return (
-    <main style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 20px 84px" }}>
+    <main className="web-wizard">
       {/* Cabeçalho institucional diferenciando WinLab Web vs WinLab Desktop */}
       <header
         style={{
@@ -256,32 +330,30 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
         </div>
       </header>
 
-      {/* Guia rápido: Web vs Desktop */}
-      <section
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-          gap: 14,
-          marginBottom: 24
-        }}
-      >
-        <div className="panel" style={{ padding: "14px 18px", margin: 0 }}>
-          <strong style={{ display: "block", fontSize: 14, marginBottom: 4 }}>
-            Quando usar este WinLab Web (.zip)?
-          </strong>
-          <span style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.5 }}>
-            Ideal logo após formatar uma bancada de máquinas: você gera um único pacote no navegador, leva no pendrive e aplica o padrão completo em cada estação.
-          </span>
+      <div className="web-profile-bar" aria-label="Ações do perfil">
+        <div>
+          <strong>{config.profileName || "Perfil sem nome"}</strong>
+          <p className="muted">Reutilize as escolhas deste perfil em outro computador.</p>
         </div>
-        <div className="panel" style={{ padding: "14px 18px", margin: 0 }}>
-          <strong style={{ display: "block", fontSize: 14, marginBottom: 4 }}>
-            Quando usar o WinLab Desktop (.exe)?
-          </strong>
-          <span style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.5 }}>
-            Ideal na rotina diária da máquina já instalada: lê o estado real do Windows sem abrir prompts desnecessários, alterna políticas por conta comum e desfaz mudanças em um clique.
-          </span>
+        <div className="web-actions">
+          <button type="button" className="secondary" onClick={() => profileFileInput.current?.click()}>
+            Importar perfil JSON
+          </button>
+          <input
+            ref={profileFileInput}
+            type="file"
+            accept=".json,application/json"
+            hidden
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              void handleImportJson(file);
+            }}
+          />
+          <button type="button" className="secondary" onClick={handleExportJson}>Exportar perfil JSON</button>
+          <button type="button" className="secondary" onClick={() => goToStep(7)}>Revisar escolhas</button>
         </div>
-      </section>
+      </div>
 
       {statusMessage && (
         <div
@@ -299,19 +371,10 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
         </div>
       )}
 
-      {/* Barra de etapas (1 a 8) */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "260px minmax(0, 1fr)",
-          gap: 22,
-          alignItems: "start"
-        }}
-      >
+      <div className="web-wizard-layout">
         <nav
           aria-label="Etapas do configurador pós-formatação"
-          className="panel"
-          style={{ padding: 12, margin: 0, display: "grid", gap: 6 }}
+          className="panel web-step-nav"
         >
           {WIZARD_STEPS.map((item) => {
             const isCurrent = step === item.number;
@@ -319,7 +382,8 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
               <button
                 key={item.number}
                 type="button"
-                onClick={() => setStep(item.number)}
+                onClick={() => goToStep(item.number)}
+                aria-current={isCurrent ? "step" : undefined}
                 style={{
                   textAlign: "left",
                   padding: "10px 12px",
@@ -333,7 +397,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                 <div style={{ fontWeight: 700, fontSize: 13 }}>
                   {item.number}. {item.title}
                 </div>
-                <small style={{ color: "var(--muted)", fontSize: 11.5, display: "block", marginTop: 2 }}>
+                <small className="web-step-summary">
                   {item.summary}
                 </small>
               </button>
@@ -341,7 +405,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
           })}
         </nav>
 
-        <section className="panel" style={{ margin: 0, padding: 24 }}>
+        <section className="panel web-step-panel" ref={stepPanel} tabIndex={-1} aria-label={WIZARD_STEPS[step - 1].title}>
           {/* ETAPA 1: AMBIENTE E PERFIL */}
           {step === 1 && (
             <div style={{ display: "grid", gap: 18 }}>
@@ -361,12 +425,13 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                     onClick={() => handleSelectPreset(preset.id)}
                   >
                     <strong>{preset.name}</strong>
+                    {preset.id === "school" && <small className="web-school-recommendation">Recomendado para escolas</small>}
                     <span>{preset.description}</span>
                   </button>
                 ))}
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 14 }}>
                 <label style={{ display: "grid", gap: 6, fontSize: 13 }}>
                   <span>Nome identificador deste perfil</span>
                   <input
@@ -387,6 +452,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                   </select>
                 </label>
               </div>
+              <p className="muted">Para escolas, comece em auditoria. Teste os programas de aula e o acesso administrativo em um PC piloto antes de ativar o bloqueio.</p>
             </div>
           )}
 
@@ -400,7 +466,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                 </p>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 14 }}>
                 <label style={{ display: "grid", gap: 6, fontSize: 13 }}>
                   <span>Nome da conta comum (restrita)</span>
                   <input
@@ -449,37 +515,29 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                 </p>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 10 }}>
-                {appEntries.map(([appId, info]) => {
-                  const checked = config.allowedApps.includes(appId);
-                  return (
-                    <label
-                      key={appId}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        padding: "10px 12px",
-                        borderRadius: 8,
-                        border: checked ? "1px solid var(--accent)" : "1px solid var(--border)",
-                        background: "var(--panel-2)",
-                        cursor: "pointer",
-                        fontSize: 13
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleAllowedApp(appId)}
-                      />
-                      <div>
-                        <strong style={{ display: "block" }}>{info.label}</strong>
-                        <small style={{ color: "var(--muted)" }}>{info.category}</small>
-                      </div>
-                    </label>
-                  );
-                })}
-              </div>
+              {([
+                ["Principais para escolas", featuredApps],
+                ["Outros aplicativos", otherApps]
+              ] as const).map(([title, apps]) => (
+                <fieldset className="web-setting-group" key={title}>
+                  <legend>{title}</legend>
+                  <div className="web-app-grid">
+                    {apps.map((id) => (
+                      <label className="web-checkbox web-app-choice" key={id}>
+                        <input type="checkbox" checked={config.allowedApps.includes(id)} onChange={() => toggleAllowedApp(id)} />
+                        <span>
+                          <strong>{APP_CATALOG[id].label}</strong>
+                          <small>{APP_CATALOG[id].category}</small>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ))}
+              <p className="muted">
+                Selecione os programas instalados para todos os usuários. O catálogo cobre os caminhos comuns do Office e do Power BI Desktop.
+                Para outra instalação, indique o executável em Aplicativos personalizados.
+              </p>
 
               <div style={{ display: "grid", gap: 10 }}>
                 <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}>
@@ -488,7 +546,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                     checked={config.blockInstallers}
                     onChange={(e) => updateField("blockInstallers", e.target.checked)}
                   />
-                  <span>Bloquear execução de instaladores avulsos na conta comum</span>
+                  <span>Bloquear pacotes do Windows Installer (MSI)</span>
                 </label>
                 <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}>
                   <input
@@ -496,141 +554,62 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                     checked={config.blockStoreApps}
                     onChange={(e) => updateField("blockStoreApps", e.target.checked)}
                   />
-                  <span>Bloquear instalação de jogos e aplicativos pela Microsoft Store</span>
+                  <span>Bloquear o aplicativo da Microsoft Store</span>
                 </label>
               </div>
 
-              <div style={{ display: "grid", gap: 8 }}>
-                <span style={{ fontSize: 13, fontWeight: 600 }}>Caminhos adicionais permitidos (opcional)</span>
-                <div style={{ display: "flex", gap: 8 }}>
+              <fieldset className="web-setting-group web-option-stack">
+                <legend>Aplicativos personalizados</legend>
+                <p className="muted">Informe um .exe instalado em uma pasta onde apenas administradores possam gravar, como <code>C:\Program Files\Curso\curso.exe</code>.</p>
+                <label htmlFor="custom-app-path">Caminho completo do executável</label>
+                <div className="web-field-actions">
                   <input
+                    id="custom-app-path"
                     type="text"
-                    placeholder="Ex.: C:\Program Files\MeuSistema\app.exe"
                     value={customPathInput}
-                    onChange={(e) => setCustomPathInput(e.target.value)}
-                    style={{ flex: 1 }}
+                    aria-invalid={Boolean(customPathError)}
+                    aria-describedby={customPathError ? "custom-app-path-error" : undefined}
+                    onChange={(event) => {
+                      setCustomPathInput(event.target.value);
+                      setCustomPathError("");
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addCustomAllowedPath();
+                      }
+                    }}
                   />
-                  <button type="button" className="secondary" onClick={addCustomAllowedPath}>
-                    Adicionar
-                  </button>
+                  <button type="button" className="secondary" onClick={addCustomAllowedPath}>Adicionar</button>
                 </div>
+                {customPathError && <small id="custom-app-path-error" role="alert">{customPathError}</small>}
                 {config.customAllowedPaths.length > 0 && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {config.customAllowedPaths.map((p) => (
-                      <span
-                        key={p}
-                        style={{
-                          padding: "4px 10px",
-                          borderRadius: 999,
-                          background: "var(--panel-2)",
-                          border: "1px solid var(--border)",
-                          fontSize: 12
-                        }}
-                      >
-                        {p}{" "}
+                  <ul className="web-rule-list">
+                    {config.customAllowedPaths.map((path, index) => (
+                      <li key={index}>
+                        <span>{path}{customExecutablePathError(path) && <small> · Revise este caminho</small>}</span>
                         <button
                           type="button"
-                          onClick={() =>
-                            updateField(
-                              "customAllowedPaths",
-                              config.customAllowedPaths.filter((item) => item !== p)
-                            )
-                          }
-                          style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}
+                          className="secondary"
+                          aria-label={"Remover " + path}
+                          onClick={() => updateField("customAllowedPaths", config.customAllowedPaths.filter((_, itemIndex) => itemIndex !== index))}
                         >
-                          ×
+                          Remover
                         </button>
-                      </span>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
                 )}
-              </div>
+              </fieldset>
+              <WindowsPolicyHelp />
             </div>
           )}
 
           {/* ETAPA 4: INTERNET E NAVEGADORES */}
           {step === 4 && (
-            <div style={{ display: "grid", gap: 18 }}>
-              <div>
-                <h2 style={{ margin: "0 0 6px" }}>4. Internet e navegadores (Chrome e Edge)</h2>
-                <p style={{ color: "var(--muted)", margin: 0, fontSize: 14 }}>
-                  Evite senhas salvas em máquinas públicas, desative janelas anônimas e configure filtros de sites quando necessário.
-                </p>
-              </div>
-
-              <div style={{ display: "grid", gap: 10 }}>
-                <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}>
-                  <input
-                    type="checkbox"
-                    checked={config.blockChromeIncognito}
-                    onChange={(e) => updateField("blockChromeIncognito", e.target.checked)}
-                  />
-                  <span>Bloquear aba anônima (Chrome) e janela InPrivate (Edge)</span>
-                </label>
-                <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}>
-                  <input
-                    type="checkbox"
-                    checked={config.blockChromeGuest}
-                    onChange={(e) => updateField("blockChromeGuest", e.target.checked)}
-                  />
-                  <span>Bloquear modo visitante / convidado nos navegadores</span>
-                </label>
-                <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}>
-                  <input
-                    type="checkbox"
-                    checked={config.blockChromePasswordManager}
-                    onChange={(e) => updateField("blockChromePasswordManager", e.target.checked)}
-                  />
-                  <span>Impedir salvamento de senhas nos navegadores compartilhados</span>
-                </label>
-                <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}>
-                  <input
-                    type="checkbox"
-                    checked={config.blockChromeExtensions}
-                    onChange={(e) => updateField("blockChromeExtensions", e.target.checked)}
-                  />
-                  <span>Bloquear instalação manual de extensões</span>
-                </label>
-                <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}>
-                  <input
-                    type="checkbox"
-                    checked={config.blockChromeNewProfiles}
-                    onChange={(e) => updateField("blockChromeNewProfiles", e.target.checked)}
-                  />
-                  <span>Impedir criação de novos perfis paralelos no navegador</span>
-                </label>
-              </div>
-
-              <div style={{ display: "grid", gap: 10 }}>
-                <label style={{ display: "grid", gap: 6, fontSize: 13 }}>
-                  <span>Modo de controle de endereços web (URLs)</span>
-                  <select
-                    value={config.browserUrlMode}
-                    onChange={(e) => updateField("browserUrlMode", e.target.value as BrowserUrlMode)}
-                  >
-                    <option value="Unrestricted">Acesso livre à web</option>
-                    <option value="BlockList">Bloquear sites específicos da lista</option>
-                    <option value="AllowListOnly">Permitir somente sites autorizados (Modo restrito / prova)</option>
-                  </select>
-                </label>
-
-                {config.browserUrlMode !== "Unrestricted" && (
-                  <div style={{ display: "grid", gap: 8 }}>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <input
-                        type="text"
-                        placeholder="Ex.: redesocial.com ou portal.escola.edu.br"
-                        value={urlInput}
-                        onChange={(e) => setUrlInput(e.target.value)}
-                        style={{ flex: 1 }}
-                      />
-                      <button type="button" className="secondary" onClick={addUrlEntry}>
-                        Adicionar domínio
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
+            <div className="web-option-stack">
+              <h2>4. Internet e navegadores</h2>
+              <BrowserSettings config={config} onChange={updateField} />
             </div>
           )}
 
@@ -696,10 +675,18 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                 <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}>
                   <input
                     type="checkbox"
+                    checked={config.blockUsbRead}
+                    onChange={(e) => updateField("blockUsbRead", e.target.checked)}
+                  />
+                  <span>Bloquear leitura de arquivos em discos removíveis</span>
+                </label>
+                <label className="web-checkbox">
+                  <input
+                    type="checkbox"
                     checked={config.blockUsbWrite}
                     onChange={(e) => updateField("blockUsbWrite", e.target.checked)}
                   />
-                  <span>Bloquear gravação de arquivos em pendrives USB (mantém leitura, teclado e mouse)</span>
+                  <span>Bloquear gravação de arquivos em discos removíveis</span>
                 </label>
                 <label style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13.5 }}>
                   <input
@@ -707,11 +694,11 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                     checked={config.blockUsbExecute}
                     onChange={(e) => updateField("blockUsbExecute", e.target.checked)}
                   />
-                  <span>Bloquear execução de programas direto do pendrive USB</span>
+                  <span>Bloquear execução de programas em discos removíveis (AppLocker)</span>
                 </label>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 14 }}>
                 <label style={{ display: "grid", gap: 6, fontSize: 13 }}>
                   <span>Manutenção de perfis antigos no disco</span>
                   <select
@@ -724,6 +711,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                   </select>
                 </label>
               </div>
+              <WindowsPolicyHelp />
             </div>
           )}
 
@@ -733,7 +721,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
               <div>
                 <h2 style={{ margin: "0 0 6px" }}>6. Rede local e pasta compartilhada (SMB)</h2>
                 <p style={{ color: "var(--muted)", margin: 0, fontSize: 14 }}>
-                  Opcionalmente, inclua no pacote os scripts verificados para criar a pasta no computador servidor e mapear a unidade nas estações — sem ativar SMB1 nem acesso anônimo.
+                  SMB beta. Escolha um diretório e um compartilhamento novos no servidor. O script interrompe a configuração se qualquer um deles já existir. A pasta exige contas autenticadas e usa SMB moderno.
                 </p>
               </div>
 
@@ -748,7 +736,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
 
               {includeNetworkInZip && (
                 <div style={{ display: "grid", gap: 16 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 250px), 1fr))", gap: 12 }}>
                     <button
                       type="button"
                       onClick={() => setNetworkPlan({ ...networkPlan, model: "collective" as NetworkShareModel })}
@@ -798,7 +786,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                     </button>
                   </div>
 
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 210px), 1fr))", gap: 12 }}>
                     <label style={{ display: "grid", gap: 6, fontSize: 13 }}>
                       <span>Nome ou IP do computador servidor</span>
                       <input
@@ -899,9 +887,11 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                     fontSize: 13.5
                   }}
                 >
-                  Configuração validada sem conflitos de segurança. A conta <strong>{config.adminUser}</strong> permanece protegida e separada da conta restrita <strong>{config.studentUser}</strong>.
+Os campos passaram na validação. Confira a configuração abaixo e teste em uma máquina piloto.
                 </div>
               )}
+
+              <ChoiceReview config={config} network={includeNetworkInZip ? effectiveNetworkPlan : undefined} onEdit={goToStep} />
 
               <div style={{ display: "grid", gap: 10 }}>
                 {reviewItems.map((item, index) => (
@@ -916,27 +906,13 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                     }}
                   >
                     <strong style={{ color: item.level === "warning" ? "#f4b740" : "#36c986" }}>
-                      {item.level === "warning" ? "Atenção: " : "Verificado: "}
+                      {item.level === "warning" ? "Atenção · " : ""}
                     </strong>
                     {item.text}
                   </div>
                 ))}
               </div>
 
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button type="button" className="secondary" onClick={handleExportJson}>
-                  Salvar perfil em JSON
-                </button>
-                <label className="secondary" style={{ padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13, border: "1px solid var(--border)" }}>
-                  Importar perfil JSON
-                  <input
-                    type="file"
-                    accept=".json,application/json"
-                    style={{ display: "none" }}
-                    onChange={(e) => void handleImportJson(e.target.files?.[0])}
-                  />
-                </label>
-              </div>
             </div>
           )}
 
@@ -944,9 +920,9 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
           {step === 8 && (
             <div style={{ display: "grid", gap: 18 }}>
               <div>
-                <h2 style={{ margin: "0 0 6px" }}>8. Gerar pacote pós-formatação (.zip)</h2>
+                <h2 style={{ margin: "0 0 6px" }}>8. Baixar pacote ou scripts</h2>
                 <p style={{ color: "var(--muted)", margin: 0, fontSize: 14 }}>
-                  O pacote inclui atalho executável com elevação automática (UAC), manifesto SHA-256 contra corrupção de pendrive e reversão completa.
+                  O ZIP inclui atalhos para configurar e reverter, arquivos do perfil e um manifesto SHA-256 para conferir a integridade na execução.
                 </p>
               </div>
 
@@ -991,11 +967,13 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                   <ol style={{ margin: "6px 0 0", paddingLeft: 20, color: "var(--muted)" }}>
                     <li>Copie o arquivo <code>.zip</code> para um pendrive e extraia todos os arquivos em uma pasta na máquina Windows.</li>
                     <li>Clique duas vezes em <code>Configurar-Computador.cmd</code> e confirme a solicitação de Administrador do Windows.</li>
-                    <li>O script conferirá automaticamente a integridade SHA-256 de todos os arquivos, mostrará o resumo e pedirá sua confirmação.</li>
-                    <li>Se precisar desfazer a configuração no futuro, basta executar <code>Reverter-Configuracao.cmd</code>.</li>
+                    <li>Confira o resultado da verificação SHA-256 e a prévia. Digite <kbd>S</kbd> para confirmar a aplicação.</li>
+                    <li>Para reverter na mesma máquina, use <code>Reverter-Configuracao.cmd</code> com os backups criados pelo setup.</li>
                   </ol>
                 </div>
               </div>
+
+              <StandalonePowerShell config={config} disabled={configErrors.length > 0} />
 
               <div>
                 <strong style={{ fontSize: 13, display: "block", marginBottom: 8 }}>
@@ -1032,7 +1010,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                   onClick={() => setShowScriptPreview((prev) => !prev)}
                   style={{ fontSize: 13 }}
                 >
-                  {showScriptPreview ? "Ocultar código PowerShell gerado" : "Inspecionar setup.ps1 auditável"}
+                  {showScriptPreview ? "Ocultar código PowerShell" : "Ver código do setup.ps1 do ZIP"}
                 </button>
                 {showScriptPreview && (
                   <pre
@@ -1047,7 +1025,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
                       fontSize: 12
                     }}
                   >
-                    {previewSetupScript}
+                    {basePackageFiles.find((file) => file.name === "setup.ps1")?.content}
                   </pre>
                 )}
               </div>
@@ -1056,20 +1034,13 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
 
           {/* Navegação inferior entre etapas */}
           <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginTop: 24,
-              paddingTop: 18,
-              borderTop: "1px solid var(--border)"
-            }}
+            className="web-step-footer"
           >
             <button
               type="button"
               className="secondary"
               disabled={step === 1}
-              onClick={() => setStep((s) => Math.max(1, s - 1))}
+              onClick={() => goToStep(step - 1)}
             >
               ← Etapa anterior
             </button>
@@ -1079,7 +1050,7 @@ export function WebPackageWizard({ config, setConfig }: WebPackageWizardProps) {
             {step < WIZARD_STEPS.length ? (
               <button
                 type="button"
-                onClick={() => setStep((s) => Math.min(WIZARD_STEPS.length, s + 1))}
+                onClick={() => goToStep(step + 1)}
                 style={{
                   padding: "9px 18px",
                   borderRadius: 8,
