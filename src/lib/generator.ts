@@ -1,14 +1,45 @@
 import { APP_CATALOG } from "./apps";
+import { isBrowserExtensionId, normalizeBrowserSiteFilter } from "./browser-policy";
 import { serializeConfig } from "./config-io";
 import { psArray, psBool, psBoundedInt, psCommentText, psEnum, psString, withPsUtf8Bom } from "./powershell";
+import { customExecutablePathError } from "./security";
 import { Config } from "./types";
 
 function getAllowedPaths(config: Config) {
-  return [
+  const paths = [
     ...config.allowedApps.flatMap((app) => APP_CATALOG[app].paths),
-    ...config.customAllowedPaths.map((path) => path.trim()).filter(Boolean)
+    ...config.customAllowedPaths.map((path) => path.trim()).filter((path) => !customExecutablePathError(path))
   ];
+  // AppLocker uses one variable for both Program Files trees.
+  return [...new Set(paths.map((path) => path.replace(/^%programfiles\(x86\)%/i, "%PROGRAMFILES%")))];
 }
+
+type ScriptOptions = { confirmApply?: boolean };
+
+function confirmStandaloneApply(action: string, indent: string): string {
+  return `${indent}if ((Read-Host "${action} Digite S para confirmar") -ne "S") {
+${indent}    Write-Host "Operação cancelada. Nenhuma alteração foi aplicada."
+${indent}    return
+${indent}}
+
+`;
+}
+
+const clearBrowserPolicies = `function Clear-WinLabBrowserPolicies {
+    param([string]$Sid)
+
+    $chrome = "Registry::HKEY_USERS\\$Sid\\Software\\Policies\\Google\\Chrome"
+    $edge = "Registry::HKEY_USERS\\$Sid\\Software\\Policies\\Microsoft\\Edge"
+    Remove-ItemProperty -Path $chrome -Name BrowserAddPersonEnabled, IncognitoModeAvailability -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $edge -Name BrowserAddProfileEnabled, InPrivateModeAvailability -ErrorAction SilentlyContinue
+    foreach ($base in @($chrome, $edge)) {
+        Remove-ItemProperty -Path $base -Name BrowserGuestModeEnabled, PasswordManagerEnabled -ErrorAction SilentlyContinue
+        foreach ($name in @("ExtensionInstallBlocklist", "ExtensionInstallAllowlist", "URLBlocklist", "URLAllowlist")) {
+            Remove-Item -Path (Join-Path $base $name) -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+`;
 
 function commonHeader(config: Config, title: string, parameterBlock = "") {
   const renderedParameters = parameterBlock ? `${parameterBlock}\n\n` : "";
@@ -133,7 +164,7 @@ function Invoke-WithUserHive {
 `);
 }
 
-export function generateSetupScript(config: Config): string {
+export function generateSetupScript(config: Config, options: ScriptOptions = {}): string {
   const allowedPaths = getAllowedPaths(config);
   const enforcement = psEnum(config.enforcementMode, ["AuditOnly", "Enabled"] as const, "enforcementMode");
   const browserUrlMode = psEnum(
@@ -156,10 +187,12 @@ $BlockChromeGuest = ${psBool(config.blockChromeGuest)}
 $BlockChromeNewProfiles = ${psBool(config.blockChromeNewProfiles)}
 $BlockChromeIncognito = ${psBool(config.blockChromeIncognito)}
 $BlockChromePasswordManager = ${psBool(config.blockChromePasswordManager)}
+$ChromeAllowedExtensionIds = ${psArray([...new Set((config.chromeAllowedExtensionIds ?? []).filter(isBrowserExtensionId))])}
+$EdgeAllowedExtensionIds = ${psArray([...new Set((config.edgeAllowedExtensionIds ?? []).filter(isBrowserExtensionId))])}
 
 $BrowserUrlMode = "${browserUrlMode}"
-$BlockedUrls = ${psArray(config.blockedUrls)}
-$AllowedUrls = ${psArray(config.allowedUrls)}
+$BlockedUrls = ${psArray([...new Set(config.blockedUrls.map(normalizeBrowserSiteFilter))])}
+$AllowedUrls = ${psArray([...new Set(config.allowedUrls.map(normalizeBrowserSiteFilter))])}
 
 $BlockUsbRead = ${psBool(config.blockUsbRead)}
 $BlockUsbWrite = ${psBool(config.blockUsbWrite)}
@@ -332,67 +365,41 @@ function Set-PolicyStringList {
     }
 }
 
-function Set-StudentChromePolicies {
-    Invoke-WithUserHive -UserName $Aluno -Action {
-        param($sid)
-        $base = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"
-        New-Item -Path $base -Force | Out-Null
-
-        if ($BlockChromeGuest) {
-            New-ItemProperty -Path $base -Name BrowserGuestModeEnabled -PropertyType DWord -Value 0 -Force | Out-Null
-        }
-
-        if ($BlockChromeNewProfiles) {
-            New-ItemProperty -Path $base -Name BrowserAddPersonEnabled -PropertyType DWord -Value 0 -Force | Out-Null
-        }
-
-        if ($BlockChromeIncognito) {
-            New-ItemProperty -Path $base -Name IncognitoModeAvailability -PropertyType DWord -Value 1 -Force | Out-Null
-        }
-
-        if ($BlockChromePasswordManager) {
-            New-ItemProperty -Path $base -Name PasswordManagerEnabled -PropertyType DWord -Value 0 -Force | Out-Null
-        }
-
-        if ($BlockChromeExtensions) {
-            $extensions = Join-Path $base "ExtensionInstallBlocklist"
-            New-Item -Path $extensions -Force | Out-Null
-            New-ItemProperty -Path $extensions -Name "1" -PropertyType String -Value "*" -Force | Out-Null
-        }
-
-        if ($BrowserUrlMode -eq "Unrestricted") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @()
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values @()
-        }
-        elseif ($BrowserUrlMode -eq "BlockList") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $BlockedUrls
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
-        }
-        elseif ($BrowserUrlMode -eq "AllowListOnly") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @("*")
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
-        }
-    }
-}
-
-function Set-StudentEdgePolicies {
+${clearBrowserPolicies}
+function Set-StudentBrowserPolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
 
-        $base = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
-        New-Item -Path $base -Force | Out-Null
+        Clear-WinLabBrowserPolicies -Sid $sid
+        $browsers = @(
+            @{ Key = "Google\\Chrome"; Profile = "BrowserAddPersonEnabled"; Private = "IncognitoModeAvailability"; Extensions = $ChromeAllowedExtensionIds },
+            @{ Key = "Microsoft\\Edge"; Profile = "BrowserAddProfileEnabled"; Private = "InPrivateModeAvailability"; Extensions = $EdgeAllowedExtensionIds }
+        )
+        foreach ($browser in $browsers) {
+            $base = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\$($browser.Key)"
+            New-Item -Path $base -Force | Out-Null
 
-        if ($BrowserUrlMode -eq "Unrestricted") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @()
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values @()
-        }
-        elseif ($BrowserUrlMode -eq "BlockList") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $BlockedUrls
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
-        }
-        elseif ($BrowserUrlMode -eq "AllowListOnly") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @("*")
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+            if ($BlockChromeGuest) {
+                New-ItemProperty -Path $base -Name BrowserGuestModeEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+            }
+            if ($BlockChromeNewProfiles) {
+                New-ItemProperty -Path $base -Name $browser.Profile -PropertyType DWord -Value 0 -Force | Out-Null
+            }
+            if ($BlockChromeIncognito) {
+                New-ItemProperty -Path $base -Name $browser.Private -PropertyType DWord -Value 1 -Force | Out-Null
+            }
+            if ($BlockChromePasswordManager) {
+                New-ItemProperty -Path $base -Name PasswordManagerEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+            }
+            if ($BlockChromeExtensions) {
+                Set-PolicyStringList -BasePath $base -Name "ExtensionInstallBlocklist" -Values @("*")
+                Set-PolicyStringList -BasePath $base -Name "ExtensionInstallAllowlist" -Values $browser.Extensions
+            }
+            if ($BrowserUrlMode -ne "Unrestricted") {
+                $sitesToBlock = if ($BrowserUrlMode -eq "AllowListOnly") { @("*") } else { $BlockedUrls }
+                Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $sitesToBlock
+                Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+            }
         }
     }
 }
@@ -472,8 +479,7 @@ function Test-StudentProfileReady {
 }
 
 function Apply-StudentPolicies {
-    Set-StudentChromePolicies
-    Set-StudentEdgePolicies
+    Set-StudentBrowserPolicies
     Set-StudentUsbPolicies
     Set-StudentAccountPolicies
     Set-StudentPersonalizationPolicies
@@ -671,18 +677,7 @@ function Remove-StudentWinLabPoliciesForRecovery {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid, $context)
 
-        $chrome = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"
-        Remove-ItemProperty -Path $chrome -Name BrowserGuestModeEnabled -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name BrowserAddPersonEnabled -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name IncognitoModeAvailability -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name PasswordManagerEnabled -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "ExtensionInstallBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
-
-        $edge = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
-        Remove-Item -Path (Join-Path $edge "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $edge "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
+        Clear-WinLabBrowserPolicies -Sid $sid
 
         $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
         Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
@@ -785,22 +780,23 @@ function New-WinLabAppLockerXml {
     if ($BlockCmd) {
         $denyRules += @"
     <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear CMD" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%WINDIR%\\System32\\cmd.exe" /></Conditions>
+      <Conditions><FilePathCondition Path="%SYSTEM32%\\cmd.exe" /></Conditions>
     </FilePathRule>
 "@
     }
 
     if ($BlockPowerShell) {
-        $denyRules += @"
-    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear Windows PowerShell" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%WINDIR%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" /></Conditions>
+        foreach ($path in @(
+            "%SYSTEM32%\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "%SYSTEM32%\\WindowsPowerShell\\v1.0\\powershell_ise.exe",
+            "%PROGRAMFILES%\\PowerShell\\7\\pwsh.exe"
+        )) {
+            $denyRules += @"
+    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear PowerShell: $path" Description="" UserOrGroupSid="$studentSid" Action="Deny">
+      <Conditions><FilePathCondition Path="$path" /></Conditions>
     </FilePathRule>
 "@
-        $denyRules += @"
-    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear Windows PowerShell 32-bit" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%WINDIR%\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe" /></Conditions>
-    </FilePathRule>
-"@
+        }
     }
 
     if ($BlockUsbExecute) {
@@ -817,15 +813,34 @@ function New-WinLabAppLockerXml {
     }
 
     if ($BlockRegedit) {
-        $denyRules += @"
+        foreach ($path in @("%WINDIR%\\regedit.exe", "%SYSTEM32%\\regedit.exe")) {
+            $denyRules += @"
     <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear Regedit" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%WINDIR%\\regedit.exe" /></Conditions>
+      <Conditions><FilePathCondition Path="$path" /></Conditions>
     </FilePathRule>
 "@
+        }
     }
 
     $msiMode = if ($BlockInstallers) { $EnforcementMode } else { "NotConfigured" }
-    $appxMode = if ($BlockStoreApps) { $EnforcementMode } else { "NotConfigured" }
+    $msiRules = if ($BlockInstallers) {
+@"
+    <FilePathRule Id="{B2222222-2222-2222-2222-222222222221}" Name="Administradores - todos MSI" Description="" UserOrGroupSid="$adminsSid" Action="Allow">
+      <Conditions><FilePathCondition Path="*" /></Conditions>
+    </FilePathRule>
+"@
+    }
+    $storeDenyRule = if ($BlockStoreApps) {
+@"
+    <FilePublisherRule Id="{D4444444-4444-4444-4444-444444444442}" Name="Bloquear Microsoft Store" Description="" UserOrGroupSid="$studentSid" Action="Deny">
+      <Conditions>
+        <FilePublisherCondition PublisherName="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" ProductName="Microsoft.WindowsStore" BinaryName="*">
+          <BinaryVersionRange LowSection="0.0.0.0" HighSection="*" />
+        </FilePublisherCondition>
+      </Conditions>
+    </FilePublisherRule>
+"@
+    }
 
 @"
 <AppLockerPolicy Version="1">
@@ -843,9 +858,7 @@ $denyRules
   </RuleCollection>
 
   <RuleCollection Type="Msi" EnforcementMode="$msiMode">
-    <FilePathRule Id="{B2222222-2222-2222-2222-222222222221}" Name="Administradores - todos MSI" Description="" UserOrGroupSid="$adminsSid" Action="Allow">
-      <Conditions><FilePathCondition Path="*" /></Conditions>
-    </FilePathRule>
+$msiRules
   </RuleCollection>
 
   <RuleCollection Type="Script" EnforcementMode="$EnforcementMode">
@@ -854,14 +867,15 @@ $denyRules
     </FilePathRule>
   </RuleCollection>
 
-  <RuleCollection Type="Appx" EnforcementMode="$appxMode">
-    <FilePublisherRule Id="{D4444444-4444-4444-4444-444444444441}" Name="Administradores - todos apps empacotados" Description="" UserOrGroupSid="$adminsSid" Action="Allow">
+  <RuleCollection Type="Appx" EnforcementMode="$EnforcementMode">
+    <FilePublisherRule Id="{D4444444-4444-4444-4444-444444444441}" Name="Permitir apps empacotados assinados" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions>
         <FilePublisherCondition PublisherName="*" ProductName="*" BinaryName="*">
           <BinaryVersionRange LowSection="0.0.0.0" HighSection="*" />
         </FilePublisherCondition>
       </Conditions>
     </FilePublisherRule>
+$storeDenyRule
   </RuleCollection>
 
   <RuleCollection Type="Dll" EnforcementMode="NotConfigured" />
@@ -955,7 +969,7 @@ if ($Apply) {
         Complete-DeferredUserPolicies
     }
     else {
-        Install-WinLabProfile
+${options.confirmApply ? confirmStandaloneApply("Aplicar este perfil ao computador?", "        ") : ""}        Install-WinLabProfile
     }
 }
 else {
@@ -964,7 +978,7 @@ else {
 `;
 }
 
-export function generateRollbackScript(config: Config): string {
+export function generateRollbackScript(config: Config, options: ScriptOptions = {}): string {
   return `${commonHeader(config, "ROLLBACK", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 $WinLabRoot = "C:\\ProgramData\\WinLab"
 $StatePath = Join-Path $WinLabRoot "state.json"
@@ -1020,22 +1034,12 @@ function Test-StudentProfileExists {
     return [bool]($profile -and $profile.LocalPath -and (Test-Path (Join-Path $profile.LocalPath "NTUSER.DAT")))
 }
 
+${clearBrowserPolicies}
 function Remove-StudentPolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
 
-        $chrome = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"
-        Remove-ItemProperty -Path $chrome -Name BrowserGuestModeEnabled -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name BrowserAddPersonEnabled -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name IncognitoModeAvailability -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name PasswordManagerEnabled -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "ExtensionInstallBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
-
-        $edge = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
-        Remove-Item -Path (Join-Path $edge "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $edge "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
+        Clear-WinLabBrowserPolicies -Sid $sid
 
         $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
         Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
@@ -1118,7 +1122,7 @@ if ($Apply) {
     Assert-WinLabPackageIntegrity
     $state = Get-WinLabRollbackState
 
-    $appLockerRestored = $false
+${options.confirmApply ? confirmStandaloneApply("Reverter as políticas deste computador?", "    ") : ""}    $appLockerRestored = $false
     $userPoliciesCleared = $false
     $registryRestored = $false
 

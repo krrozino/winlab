@@ -34,6 +34,8 @@ const stressConfigs: Array<{ name: string; config: Config }> = [
       browserUrlMode: "AllowListOnly",
       allowedUrls: ["https://microlins.com.br/*", "https://*.office.com/*"],
       blockedUrls: [],
+      chromeAllowedExtensionIds: ["abcdefghijklmnopabcdefghijklmnop"],
+      edgeAllowedExtensionIds: ["ponmlkjihgfedcbaponmlkjihgfedcba"],
       blockUsbRead: true,
       blockUsbWrite: true,
       blockUsbExecute: true,
@@ -75,13 +77,13 @@ const configs = [
   ...stressConfigs
 ];
 
-async function writeFixture(name: string, config: Config) {
+async function writeFixture(name: string, config: Config, confirmApply = false) {
   const dir = path.join(root, name);
   await mkdir(dir, { recursive: true });
 
   const files: Record<string, string> = {
-    "setup.ps1": generateSetupScript(config),
-    "rollback.ps1": generateRollbackScript(config),
+    "setup.ps1": generateSetupScript(config, { confirmApply }),
+    "rollback.ps1": generateRollbackScript(config, { confirmApply }),
     "audit.ps1": generateAuditScript(config),
     "verify.ps1": generateVerifyScript(config),
     "preflight.ps1": generatePreflightScript(config),
@@ -122,6 +124,7 @@ async function main() {
     await writeFixture(item.name, item.config);
     await writePackageFixture(item.name, item.config);
   }
+  await writeFixture("standalone-web", defaultConfig, true);
 
   await writeFile(
     path.join(root, "scan-pc.ps1"),
@@ -165,7 +168,7 @@ async function main() {
     )
   );
 
-  console.log(`Generated ${configs.length} WinLab script fixtures in ${root}`);
+  console.log(`Generated ${configs.length + 1} WinLab script fixtures in ${root}`);
   console.log(`Generated ${configs.length} WinLab package fixtures in ${packageRoot}`);
   console.log(`Generated WinLab pilot fixture in ${pilotRoot}`);
 }

@@ -63,7 +63,7 @@ export function parseConfigJson(raw: string): Config {
   let parsed: unknown;
 
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
   } catch {
     throw new Error("O arquivo não contém JSON válido.");
   }
@@ -130,6 +130,12 @@ export function parseConfigJson(raw: string): Config {
       parsed.blockChromePasswordManager,
       defaultConfig.blockChromePasswordManager
     ),
+    ...(Array.isArray(parsed.chromeAllowedExtensionIds) && {
+      chromeAllowedExtensionIds: stringArray(parsed.chromeAllowedExtensionIds, [])
+    }),
+    ...(Array.isArray(parsed.edgeAllowedExtensionIds) && {
+      edgeAllowedExtensionIds: stringArray(parsed.edgeAllowedExtensionIds, [])
+    }),
 
     browserUrlMode: browserUrlMode(
       parsed.browserUrlMode,

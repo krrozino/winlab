@@ -1,4 +1,6 @@
 import type { Config } from "./types";
+import { BROWSER_POLICY_LIST_LIMIT, isBrowserExtensionId, isBrowserSiteFilter } from "./browser-policy";
+import { customExecutablePathError } from "./security";
 
 const INVALID_LOCAL_USER_CHARS = new Set([
   '"',
@@ -20,7 +22,8 @@ const INVALID_LOCAL_USER_CHARS = new Set([
 ]);
 
 export type ConfigValidationError = {
-  field: "profileName" | "studentUser" | "adminUser";
+  field: "profileName" | "studentUser" | "adminUser" | "blockedUrls" | "allowedUrls"
+    | "chromeAllowedExtensionIds" | "edgeAllowedExtensionIds" | "customAllowedPaths";
   message: string;
 };
 
@@ -96,6 +99,37 @@ export function getConfigErrors(config: Config): ConfigValidationError[] {
       field: "studentUser",
       message: "Usuário restrito e administrador precisam ter nomes diferentes."
     });
+  }
+
+  const siteLists = [
+    ["blockedUrls", "Sites bloqueados"],
+    ["allowedUrls", "Sites autorizados"]
+  ] as const;
+  for (const [field, label] of siteLists) {
+    if (config[field].length > BROWSER_POLICY_LIST_LIMIT) {
+      errors.push({ field, message: label + " aceita até 1.000 itens." });
+    }
+    for (const value of config[field]) {
+      if (!isBrowserSiteFilter(value)) {
+        errors.push({ field, message: label + " contém um endereço inválido (" + value + ")." });
+      }
+    }
+  }
+
+  const extensionLists = [
+    ["chromeAllowedExtensionIds", "Chrome"],
+    ["edgeAllowedExtensionIds", "Edge"]
+  ] as const;
+  for (const [field, browser] of extensionLists) {
+    for (const id of config[field] ?? []) {
+      if (!isBrowserExtensionId(id)) {
+        errors.push({ field, message: "ID de extensão inválido no " + browser + " (" + id + ")." });
+      }
+    }
+  }
+  for (const value of config.customAllowedPaths) {
+    const error = customExecutablePathError(value);
+    if (error) errors.push({ field: "customAllowedPaths", message: value + " — " + error });
   }
 
   return errors;

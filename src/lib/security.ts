@@ -23,3 +23,15 @@ export function pathRisk(path: string): string | null {
 
   return null;
 }
+
+export function customExecutablePathError(path: string): string | null {
+  const value = path.trim();
+  const match = /^(?:[a-z]:|%programfiles(?:\(x86\))?%)\\(.+\.exe)$/i.exec(value);
+  if (!match || /[<>"/|?*\u0000-\u001f]/.test(match[1]) || /[:%]/.test(match[1])) {
+    return "Informe o caminho local completo de um arquivo .exe específico.";
+  }
+  if (match[1].split("\\").some((part) => !part || /[. ]$/.test(part) || /~\d/.test(part))) {
+    return "Use o caminho completo do executável, sem atalhos ou segmentos relativos.";
+  }
+  return pathRisk(value);
+}
