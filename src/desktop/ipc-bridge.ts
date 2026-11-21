@@ -1,5 +1,6 @@
 import {
   DesktopIpcTransport,
+  IPC_CONSTANTS,
   IpcEnvelope,
   IpcResponse
 } from "./contracts";
@@ -68,8 +69,14 @@ export class WebViewIpcBridge implements DesktopIpcTransport {
     }
 
     const messageId = envelope.id || crypto.randomUUID();
+    const expansionMutation = envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_APPLY ||
+      envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_ROLLBACK;
+    const expansionQuery = envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_QUERY ||
+      envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_PREVIEW;
+    const timeoutMs = Math.max(this.timeoutMs, expansionMutation ? 150_000 : expansionQuery ? 30_000 : 0);
     const finalEnvelope: IpcEnvelope = {
       ...envelope,
+      type: expansionMutation ? "command" : envelope.type,
       id: messageId
     };
 
@@ -81,11 +88,11 @@ export class WebViewIpcBridge implements DesktopIpcTransport {
             id: crypto.randomUUID(),
             replyToId: messageId,
             success: false,
-            error: `Tempo limite esgotado (${this.timeoutMs}ms) aguardando resposta da ação '${envelope.action}' do host C#.`,
+            error: `Tempo limite esgotado (${timeoutMs}ms) aguardando resposta da ação '${envelope.action}' do host C#.`,
             errorCode: "IPC_TIMEOUT"
           });
         }
-      }, this.timeoutMs);
+      }, timeoutMs);
 
       this.pendingRequests.set(messageId, { resolve, reject, timer });
 

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using WinLab.Contracts;
+using WinLab.Contracts.Expansion;
 using WinLab.Contracts.Policies;
 using WinLab.Contracts.RegistryServices;
 using WinLab.Contracts.Scanning;
@@ -30,6 +31,7 @@ namespace WinLab.Desktop.Services
         private readonly IRegistryService _registry;
         private readonly IUserHiveManager _hiveManager;
         private readonly TransactionEngine _localEngine;
+        private readonly ExpansionIpc _expansion;
         private readonly bool _isWindows;
 
         public RealAgentService(
@@ -53,12 +55,13 @@ namespace WinLab.Desktop.Services
                 ? @"C:\ProgramData\WinLab\Transactions"
                 : Path.Combine(Path.GetTempPath(), "WinLab_Transactions_Dev"));
             _localEngine = new TransactionEngine(_catalog, _registry, _hiveManager, txDir);
+            _expansion = new ExpansionIpc(_registry, _scanner);
         }
 
         public async Task<IpcResponse<object>> HandleRequestAsync(string rawJson)
         {
             var shellCheck = SecurityValidator.ValidateNoArbitraryShell(rawJson);
-            if (!shellCheck.IsSafe)
+            if (!shellCheck.IsSafe && !ExpansionRequest.IsTypedEnvelope(rawJson))
             {
                 return IpcResponse<object>.Fail(string.Empty, shellCheck.Error!, "FORBIDDEN_SHELL_INJECTION");
             }
@@ -87,6 +90,18 @@ namespace WinLab.Desktop.Services
                 }
 
                 string action = root.GetProperty("action").GetString()!;
+
+                if (ExpansionRequest.IsAction(action))
+                {
+                    bool trusted = _isWindows && ExecutorInstallTrust.FindInstalledExecutor() != null
+                        && ExecutorInstallTrust.IsPolicyStoreProtected();
+                    return await _expansion.HandleAsync(id, action, root, trusted, async () =>
+                    {
+                        if (!trusted)
+                            return IpcResponse<object>.Fail(id, ExecutorInstallTrust.ReadOnlyMessage, "TRUSTED_EXECUTOR_REQUIRED");
+                        return EnsureReplyToId(await _executorClient.HandleRequestAsync(rawJson), id);
+                    });
+                }
 
                 switch (action)
                 {

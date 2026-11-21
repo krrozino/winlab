@@ -4,11 +4,13 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WinLab.Contracts;
+using WinLab.Contracts.Expansion;
 using WinLab.Contracts.Policies;
 using WinLab.Contracts.RegistryServices;
 using WinLab.Contracts.Scanning;
@@ -30,6 +32,11 @@ namespace WinLab.Executor
         private readonly IRegistryService _registry;
         private readonly IUserHiveManager _hiveManager;
         private readonly TransactionEngine _engine;
+        private readonly ExpansionIpc _expansion;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetNamedPipeServerProcessId(SafeHandle pipe, out uint processId);
 
         public ExecutorHost(
             string pipeName,
@@ -50,6 +57,7 @@ namespace WinLab.Executor
             _registry = registry ?? (OperatingSystem.IsWindows() ? new Services.WindowsRegistryService() : new InMemoryRegistryService());
             _hiveManager = hiveManager ?? (OperatingSystem.IsWindows() ? new Services.WindowsUserHiveManager() : new MockUserHiveManager());
             _engine = engine ?? new TransactionEngine(_catalog, _registry, _hiveManager);
+            _expansion = new ExpansionIpc(_registry, _scanner);
         }
 
         public async Task<int> RunAsync(CancellationToken cancellationToken = default)
@@ -58,7 +66,8 @@ namespace WinLab.Executor
             SetupParentWatchdog();
 
             // 2. Connect to Named Pipe Server hosted by Desktop
-            using var clientStream = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            using var clientStream = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut,
+                PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
             try
             {
                 await clientStream.ConnectAsync(10000, cancellationToken);
@@ -72,6 +81,10 @@ namespace WinLab.Executor
             // 3. Mutual Handshake Authentication
             try
             {
+                if (OperatingSystem.IsWindows() && (_parentPid <= 0 ||
+                    !GetNamedPipeServerProcessId(clientStream.SafePipeHandle, out uint serverPid) || serverPid != (uint)_parentPid))
+                    return 2;
+
                 var handshakeReq = new HandshakeRequest
                 {
                     Token = _sessionToken,
@@ -82,7 +95,7 @@ namespace WinLab.Executor
 
                 string respJson = await PipeFraming.ReadFrameAsync(clientStream, cancellationToken);
                 var handshakeResp = JsonSerializer.Deserialize<HandshakeResponse>(respJson);
-                if (handshakeResp == null || !handshakeResp.Success)
+                if (handshakeResp == null || !handshakeResp.Success || handshakeResp.ServerPid != _parentPid)
                 {
                     Console.Error.WriteLine($"[WinLab.Executor] Handshake authentication rejected: {handshakeResp?.Error}");
                     return 2;
@@ -143,7 +156,7 @@ namespace WinLab.Executor
         public async Task<string> ProcessRequestAsync(string rawJson, CancellationToken cancellationToken = default)
         {
             var shellCheck = SecurityValidator.ValidateNoArbitraryShell(rawJson);
-            if (!shellCheck.IsSafe)
+            if (!shellCheck.IsSafe && !ExpansionRequest.IsTypedEnvelope(rawJson))
             {
                 var errResp = IpcResponse<object>.Fail(string.Empty, shellCheck.Error!, "FORBIDDEN_SHELL_INJECTION");
                 return JsonSerializer.Serialize(errResp);
@@ -173,6 +186,19 @@ namespace WinLab.Executor
                 }
 
                 string action = root.GetProperty("action").GetString()!;
+
+                if (ExpansionRequest.IsAction(action))
+                {
+                    bool canWrite = false;
+                    if (OperatingSystem.IsWindows())
+                    {
+                        using var identity = WindowsIdentity.GetCurrent();
+                        canWrite = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)
+                            && ExecutorInstallTrust.IsPolicyStoreProtected();
+                    }
+                    return JsonSerializer.Serialize(await _expansion.HandleAsync(id, action, root,
+                        canWrite, ct: cancellationToken));
+                }
 
                 switch (action)
                 {

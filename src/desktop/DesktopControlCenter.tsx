@@ -26,6 +26,7 @@ import {
   transitionTargetUserContext
 } from "@/desktop/policy-state-machine";
 import { DiagnosticReport } from "@/desktop/DiagnosticReport";
+import { BrowserExpansion, PolicyExpansionPanel } from "@/desktop/PolicyExpansionPanel";
 import { presets, getPreset } from "@/lib/presets";
 import { parseConfigJson, serializeConfig } from "@/lib/config-io";
 import {
@@ -1421,6 +1422,9 @@ export function DesktopControlCenter({
         {/* SEÇÃO 3: APLICATIVOS */}
         {section === "apps" && (
           <div className="wl-section-content">
+            {native && mode === "Real" && renderUserSelectorBar()}
+            <PolicyExpansionPanel key={selectedUserSid || "no-user"} target="apps" real={native && mode === "Real"}
+              sid={selectedUserSid} detectedApps={inventory?.detectedApps} sendIpc={sendIpc} />
             {policiesBySection.apps.length > 0 && renderPolicyCategorySection("apps")}
 
             <div className="wl-card">
@@ -1452,10 +1456,20 @@ export function DesktopControlCenter({
         )}
 
         {/* SEÇÃO 4: INTERNET E NAVEGADORES */}
-        {section === "internet" && renderPolicyCategorySection("internet")}
+        {section === "internet" && (
+          <div className="wl-section-content">
+            <BrowserExpansion real={native && mode === "Real"} sendIpc={sendIpc} />
+            {renderPolicyCategorySection("internet")}
+          </div>
+        )}
 
         {/* SEÇÃO 5: SISTEMA WINDOWS */}
-        {section === "system" && renderPolicyCategorySection("system")}
+        {section === "system" && (
+          <div className="wl-section-content">
+            <PolicyExpansionPanel target="usb" real={native && mode === "Real"} sendIpc={sendIpc} />
+            {renderPolicyCategorySection("system")}
+          </div>
+        )}
 
         {/* SEÇÃO 6: REDE E COMPARTILHAMENTO */}
         {section === "network" && (
