@@ -8,6 +8,8 @@
     <RootNamespace>WinLab.Executor</RootNamespace>
     <AssemblyName>WinLab.Executor</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <StartupHookSupport>false</StartupHookSupport>
+    <DebuggerSupport>false</DebuggerSupport>
   </PropertyGroup>
 
   <ItemGroup>

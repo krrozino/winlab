@@ -1,6 +1,7 @@
 using System;
 using System.Security.Principal;
 using System.Threading.Tasks;
+using WinLab.Contracts.Expansion;
 
 #pragma warning disable CA1416 // Validated by OperatingSystem.IsWindows() check
 
@@ -14,7 +15,7 @@ namespace WinLab.Executor
             // 1. Enforce Administrator role when running on Windows
             if (OperatingSystem.IsWindows())
             {
-                var identity = WindowsIdentity.GetCurrent();
+                using var identity = WindowsIdentity.GetCurrent();
                 var principal = new WindowsPrincipal(identity);
                 if (!principal.IsInRole(WindowsBuiltInRole.Administrator))
                 {
@@ -51,6 +52,12 @@ namespace WinLab.Executor
             {
                 Console.Error.WriteLine("Usage: WinLab.Executor --pipe <pipe_name> --token <secret_token> --parent-pid <pid>");
                 return 160; // ERROR_BAD_ARGUMENTS
+            }
+
+            if (!ExecutorInstallTrust.CanAcceptParent(parentPid))
+            {
+                Console.Error.WriteLine(ExecutorInstallTrust.ReadOnlyMessage);
+                return 5;
             }
 
             // 3. Launch host

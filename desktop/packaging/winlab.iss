@@ -21,7 +21,8 @@ DefaultGroupName=WinLab
 AllowNoIcons=yes
 ; Requer privilégios administrativos para instalação em Program Files
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=commandline
+DisableDirPage=yes
+UsePreviousAppDir=no
 OutputDir=..\..\artifacts\installers
 OutputBaseFilename=WinLabSetup-0.9.1-x64
 Compression=lzma2/ultra64
@@ -44,6 +45,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Binários autocontidos publicados do WinLab Desktop (.NET 10 + WebView2 + wwwroot + WinLab.Executor.exe)
 Source: "..\..\artifacts\publish\desktop\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Registry]
+Root: HKLM64; Subkey: "SOFTWARE\WinLab\DesktopInstallation"; Flags: uninsdeletekey
+Root: HKLM64; Subkey: "SOFTWARE\WinLab\PolicyExpansion"
+
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
@@ -60,6 +65,25 @@ brazilianportuguese.BeveledLabel=WinLab Desktop 0.9.1 (Build de Piloto / Não As
 english.BeveledLabel=WinLab Desktop 0.9.1 (Pilot Build / Unsigned)
 
 [Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if CompareText(ExpandConstant('{app}'), ExpandConstant('{autopf}\WinLab')) <> 0 then
+    Result := 'O WinLab por máquina exige a pasta WinLab em Program Files.';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ExecutorHash: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    ExecutorHash := GetSHA256OfFile(ExpandConstant('{app}\WinLab.Executor.exe'));
+    if not RegWriteStringValue(HKLM64, 'SOFTWARE\WinLab\DesktopInstallation', 'ExecutorSha256', ExecutorHash) then
+      RaiseException('Falha ao registrar a integridade do executor WinLab.');
+  end;
+end;
+
 function InitializeSetup(): Boolean;
 var
   VelopackUpdater: String;
