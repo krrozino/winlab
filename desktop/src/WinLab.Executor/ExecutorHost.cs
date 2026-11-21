@@ -4,11 +4,13 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WinLab.Contracts;
+using WinLab.Contracts.Expansion;
 using WinLab.Contracts.Policies;
 using WinLab.Contracts.RegistryServices;
 using WinLab.Contracts.Scanning;
@@ -25,10 +27,16 @@ namespace WinLab.Executor
         private readonly int _parentPid;
         private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
         private readonly IWindowsScanner _scanner;
+        private readonly bool _hasCustomScanner;
         private readonly IPolicyCatalog _catalog;
         private readonly IRegistryService _registry;
         private readonly IUserHiveManager _hiveManager;
         private readonly TransactionEngine _engine;
+        private readonly ExpansionIpc _expansion;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetNamedPipeServerProcessId(SafeHandle pipe, out uint processId);
 
         public ExecutorHost(
             string pipeName,
@@ -43,11 +51,13 @@ namespace WinLab.Executor
             _pipeName = pipeName ?? throw new ArgumentNullException(nameof(pipeName));
             _sessionToken = sessionToken ?? throw new ArgumentNullException(nameof(sessionToken));
             _parentPid = parentPid;
+            _hasCustomScanner = scanner != null;
             _scanner = scanner ?? new WindowsScanner();
             _catalog = catalog ?? new PolicyCatalog();
             _registry = registry ?? (OperatingSystem.IsWindows() ? new Services.WindowsRegistryService() : new InMemoryRegistryService());
             _hiveManager = hiveManager ?? (OperatingSystem.IsWindows() ? new Services.WindowsUserHiveManager() : new MockUserHiveManager());
             _engine = engine ?? new TransactionEngine(_catalog, _registry, _hiveManager);
+            _expansion = new ExpansionIpc(_registry, _scanner);
         }
 
         public async Task<int> RunAsync(CancellationToken cancellationToken = default)
@@ -56,7 +66,8 @@ namespace WinLab.Executor
             SetupParentWatchdog();
 
             // 2. Connect to Named Pipe Server hosted by Desktop
-            using var clientStream = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            using var clientStream = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut,
+                PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
             try
             {
                 await clientStream.ConnectAsync(10000, cancellationToken);
@@ -70,6 +81,10 @@ namespace WinLab.Executor
             // 3. Mutual Handshake Authentication
             try
             {
+                if (OperatingSystem.IsWindows() && (_parentPid <= 0 ||
+                    !GetNamedPipeServerProcessId(clientStream.SafePipeHandle, out uint serverPid) || serverPid != (uint)_parentPid))
+                    return 2;
+
                 var handshakeReq = new HandshakeRequest
                 {
                     Token = _sessionToken,
@@ -80,7 +95,7 @@ namespace WinLab.Executor
 
                 string respJson = await PipeFraming.ReadFrameAsync(clientStream, cancellationToken);
                 var handshakeResp = JsonSerializer.Deserialize<HandshakeResponse>(respJson);
-                if (handshakeResp == null || !handshakeResp.Success)
+                if (handshakeResp == null || !handshakeResp.Success || handshakeResp.ServerPid != _parentPid)
                 {
                     Console.Error.WriteLine($"[WinLab.Executor] Handshake authentication rejected: {handshakeResp?.Error}");
                     return 2;
@@ -138,10 +153,10 @@ namespace WinLab.Executor
             return 0;
         }
 
-        private async Task<string> ProcessRequestAsync(string rawJson, CancellationToken cancellationToken)
+        public async Task<string> ProcessRequestAsync(string rawJson, CancellationToken cancellationToken = default)
         {
             var shellCheck = SecurityValidator.ValidateNoArbitraryShell(rawJson);
-            if (!shellCheck.IsSafe)
+            if (!shellCheck.IsSafe && !ExpansionRequest.IsTypedEnvelope(rawJson))
             {
                 var errResp = IpcResponse<object>.Fail(string.Empty, shellCheck.Error!, "FORBIDDEN_SHELL_INJECTION");
                 return JsonSerializer.Serialize(errResp);
@@ -171,6 +186,19 @@ namespace WinLab.Executor
                 }
 
                 string action = root.GetProperty("action").GetString()!;
+
+                if (ExpansionRequest.IsAction(action))
+                {
+                    bool canWrite = false;
+                    if (OperatingSystem.IsWindows())
+                    {
+                        using var identity = WindowsIdentity.GetCurrent();
+                        canWrite = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)
+                            && ExecutorInstallTrust.IsPolicyStoreProtected();
+                    }
+                    return JsonSerializer.Serialize(await _expansion.HandleAsync(id, action, root,
+                        canWrite, ct: cancellationToken));
+                }
 
                 switch (action)
                 {
@@ -285,6 +313,7 @@ namespace WinLab.Executor
                         return JsonSerializer.Serialize(resp);
                     }
 
+                    case IpcConstants.ActionQueryPolicyState:
                     case IpcConstants.ActionQueryPolicyStates:
                     {
                         string? targetUserSid = null;
@@ -296,60 +325,25 @@ namespace WinLab.Executor
                             }
                         }
 
-                        var items = new List<PolicyItemDto>();
-                        int applied = 0, notConfigured = 0, pending = 0;
-                        foreach (var policy in _catalog.GetAllPolicies())
-                        {
-                            var probe = policy.Probe(targetUserSid, _registry, _hiveManager);
-                            var item = new PolicyItemDto
-                            {
-                                Id = policy.PolicyId,
-                                Category = policy.Category,
-                                Title = policy.Title,
-                                Description = policy.Description,
-                                Scope = policy.Scope,
-                                Risk = policy.Risk,
-                                CurrentState = probe.IsActive ? PolicyState.Applied : PolicyState.NotConfigured,
-                                DesiredState = probe.IsActive ? PolicyState.Applied : PolicyState.NotConfigured,
-                                ConfiguredState = probe.IsActive ? PolicyState.Applied : PolicyState.NotConfigured,
-                                EffectiveState = probe.EffectiveState,
-                                RequiresLogoff = policy.RequiresLogoff,
-                                RequiresRestart = policy.RequiresRestart,
-                                RequiresAppRestart = policy.RequiresAppRestart,
-                                Reversible = policy.Reversible,
-                                Evidence = probe.DetailMessage,
-                                LastVerified = probe.ProbedAtUtc.ToString("o")
-                            };
-                            items.Add(item);
+                        var inv = await _scanner.ScanInventoryAsync(cancellationToken);
+                        IReadOnlyList<LocalUserDto>? knownAccounts = (OperatingSystem.IsWindows() || _hasCustomScanner) && inv.LocalUsers.Count > 0
+                            ? inv.LocalUsers
+                            : null;
 
-                            if (probe.EffectiveState == PolicyEffectiveState.PendingLogoff ||
-                                     probe.EffectiveState == PolicyEffectiveState.PendingAppRestart ||
-                                     probe.EffectiveState == PolicyEffectiveState.PendingRefresh ||
-                                     probe.EffectiveState == PolicyEffectiveState.PendingFirstLogon ||
-                                     probe.EffectiveState == PolicyEffectiveState.PendingReboot)
-                            {
-                                pending++;
-                            }
-                            else if (probe.IsActive || probe.EffectiveState == PolicyEffectiveState.Applied)
-                            {
-                                applied++;
-                            }
-                            else
-                            {
-                                notConfigured++;
-                            }
+                        var outcome = PolicyQueryCoordinator.QueryStates(
+                            _catalog,
+                            _registry,
+                            _hiveManager,
+                            targetUserSid,
+                            knownAccounts);
+
+                        if (!outcome.Success)
+                        {
+                            var failResp = IpcResponse<object>.Fail(id, outcome.Error!, outcome.ErrorCode!);
+                            return JsonSerializer.Serialize(failResp);
                         }
 
-                        var summary = new PolicyStateSummaryDto
-                        {
-                            TotalPolicies = items.Count,
-                            AppliedCount = applied,
-                            NotConfiguredCount = notConfigured,
-                            PendingCount = pending,
-                            Items = items
-                        };
-
-                        var resp = IpcResponse<PolicyStateSummaryDto>.Ok(id, summary);
+                        var resp = IpcResponse<PolicyStateSummaryDto>.Ok(id, outcome.Summary!);
                         return JsonSerializer.Serialize(resp);
                     }
 
@@ -368,6 +362,107 @@ namespace WinLab.Executor
                             return JsonSerializer.Serialize(errResp);
                         }
 
+                        var inv = await _scanner.ScanInventoryAsync(cancellationToken);
+                        IReadOnlyList<LocalUserDto>? knownAccounts = (OperatingSystem.IsWindows() || _hasCustomScanner) && inv.LocalUsers.Count > 0
+                            ? inv.LocalUsers
+                            : null;
+
+                        bool hasUserScopedPolicy = applyReq.Policies != null && applyReq.Policies.Any(op =>
+                        {
+                            var handler = _catalog.GetPolicy(op.PolicyId);
+                            return handler != null && handler.Scope == PolicyScope.User;
+                        });
+
+                        if (knownAccounts != null)
+                        {
+                            var adminNameCheck = SecurityValidator.ValidateTargetNotAdministrator(applyReq.TargetUserName, knownAccounts);
+                            if (!adminNameCheck.IsValid)
+                            {
+                                bool isUnknown = knownAccounts.Any(u =>
+                                    u != null &&
+                                    string.Equals(u.Name?.Trim(), applyReq.TargetUserName?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                                    u.GetEffectivePrivilegeClassification() == AccountPrivilegeClassification.Unknown);
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, adminNameCheck.Error!, isUnknown ? "TARGET_PRIVILEGE_UNKNOWN" : "ADMIN_TARGET_FORBIDDEN"));
+                            }
+
+                            var adminSidCheck = SecurityValidator.ValidateTargetNotAdministrator(applyReq.TargetUserSid, knownAccounts);
+                            if (!adminSidCheck.IsValid)
+                            {
+                                bool isUnknown = knownAccounts.Any(u =>
+                                    u != null &&
+                                    string.Equals(u.Sid?.Trim(), applyReq.TargetUserSid?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                                    u.GetEffectivePrivilegeClassification() == AccountPrivilegeClassification.Unknown);
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, adminSidCheck.Error!, isUnknown ? "TARGET_PRIVILEGE_UNKNOWN" : "ADMIN_TARGET_FORBIDDEN"));
+                            }
+
+                            if (hasUserScopedPolicy && !string.IsNullOrWhiteSpace(applyReq.TargetUserSid))
+                            {
+                                string cleanSid = applyReq.TargetUserSid.Trim();
+                                var matched = knownAccounts.FirstOrDefault(u =>
+                                    u != null && string.Equals(u.Sid?.Trim(), cleanSid, StringComparison.OrdinalIgnoreCase));
+
+                                if (matched == null)
+                                {
+                                    return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                        id,
+                                        $"A conta com SID '{cleanSid}' não foi encontrada neste computador.",
+                                        "TARGET_USER_NOT_FOUND"));
+                                }
+
+                                if (!matched.Enabled)
+                                {
+                                    return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                        id,
+                                        $"A conta '{matched.Name}' está desativada e não pode receber restrições.",
+                                        "TARGET_USER_DISABLED"));
+                                }
+
+                                var matchedPrivilege = matched.GetEffectivePrivilegeClassification();
+                                if (matchedPrivilege == AccountPrivilegeClassification.Administrator)
+                                {
+                                    return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                        id,
+                                        $"A conta '{matched.Name}' é administradora e possui imunidade.",
+                                        "ADMIN_TARGET_FORBIDDEN"));
+                                }
+
+                                if (matchedPrivilege == AccountPrivilegeClassification.Unknown)
+                                {
+                                    return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                        id,
+                                        matched.ClassificationDetail ?? $"Não foi possível confirmar os privilégios da conta '{matched.Name}' (classificação desconhecida).",
+                                        "TARGET_PRIVILEGE_UNKNOWN"));
+                                }
+                            }
+                        }
+                        else if (hasUserScopedPolicy && (OperatingSystem.IsWindows() || _hasCustomScanner))
+                        {
+                            return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                id,
+                                "Não foi possível confirmar a elegibilidade da conta-alvo porque a enumeração de usuários locais não retornou contas.",
+                                "TARGET_PRIVILEGE_UNKNOWN"));
+                        }
+
+                        if (hasUserScopedPolicy && !string.IsNullOrWhiteSpace(applyReq.TargetUserSid))
+                        {
+                            var hivePrivilege = _hiveManager.ClassifyAccountPrivilege(applyReq.TargetUserSid);
+                            if (hivePrivilege == AccountPrivilegeClassification.Administrator)
+                            {
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                    id,
+                                    "Violação de segurança: Contas de Administrador possuem imunidade e não podem receber restrições de laboratório.",
+                                    "ADMIN_TARGET_FORBIDDEN"));
+                            }
+
+                            if (hivePrivilege == AccountPrivilegeClassification.Unknown)
+                            {
+                                return JsonSerializer.Serialize(IpcResponse<object>.Fail(
+                                    id,
+                                    "Operação bloqueada: não foi possível confirmar os privilégios da conta-alvo (classificação desconhecida).",
+                                    "TARGET_PRIVILEGE_UNKNOWN"));
+                            }
+                        }
+
                         var applyResult = await _engine.ApplyTransactionAsync(applyReq, cancellationToken);
                         if (applyResult.Success)
                         {
@@ -376,7 +471,10 @@ namespace WinLab.Executor
                         }
                         else
                         {
-                            var failResp = IpcResponse<ApplyTransactionResultDto>.Fail(id, applyResult.Message, "TRANSACTION_ROLLED_BACK", applyResult);
+                            string errCode = applyResult.Status == TransactionStatus.Failed
+                                ? "TRANSACTION_FAILED"
+                                : "TRANSACTION_ROLLED_BACK";
+                            var failResp = IpcResponse<ApplyTransactionResultDto>.Fail(id, applyResult.Message, errCode, applyResult);
                             return JsonSerializer.Serialize(failResp);
                         }
                     }

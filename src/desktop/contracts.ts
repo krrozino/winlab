@@ -17,6 +17,8 @@ export const IPC_CONSTANTS = {
   ACTION_CREATE_BASELINE: "baseline.create",
   ACTION_CREATE_LOCAL_ACCOUNT: "accounts.create_local",
   ACTION_GET_ENVIRONMENT: "system.environment",
+  ACTION_QUERY_UPDATE_STATUS: "system.update_status",
+  ACTION_QUERY_NETWORK_SHARES: "network.query_shares",
   ACTION_SET_MODE: "mode.set",
 
   // Milestone 3: Declarative Policy Engine & Transactions
@@ -25,6 +27,10 @@ export const IPC_CONSTANTS = {
   ACTION_APPLY_TRANSACTION: "policy.apply_transaction",
   ACTION_ROLLBACK_TRANSACTION: "policy.rollback_transaction",
   ACTION_QUERY_TRANSACTION_STATUS: "policy.query_status",
+  ACTION_EXPANSION_QUERY: "policy.expansion_query",
+  ACTION_EXPANSION_PREVIEW: "policy.expansion_preview",
+  ACTION_EXPANSION_APPLY: "policy.expansion_apply",
+  ACTION_EXPANSION_ROLLBACK: "policy.expansion_rollback",
 
   // Legacy Mutating Actions (Foundation stage — blocked by PRIVILEGED_EXECUTOR_DISABLED)
   ACTION_APPLY_POLICIES: "policy.apply",
@@ -41,12 +47,18 @@ export const ALLOWED_IPC_ACTIONS: readonly string[] = [
   IPC_CONSTANTS.ACTION_CREATE_BASELINE,
   IPC_CONSTANTS.ACTION_CREATE_LOCAL_ACCOUNT,
   IPC_CONSTANTS.ACTION_GET_ENVIRONMENT,
+  IPC_CONSTANTS.ACTION_QUERY_UPDATE_STATUS,
+  IPC_CONSTANTS.ACTION_QUERY_NETWORK_SHARES,
   IPC_CONSTANTS.ACTION_SET_MODE,
   IPC_CONSTANTS.ACTION_QUERY_POLICY_CATALOG,
   IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES,
   IPC_CONSTANTS.ACTION_APPLY_TRANSACTION,
   IPC_CONSTANTS.ACTION_ROLLBACK_TRANSACTION,
   IPC_CONSTANTS.ACTION_QUERY_TRANSACTION_STATUS,
+  IPC_CONSTANTS.ACTION_EXPANSION_QUERY,
+  IPC_CONSTANTS.ACTION_EXPANSION_PREVIEW,
+  IPC_CONSTANTS.ACTION_EXPANSION_APPLY,
+  IPC_CONSTANTS.ACTION_EXPANSION_ROLLBACK,
   IPC_CONSTANTS.ACTION_APPLY_POLICIES,
   IPC_CONSTANTS.ACTION_ROLLBACK_POLICIES
 ];
@@ -107,10 +119,14 @@ export interface InstalledAppDto {
   isAppx?: boolean;
 }
 
+export type AccountPrivilegeClassification = "Unknown" | "StandardUser" | "Administrator";
+
 export interface LocalUserDto {
   name: string;
   enabled: boolean;
   isAdmin: boolean;
+  privilegeClassification?: AccountPrivilegeClassification;
+  classificationDetail?: string | null;
   sid?: string;
 }
 
@@ -130,6 +146,39 @@ export interface MachineInventoryDto {
   installedApps: InstalledAppDto[];
   localUsers: LocalUserDto[];
   disks: DiskInfoDto[];
+}
+
+export interface UpdateStatusDto {
+  currentVersion: string;
+  installChannel: "Velopack" | "InnoSetup" | "Portable" | string;
+  autoUpdateSupported: boolean;
+  feedUrl: string;
+  lastCheckedAt?: string | null;
+  lastCheckState: "Idle" | "UpToDate" | "UpdateDownloaded" | "FeedUnavailable" | string;
+  pendingVersion?: string | null;
+  coexistingLegacyInstallDetected: boolean;
+  channelSummary: string;
+}
+
+export interface MappedDriveDto {
+  driveLetter: string;
+  remotePath: string;
+  persistent: boolean;
+  status: string;
+}
+
+export interface LocalSmbShareDto {
+  name: string;
+  localPath: string;
+  remark: string;
+}
+
+export interface NetworkShareEnvironmentDto {
+  scannedAt: string;
+  isMock: boolean;
+  smb1Enabled?: boolean | null;
+  mappedDrives: MappedDriveDto[];
+  localShares: LocalSmbShareDto[];
 }
 
 export interface BaselineCreationResultDto {

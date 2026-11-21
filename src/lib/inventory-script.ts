@@ -1,13 +1,5 @@
 import { APP_CATALOG } from "./apps";
-
-function psString(value: string) {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-function psArray(values: readonly string[]) {
-  if (!values.length) return "@()";
-  return `@(\n${values.map((value) => `        ${psString(value)}`).join(",\n")}\n    )`;
-}
+import { psArray, psString, withPsUtf8Bom } from "./powershell";
 
 export function generateInventoryScannerScript(): string {
   const appBlocks = Object.entries(APP_CATALOG)
@@ -15,12 +7,12 @@ export function generateInventoryScannerScript(): string {
       ([id, app]) => `    @{
         Id = ${psString(id)}
         Label = ${psString(app.label)}
-        Paths = ${psArray(app.paths)}
+        Paths = ${psArray(app.paths, "        ")}
     }`
     )
     .join(",\n");
 
-  return `#requires -version 5.1
+  return withPsUtf8Bom(`#requires -version 5.1
 <#
 WINLAB PC INVENTORY
 Gera um inventário local para importar no WinLab Configurator.
@@ -157,5 +149,5 @@ Write-Host "Inventário WinLab criado com sucesso." -ForegroundColor Green
 Write-Host $outputPath -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Agora importe esse JSON no WinLab Configurator." -ForegroundColor Yellow
-`;
+`);
 }

@@ -105,6 +105,14 @@ namespace WinLab.Contracts
         public bool IsAppx { get; set; }
     }
 
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public enum AccountPrivilegeClassification
+    {
+        Unknown = 0,
+        StandardUser = 1,
+        Administrator = 2
+    }
+
     public class LocalUserDto
     {
         [JsonPropertyName("name")]
@@ -116,8 +124,29 @@ namespace WinLab.Contracts
         [JsonPropertyName("isAdmin")]
         public bool IsAdmin { get; set; }
 
+        [JsonPropertyName("privilegeClassification")]
+        public AccountPrivilegeClassification? PrivilegeClassification { get; set; }
+
+        [JsonPropertyName("classificationDetail")]
+        public string? ClassificationDetail { get; set; }
+
         [JsonPropertyName("sid")]
         public string? Sid { get; set; }
+
+        public AccountPrivilegeClassification GetEffectivePrivilegeClassification()
+        {
+            if (IsAdmin)
+            {
+                return AccountPrivilegeClassification.Administrator;
+            }
+
+            if (PrivilegeClassification.HasValue)
+            {
+                return PrivilegeClassification.Value;
+            }
+
+            return AccountPrivilegeClassification.StandardUser;
+        }
     }
 
     public class DiskInfoDto
@@ -133,5 +162,80 @@ namespace WinLab.Contracts
 
         [JsonPropertyName("freePercent")]
         public double FreePercent { get; set; }
+    }
+
+    public class UpdateStatusDto
+    {
+        [JsonPropertyName("currentVersion")]
+        public string CurrentVersion { get; set; } = "0.9.1";
+
+        [JsonPropertyName("installChannel")]
+        public string InstallChannel { get; set; } = "Portable";
+
+        [JsonPropertyName("autoUpdateSupported")]
+        public bool AutoUpdateSupported { get; set; }
+
+        [JsonPropertyName("feedUrl")]
+        public string FeedUrl { get; set; } = string.Empty;
+
+        [JsonPropertyName("lastCheckedAt")]
+        public string? LastCheckedAt { get; set; }
+
+        [JsonPropertyName("lastCheckState")]
+        public string LastCheckState { get; set; } = "Idle";
+
+        [JsonPropertyName("pendingVersion")]
+        public string? PendingVersion { get; set; }
+
+        [JsonPropertyName("coexistingLegacyInstallDetected")]
+        public bool CoexistingLegacyInstallDetected { get; set; }
+
+        [JsonPropertyName("channelSummary")]
+        public string ChannelSummary { get; set; } = string.Empty;
+    }
+
+    public class MappedDriveDto
+    {
+        [JsonPropertyName("driveLetter")]
+        public string DriveLetter { get; set; } = string.Empty;
+
+        [JsonPropertyName("remotePath")]
+        public string RemotePath { get; set; } = string.Empty;
+
+        [JsonPropertyName("persistent")]
+        public bool Persistent { get; set; }
+
+        [JsonPropertyName("status")]
+        public string Status { get; set; } = "Conectada";
+    }
+
+    public class LocalSmbShareDto
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("localPath")]
+        public string LocalPath { get; set; } = string.Empty;
+
+        [JsonPropertyName("remark")]
+        public string Remark { get; set; } = string.Empty;
+    }
+
+    public class NetworkShareEnvironmentDto
+    {
+        [JsonPropertyName("scannedAt")]
+        public string ScannedAt { get; set; } = DateTime.UtcNow.ToString("o");
+
+        [JsonPropertyName("isMock")]
+        public bool IsMock { get; set; }
+
+        [JsonPropertyName("smb1Enabled")]
+        public bool? Smb1Enabled { get; set; }
+
+        [JsonPropertyName("mappedDrives")]
+        public List<MappedDriveDto> MappedDrives { get; set; } = new List<MappedDriveDto>();
+
+        [JsonPropertyName("localShares")]
+        public List<LocalSmbShareDto> LocalShares { get; set; } = new List<LocalSmbShareDto>();
     }
 }

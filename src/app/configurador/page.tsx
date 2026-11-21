@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { BrowserSettings } from "@/components/BrowserSettings";
+import { StandalonePowerShell } from "@/components/StandalonePowerShell";
+import { WindowsPolicyHelp } from "@/components/WindowsPolicyHelp";
 import { APP_CATALOG } from "@/lib/apps";
 import { parseConfigJson } from "@/lib/config-io";
 import {
@@ -19,7 +22,8 @@ import { generatePreflightScript } from "@/lib/preflight-script";
 import { getConfigReview } from "@/lib/review";
 import { getPreset, presets } from "@/lib/presets";
 import { Config, AllowedAppId, PresetId } from "@/lib/types";
-import { pathRisk } from "@/lib/security";
+import { customExecutablePathError, pathRisk } from "@/lib/security";
+import { downloadBlob } from "@/lib/web-download";
 import { buildWinLabPackageFiles } from "@/lib/package-integrity";
 import { buildPilotPackageFiles, evaluatePilotReadiness } from "@/lib/pilot";
 import { createZip } from "@/lib/zip";
@@ -35,15 +39,6 @@ import {
   generateVerifyScript
 } from "@/lib/generator";
 
-function downloadBlob(name: string, blob: Blob) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
 function downloadText(name: string, content: string, type = "text/plain") {
   downloadBlob(name, new Blob([content], { type }));
 }
@@ -52,6 +47,7 @@ export default function Home() {
   const [config, setConfig] = useState<Config>(() => getPreset("microlins"));
   const [activePreset, setActivePreset] = useState<PresetId | null>("microlins");
   const [newPath, setNewPath] = useState("");
+  const [newPathError, setNewPathError] = useState("");
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [inventory, setInventory] = useState<PcInventory | null>(null);
   const [inventoryStatus, setInventoryStatus] = useState<string | null>(null);
@@ -96,7 +92,9 @@ export default function Home() {
 
   function addCustomPath() {
     const path = newPath.trim();
-    if (!path) return;
+    const error = customExecutablePathError(path);
+    setNewPathError(error ?? "");
+    if (error) return;
 
     if (!config.customAllowedPaths.includes(path)) {
       set("customAllowedPaths", [...config.customAllowedPaths, path]);
@@ -603,14 +601,14 @@ export default function Home() {
               }
             >
               <option value="AuditOnly">Auditoria — não bloqueia ainda</option>
-              <option value="Enabled">Bloqueio ativo</option>
+              <option value="Enabled" disabled>Bloqueio ativo (indisponível nesta homologação)</option>
             </select>
           </label>
 
           <p className="notice">
             {config.enforcementMode === "AuditOnly"
               ? "Recomendado no primeiro teste: o Windows registra o que seria bloqueado sem interromper a aula."
-              : "Bloqueio real ativado. Use somente depois de validar a allowlist em um PC piloto."}
+              : "O perfil solicita bloqueio ativo. Selecione AuditOnly antes de aplicar nesta homologação."}
           </p>
         </section>
 
@@ -638,11 +636,18 @@ export default function Home() {
             <input
               placeholder={"C:\\Program Files\\Aplicativo\\app.exe"}
               value={newPath}
-              onChange={(e) => setNewPath(e.target.value)}
+              onChange={(event) => {
+                setNewPath(event.target.value);
+                setNewPathError("");
+              }}
+              aria-label="Caminho completo do executável"
+              aria-invalid={Boolean(newPathError)}
+              aria-describedby={newPathError ? "technical-path-error" : undefined}
               onKeyDown={(e) => e.key === "Enter" && addCustomPath()}
             />
             <button onClick={addCustomPath}>Adicionar</button>
           </div>
+          {newPathError && <p className="warningBox" role="alert" id="technical-path-error">{newPathError}</p>}
 
           {config.customAllowedPaths.length > 0 && (
             <ul className="paths">
@@ -681,7 +686,7 @@ export default function Home() {
             onChange={(value) => set("blockInstallers", value)}
           />
           <Toggle
-            label="Bloquear apps empacotados / Microsoft Store"
+            label="Bloquear o aplicativo da Microsoft Store"
             value={config.blockStoreApps}
             onChange={(value) => set("blockStoreApps", value)}
           />
@@ -705,103 +710,12 @@ export default function Home() {
             value={config.allowLocalAccountManagement}
             onChange={(value) => set("allowLocalAccountManagement", value)}
           />
+          <WindowsPolicyHelp />
         </section>
 
         <section className="panel">
-          <h2>Google Chrome · somente usuário restrito</h2>
-          <Toggle
-            label="Bloquear extensões"
-            value={config.blockChromeExtensions}
-            onChange={(value) => set("blockChromeExtensions", value)}
-          />
-          <Toggle
-            label="Bloquear modo convidado"
-            value={config.blockChromeGuest}
-            onChange={(value) => set("blockChromeGuest", value)}
-          />
-          <Toggle
-            label="Bloquear novos perfis"
-            value={config.blockChromeNewProfiles}
-            onChange={(value) => set("blockChromeNewProfiles", value)}
-          />
-          <Toggle
-            label="Bloquear modo anônimo"
-            value={config.blockChromeIncognito}
-            onChange={(value) => set("blockChromeIncognito", value)}
-          />
-          <Toggle
-            label="Bloquear novas senhas"
-            value={config.blockChromePasswordManager}
-            onChange={(value) => set("blockChromePasswordManager", value)}
-          />
-        </section>
-
-        <section className="panel">
-          <h2>Sites · Chrome e Edge</h2>
-
-          <label>
-            Regra de navegação
-            <select
-              value={config.browserUrlMode}
-              onChange={(event) =>
-                set(
-                  "browserUrlMode",
-                  event.target.value as Config["browserUrlMode"]
-                )
-              }
-            >
-              <option value="Unrestricted">Sem restrição por URL</option>
-              <option value="BlockList">Bloquear sites específicos</option>
-              <option value="AllowListOnly">Permitir somente sites da lista</option>
-            </select>
-          </label>
-
-          {config.browserUrlMode === "BlockList" && (
-            <label className="textAreaField">
-              Sites bloqueados · um por linha
-              <textarea
-                rows={5}
-                placeholder={"youtube.com\nroblox.com\n*.exemplo.com"}
-                value={config.blockedUrls.join("\n")}
-                onChange={(event) =>
-                  set(
-                    "blockedUrls",
-                    event.target.value
-                      .split("\n")
-                      .map((value) => value.trim())
-                      .filter(Boolean)
-                  )
-                }
-              />
-            </label>
-          )}
-
-          {config.browserUrlMode !== "Unrestricted" && (
-            <label className="textAreaField">
-              {config.browserUrlMode === "AllowListOnly"
-                ? "Sites permitidos · um por linha"
-                : "Exceções permitidas · um por linha"}
-              <textarea
-                rows={5}
-                placeholder={"microlins.com.br\noffice.com\ngoogle.com"}
-                value={config.allowedUrls.join("\n")}
-                onChange={(event) =>
-                  set(
-                    "allowedUrls",
-                    event.target.value
-                      .split("\n")
-                      .map((value) => value.trim())
-                      .filter(Boolean)
-                  )
-                }
-              />
-            </label>
-          )}
-
-          <p className="muted">
-            As regras são aplicadas somente ao usuário restrito e usam as políticas
-            URLBlocklist/URLAllowlist dos navegadores.
-          </p>
+          <h2>Chrome e Edge</h2>
+          <BrowserSettings config={config} onChange={set} />
         </section>
 
         <section className="panel">
@@ -1020,18 +934,9 @@ export default function Home() {
               </p>
             </div>
 
-            <button
-              disabled={configErrors.length > 0}
-              onClick={() => {
-                if (!configErrors.length) {
-                  downloadText("setup.ps1", setupScript);
-                }
-              }}
-            >
-              Baixar só setup.ps1
-            </button>
           </div>
 
+          <StandalonePowerShell config={config} disabled={configErrors.length > 0} />
           <pre>{setupScript.slice(0, 12000)}</pre>
         </section>
       </div>

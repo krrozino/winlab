@@ -15,6 +15,7 @@ namespace WinLab.Contracts.RegistryServices
         // Fault injection hooks for testing
         private readonly Dictionary<string, Exception> _writeFaults = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Exception> _probeFaults = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Exception> _deleteFaults = new(StringComparer.OrdinalIgnoreCase);
 
         public InMemoryRegistryService()
         {
@@ -81,6 +82,22 @@ namespace WinLab.Contracts.RegistryServices
             lock (_lock)
             {
                 _probeFaults.Remove(valueName);
+            }
+        }
+
+        public void SetDeleteFault(string valueName, Exception ex)
+        {
+            lock (_lock)
+            {
+                _deleteFaults[valueName] = ex;
+            }
+        }
+
+        public void ClearDeleteFault(string valueName)
+        {
+            lock (_lock)
+            {
+                _deleteFaults.Remove(valueName);
             }
         }
 
@@ -157,6 +174,10 @@ namespace WinLab.Contracts.RegistryServices
         {
             lock (_lock)
             {
+                if (_deleteFaults.TryGetValue(valueName, out var ex))
+                {
+                    throw ex;
+                }
                 string norm = NormalizeValuePath(hive, subKeyPath, valueName);
                 _values.Remove(norm);
             }
@@ -278,6 +299,9 @@ namespace WinLab.Contracts.RegistryServices
         private readonly HashSet<string> _loggedOnUsers = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _profilePaths = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _uninitializedUsers = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _unknownPrivilegeUsers = new(StringComparer.OrdinalIgnoreCase);
+
+        public bool UseOfflineMountPrefix { get; set; }
 
         public void AddAdministratorSid(string sid) => _adminSids.Add(sid);
         public void SetUserLoggedOn(string sid, bool loggedOn = true)
@@ -287,6 +311,11 @@ namespace WinLab.Contracts.RegistryServices
         }
         public void SetProfilePath(string sid, string path) => _profilePaths[sid] = path;
         public void SetUserUninitialized(string sid) => _uninitializedUsers.Add(sid);
+        public void SetUnknownPrivilege(string sidOrName, bool unknown = true)
+        {
+            if (unknown) _unknownPrivilegeUsers.Add(sidOrName.Trim());
+            else _unknownPrivilegeUsers.Remove(sidOrName.Trim());
+        }
 
         public IUserHiveScope OpenUserHive(string? userSid)
         {
@@ -302,7 +331,7 @@ namespace WinLab.Contracts.RegistryServices
             }
 
             bool isLoggedOn = _loggedOnUsers.Contains(userSid);
-            string root = userSid; // Under HKU\<userSid>
+            string root = (UseOfflineMountPrefix && !isLoggedOn) ? $"WinLab_Mounted_{userSid}" : userSid;
             return new MockUserHiveScope(userSid, root, isAvailable: true, status: isLoggedOn ? UserProfileStatus.ActiveSession : UserProfileStatus.OfflineProfileReady);
         }
 
@@ -319,15 +348,21 @@ namespace WinLab.Contracts.RegistryServices
             return path ?? $@"C:\Users\{userSid}";
         }
 
+        public AccountPrivilegeClassification ClassifyAccountPrivilege(string? userSidOrName)
+        {
+            if (string.IsNullOrWhiteSpace(userSidOrName)) return AccountPrivilegeClassification.Unknown;
+            string trimmed = userSidOrName.Trim();
+            if (_adminSids.Contains(trimmed)) return AccountPrivilegeClassification.Administrator;
+            if (trimmed.EndsWith("-500", StringComparison.OrdinalIgnoreCase)) return AccountPrivilegeClassification.Administrator;
+            if (string.Equals(trimmed, "Administrador", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(trimmed, "Administrator", StringComparison.OrdinalIgnoreCase)) return AccountPrivilegeClassification.Administrator;
+            if (_unknownPrivilegeUsers.Contains(trimmed)) return AccountPrivilegeClassification.Unknown;
+            return AccountPrivilegeClassification.StandardUser;
+        }
+
         public bool IsUserAdministrator(string? userSid)
         {
-            if (string.IsNullOrWhiteSpace(userSid)) return false;
-            string trimmed = userSid.Trim();
-            if (_adminSids.Contains(trimmed)) return true;
-            if (trimmed.EndsWith("-500", StringComparison.OrdinalIgnoreCase)) return true;
-            if (string.Equals(trimmed, "Administrador", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(trimmed, "Administrator", StringComparison.OrdinalIgnoreCase)) return true;
-            return false;
+            return ClassifyAccountPrivilege(userSid) == AccountPrivilegeClassification.Administrator;
         }
     }
 }

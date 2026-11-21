@@ -1,28 +1,23 @@
 import { APP_CATALOG } from "./apps";
+import { psArray, psBool, psBoundedInt, psEnum, psString, withPsUtf8Bom } from "./powershell";
 import type { Config } from "./types";
 
-function psString(value: string) {
-  return "'" + value.replaceAll("'", "''") + "'";
-}
-
-function psBool(value: boolean) {
-  return value ? "$true" : "$false";
-}
-
-function psArray(values: readonly string[]) {
-  if (!values.length) return "@()";
-  return "@(" + values.map(psString).join(", ") + ")";
-}
-
 export function generatePreflightScript(config: Config): string {
+  const enforcementMode = psEnum(config.enforcementMode, ["AuditOnly", "Enabled"] as const, "enforcementMode");
+  const browserUrlMode = psEnum(
+    config.browserUrlMode,
+    ["Unrestricted", "BlockList", "AllowListOnly"] as const,
+    "browserUrlMode"
+  );
+  const storageWarningFreePercent = psBoundedInt(config.storageWarningFreePercent, 15, 1, 99);
   const knownApps = config.allowedApps
     .map((id) => {
       const app = APP_CATALOG[id];
-      return "@{ Id = " + psString(id) + "; Label = " + psString(app.label) + "; Paths = " + psArray(app.paths) + " }";
+      return "@{ Id = " + psString(id) + "; Label = " + psString(app.label) + "; Paths = " + psArray(app.paths, "        ") + " }";
     })
     .join(",\n    ");
 
-  return String.raw`#requires -version 5.1
+  return withPsUtf8Bom(String.raw`#requires -version 5.1
 [CmdletBinding()]
 param([string]$OutputPath = $null)
 
@@ -36,9 +31,9 @@ $ProfileName = ${psString(config.profileName)}
 $Aluno = ${psString(config.studentUser)}
 $Admin = ${psString(config.adminUser)}
 $CreateAccounts = ${psBool(config.createAccounts)}
-$EnforcementMode = ${psString(config.enforcementMode)}
-$StorageWarningFreePercent = ${config.storageWarningFreePercent}
-$BrowserUrlMode = ${psString(config.browserUrlMode)}
+$EnforcementMode = ${psString(enforcementMode)}
+$StorageWarningFreePercent = ${storageWarningFreePercent}
+$BrowserUrlMode = ${psString(browserUrlMode)}
 $AllowedUrls = ${psArray(config.allowedUrls)}
 $CustomAllowedPaths = ${psArray(config.customAllowedPaths)}
 
@@ -369,5 +364,5 @@ foreach ($check in $checks) {
     $color = if ($check.status -eq "PASS") { "Green" } elseif ($check.status -eq "WARN") { "Yellow" } else { "Red" }
     Write-Host ("[" + $check.status + "] " + $check.label + " - " + $check.message) -ForegroundColor $color
 }
-`;
+`);
 }

@@ -12,7 +12,7 @@ export function getConfigReview(config: Config): ReviewItem[] {
 
   items.push({
     level: "info",
-    text: "Safety & Recovery ativo: scripts mutáveis exigem -Apply; setup preserva baseline e rollback exige state.json válido."
+    text: "O setup e o rollback exigem -Apply. O setup guarda as políticas anteriores, e o rollback usa esse backup e o estado registrado na máquina."
   });
 
   if (config.createAccounts) {
@@ -32,7 +32,7 @@ export function getConfigReview(config: Config): ReviewItem[] {
 
   items.push({
     level: "info",
-    text: `${config.allowedApps.length} aplicativo(s) conhecido(s) na allowlist: ${config.allowedApps
+    text: `${config.allowedApps.length} aplicativo(s) do catálogo selecionado(s): ${config.allowedApps
       .map((id) => APP_CATALOG[id].label)
       .join(", ") || "nenhum"}.`
   });
@@ -63,7 +63,7 @@ export function getConfigReview(config: Config): ReviewItem[] {
 
   items.push({
     level: "info",
-    text: `USB — leitura: ${config.blockUsbRead ? "bloqueada" : "permitida"}; gravação: ${config.blockUsbWrite ? "bloqueada" : "permitida"}; execução: ${config.blockUsbExecute ? "bloqueada" : "permitida"}.`
+    text: `USB · leitura ${config.blockUsbRead ? "bloqueada" : "sem bloqueio WinLab"} · gravação ${config.blockUsbWrite ? "bloqueada" : "sem bloqueio WinLab"} · execução ${config.blockUsbExecute ? (config.enforcementMode === "Enabled" ? "bloqueada pelo AppLocker" : "em auditoria pelo AppLocker") : "sujeita à lista de aplicativos"}.`
   });
 
   if (config.profileCleanupMode === "Delete") {

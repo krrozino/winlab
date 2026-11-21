@@ -312,20 +312,43 @@ namespace WinLab.Contracts.Transactions
                     handlers.Add((handler, desired));
                 }
 
-                // 2. Administrator Immunity Guard
+                // 2. Administrator Immunity Guard & User-Scope Target SID Guard
+                bool hasUserPolicy = handlers.Any(h => h.Handler.Scope == PolicyScope.User);
                 var sidAdminCheck = SecurityValidator.ValidateTargetNotAdministrator(request.TargetUserSid);
                 var nameAdminCheck = SecurityValidator.ValidateTargetNotAdministrator(request.TargetUserName);
+                var sidPrivilege = !string.IsNullOrWhiteSpace(request.TargetUserSid)
+                    ? _hiveManager.ClassifyAccountPrivilege(request.TargetUserSid)
+                    : AccountPrivilegeClassification.Unknown;
+                var namePrivilege = !string.IsNullOrWhiteSpace(request.TargetUserName)
+                    ? _hiveManager.ClassifyAccountPrivilege(request.TargetUserName)
+                    : AccountPrivilegeClassification.Unknown;
+
                 bool isTargetAdmin = !sidAdminCheck.IsValid ||
                                      !nameAdminCheck.IsValid ||
-                                     _hiveManager.IsUserAdministrator(request.TargetUserSid) ||
-                                     _hiveManager.IsUserAdministrator(request.TargetUserName);
-                if (isTargetAdmin)
+                                     sidPrivilege == AccountPrivilegeClassification.Administrator ||
+                                     namePrivilege == AccountPrivilegeClassification.Administrator;
+                if (isTargetAdmin && hasUserPolicy)
                 {
-                    bool hasUserPolicy = handlers.Any(h => h.Handler.Scope == PolicyScope.User);
-                    if (hasUserPolicy)
+                    tx.Status = TransactionStatus.Failed;
+                    tx.FailureReason = "Violação de segurança: Contas de Administrador possuem imunidade e não podem receber restrições de laboratório.";
+                    await SaveTransactionAsync(tx, ct);
+
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = tx.FailureReason ?? string.Empty
+                    };
+                }
+
+                if (hasUserPolicy)
+                {
+                    var sidValidation = SecurityValidator.ValidateTargetUserSid(request.TargetUserSid);
+                    if (!sidValidation.IsValid)
                     {
                         tx.Status = TransactionStatus.Failed;
-                        tx.FailureReason = "Violação de segurança: Contas de Administrador possuem imunidade e não podem receber restrições de laboratório.";
+                        tx.FailureReason = sidValidation.Error ?? "Conta-alvo com SID válido é obrigatória para políticas de usuário.";
                         await SaveTransactionAsync(tx, ct);
 
                         return new ApplyTransactionResultDto
@@ -333,15 +356,49 @@ namespace WinLab.Contracts.Transactions
                             TransactionId = txId,
                             Status = TransactionStatus.Failed,
                             Success = false,
-                            Message = tx.FailureReason ?? string.Empty
+                            Message = tx.FailureReason
+                        };
+                    }
+
+                    if (sidPrivilege != AccountPrivilegeClassification.StandardUser)
+                    {
+                        tx.Status = TransactionStatus.Failed;
+                        tx.FailureReason = "Operação bloqueada: não foi possível confirmar os privilégios da conta-alvo (classificação desconhecida).";
+                        await SaveTransactionAsync(tx, ct);
+
+                        return new ApplyTransactionResultDto
+                        {
+                            TransactionId = txId,
+                            Status = TransactionStatus.Failed,
+                            Success = false,
+                            Message = tx.FailureReason
                         };
                     }
                 }
 
                 // 3. Pre-flight Baseline Capture
-                var (baseline, rollbackPlan) = _snapshotManager.CaptureBaseline(
-                    handlers.Select(h => h.Handler),
-                    request.TargetUserSid);
+                BaselineSnapshotDto baseline;
+                List<RollbackStepDto> rollbackPlan;
+                try
+                {
+                    (baseline, rollbackPlan) = _snapshotManager.CaptureBaseline(
+                        handlers.Select(h => h.Handler),
+                        request.TargetUserSid);
+                }
+                catch (Exception ex)
+                {
+                    tx.Status = TransactionStatus.Failed;
+                    tx.FailureReason = $"Falha na captura de baseline: {ex.Message}";
+                    await SaveTransactionAsync(tx, ct);
+
+                    return new ApplyTransactionResultDto
+                    {
+                        TransactionId = txId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = tx.FailureReason
+                    };
+                }
 
                 tx.Baseline = baseline;
                 tx.RollbackPlan = rollbackPlan;
@@ -352,11 +409,15 @@ namespace WinLab.Contracts.Transactions
                 await SaveTransactionAsync(tx, ct);
 
                 var appliedHandlers = new List<IPolicyHandler>();
+                var initiatedPolicyIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 bool failureOccurred = false;
 
                 foreach (var (handler, desiredState) in handlers)
                 {
                     ct.ThrowIfCancellationRequested();
+
+                    // Record before mutation starts so partial writes inside a multi-write handler are always rolled back
+                    initiatedPolicyIds.Add(handler.PolicyId);
 
                     // Mutation step
                     PolicyApplyResult applyResult;
@@ -401,13 +462,26 @@ namespace WinLab.Contracts.Transactions
                         };
                     }
 
-                    bool probeMatches = (desiredState == PolicyDesiredState.Blocked && probeResult.IsActive)
-                                     || (desiredState == PolicyDesiredState.NotConfigured && !probeResult.IsActive);
+                    bool probeMatches;
+                    if (desiredState == PolicyDesiredState.Blocked)
+                    {
+                        probeMatches = probeResult.IsActive && IsConfirmedActiveState(probeResult.EffectiveState);
+                    }
+                    else
+                    {
+                        bool singleValueAbsent = handler is not RegistryDWordPolicyHandler || probeResult.LiveValue == null;
+                        probeMatches = !probeResult.IsActive &&
+                                       probeResult.EffectiveState == PolicyEffectiveState.NotConfigured &&
+                                       singleValueAbsent;
+                    }
 
                     if (!probeMatches)
                     {
                         tx.FailedPolicyId = handler.PolicyId;
-                        tx.FailureReason = $"Divergência na verificação imediata para '{handler.PolicyId}': esperado ativo={desiredState == PolicyDesiredState.Blocked}, obtido ativo={probeResult.IsActive}. {probeResult.DetailMessage}";
+                        string expectedDesc = desiredState == PolicyDesiredState.Blocked
+                            ? "estado ativo confirmado"
+                            : nameof(PolicyEffectiveState.NotConfigured);
+                        tx.FailureReason = $"Divergência na verificação imediata para '{handler.PolicyId}': esperado {expectedDesc} (ativo={desiredState == PolicyDesiredState.Blocked}), obtido estado={probeResult.EffectiveState} (ativo={probeResult.IsActive}). {probeResult.DetailMessage}";
                         failureOccurred = true;
                         appliedHandlers.Add(handler); // Needs rollback
                         break;
@@ -448,11 +522,36 @@ namespace WinLab.Contracts.Transactions
                 }
                 else
                 {
-                    // Trigger Automated Rollback for applied items in reverse order
+                    // Trigger Automated Rollback for all initiated/applied items in reverse order
                     tx.Status = TransactionStatus.RollingBack;
                     await SaveTransactionAsync(tx, ct);
 
-                    int rolledBackCount = await ExecuteRollbackPlanAsync(tx, appliedHandlers.Select(h => h.PolicyId).ToHashSet(StringComparer.OrdinalIgnoreCase), ct);
+                    var appliedPolicyIds = appliedHandlers.Select(h => h.PolicyId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var (rolledBackCount, rollbackFailures, rollbackErrors) = await ExecuteRollbackPlanAsync(
+                        tx,
+                        initiatedPolicyIds,
+                        ct,
+                        appliedPolicyIds);
+
+                    if (rollbackFailures > 0)
+                    {
+                        tx.Status = TransactionStatus.Failed;
+                        tx.FailureReason = $"{tx.FailureReason} | Recuperação incompleta: {string.Join("; ", rollbackErrors)}";
+                        tx.UpdatedAt = DateTime.UtcNow;
+                        await SaveTransactionAsync(tx, ct);
+
+                        return new ApplyTransactionResultDto
+                        {
+                            TransactionId = txId,
+                            Status = TransactionStatus.Failed,
+                            Success = false,
+                            FailedPolicyId = tx.FailedPolicyId,
+                            FailureReason = tx.FailureReason,
+                            AppliedCount = appliedHandlers.Count,
+                            RolledBackCount = rolledBackCount,
+                            Message = $"Aplicação interrompida em '{tx.FailedPolicyId}' com recuperação incompleta: {rolledBackCount} item(ns) revertido(s) e {rollbackFailures} falha(s) no rollback."
+                        };
+                    }
 
                     tx.Status = TransactionStatus.RolledBack;
                     tx.UpdatedAt = DateTime.UtcNow;
@@ -509,10 +608,44 @@ namespace WinLab.Contracts.Transactions
                     };
                 }
 
+                if (!string.IsNullOrWhiteSpace(request.TargetUserSid) &&
+                    !string.IsNullOrWhiteSpace(tx.TargetUserSid) &&
+                    !string.Equals(request.TargetUserSid.Trim(), tx.TargetUserSid.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    string mismatchMsg = $"TargetUserSid '{request.TargetUserSid}' diverge da transação original '{tx.TargetUserSid}'.";
+                    return new RollbackResultDto
+                    {
+                        TransactionId = request.TransactionId,
+                        Status = TransactionStatus.Failed,
+                        Success = false,
+                        Message = mismatchMsg,
+                        Error = mismatchMsg
+                    };
+                }
+
                 tx.Status = TransactionStatus.RollingBack;
                 await SaveTransactionAsync(tx, ct);
 
-                int restored = await ExecuteRollbackPlanAsync(tx, null, ct);
+                var (restored, rollbackFailures, rollbackErrors) = await ExecuteRollbackPlanAsync(tx, null, ct, null);
+
+                if (rollbackFailures > 0)
+                {
+                    string incompleteMsg = $"Recuperação incompleta na transação '{request.TransactionId}': {restored} item(ns) restaurado(s), {rollbackFailures} falha(s) ({string.Join("; ", rollbackErrors)}).";
+                    tx.Status = TransactionStatus.Failed;
+                    tx.FailureReason = incompleteMsg;
+                    tx.UpdatedAt = DateTime.UtcNow;
+                    await SaveTransactionAsync(tx, ct);
+
+                    return new RollbackResultDto
+                    {
+                        TransactionId = request.TransactionId,
+                        Status = TransactionStatus.Failed,
+                        RestoredCount = restored,
+                        Success = false,
+                        Message = incompleteMsg,
+                        Error = incompleteMsg
+                    };
+                }
 
                 tx.Status = TransactionStatus.RolledBack;
                 tx.UpdatedAt = DateTime.UtcNow;
@@ -533,58 +666,608 @@ namespace WinLab.Contracts.Transactions
             }
         }
 
-        private async Task<int> ExecuteRollbackPlanAsync(
+        private static bool IsConfirmedActiveState(PolicyEffectiveState state)
+        {
+            return state is PolicyEffectiveState.Applied
+                or PolicyEffectiveState.PendingLogoff
+                or PolicyEffectiveState.PendingReboot
+                or PolicyEffectiveState.PendingAppRestart
+                or PolicyEffectiveState.PendingRefresh;
+        }
+
+        private async Task<(int RestoredCount, int FailedCount, List<string> Errors)> ExecuteRollbackPlanAsync(
             TransactionDto tx,
             HashSet<string>? policyFilter,
-            CancellationToken ct)
+            CancellationToken ct,
+            HashSet<string>? appliedPolicyFilter = null)
         {
+            await Task.CompletedTask;
             int restoredCount = 0;
+            int failedCount = 0;
+            var errors = new List<string>();
 
-            foreach (var step in tx.RollbackPlan)
+            var targetSteps = tx.RollbackPlan
+                .Where(step => policyFilter == null || policyFilter.Contains(step.PolicyId))
+                .ToList();
+
+            bool needsUserHive = !string.IsNullOrWhiteSpace(tx.TargetUserSid) &&
+                                 targetSteps.Any(step => IsUserScopedStep(step, tx.TargetUserSid));
+
+            using var hiveScope = needsUserHive
+                ? _hiveManager.OpenUserHive(tx.TargetUserSid)
+                : null;
+
+            foreach (var step in targetSteps)
             {
                 ct.ThrowIfCancellationRequested();
 
-                if (policyFilter != null && !policyFilter.Contains(step.PolicyId))
-                {
-                    continue;
-                }
-
                 try
                 {
-                    var hive = InMemoryRegistryService.ParseHive(step.Hive);
+                    var (hive, resolvedSubKey) = ResolveStepTarget(step, tx.TargetUserSid, hiveScope);
+                    var snapshotEntry = FindMatchingSnapshotEntry(tx.Baseline, step, tx.TargetUserSid, resolvedSubKey);
+                    bool stepWasPreviouslyApplied = appliedPolicyFilter == null || appliedPolicyFilter.Contains(step.PolicyId);
 
                     if (string.Equals(step.Operation, "DeleteValue", StringComparison.OrdinalIgnoreCase))
                     {
-                        _registry.DeleteValue(hive, step.SubKey, step.ValueName);
+                        if (snapshotEntry != null && snapshotEntry.State == BaselineValueState.Exists)
+                        {
+                            throw new InvalidOperationException(
+                                $"Divergência entre plano de rollback (DeleteValue) e snapshot original ({snapshotEntry.State}) para '{step.ValueName}'.");
+                        }
+
+                        bool alreadyAbsent = IsRegistryValueAbsent(hive, resolvedSubKey, step.ValueName);
+                        if (!alreadyAbsent)
+                        {
+                            _registry.DeleteValue(hive, resolvedSubKey, step.ValueName);
+                        }
+
+                        if (!IsRegistryValueAbsent(hive, resolvedSubKey, step.ValueName))
+                        {
+                            throw new InvalidOperationException(
+                                $"O valor '{step.ValueName}' permaneceu presente em '{hive}\\{resolvedSubKey}' após tentativa de remoção.");
+                        }
+
+                        step.ExecutedAt = DateTime.UtcNow;
+                        step.VerifiedAt = DateTime.UtcNow;
+                        step.Status = "RolledBackAndVerified";
+                        if (stepWasPreviouslyApplied || !alreadyAbsent)
+                        {
+                            restoredCount++;
+                        }
                     }
                     else if (string.Equals(step.Operation, "RestoreValue", StringComparison.OrdinalIgnoreCase))
                     {
-                        var kind = Enum.TryParse<RegistryValueType>(step.RestoreKind, true, out var vk)
-                            ? vk
-                            : RegistryValueType.DWord;
-
-                        object val = step.RestoreValue ?? 0;
-                        if (kind == RegistryValueType.DWord && val is JsonElement je && je.ValueKind == JsonValueKind.Number)
+                        if (string.IsNullOrWhiteSpace(step.RestoreKind) ||
+                            !Enum.TryParse<RegistryValueType>(step.RestoreKind, true, out var kind))
                         {
-                            val = je.GetInt32();
+                            throw new InvalidOperationException(
+                                $"Tipo de registro inválido no plano de rollback para '{step.ValueName}': '{step.RestoreKind ?? "null"}'.");
                         }
 
-                        _registry.SetValue(hive, step.SubKey, step.ValueName, val, kind);
-                    }
+                        object expectedValue = NormalizeRegistryValue(kind, step.RestoreValue);
 
-                    // Restoration verification probe
-                    step.ExecutedAt = DateTime.UtcNow;
-                    step.VerifiedAt = DateTime.UtcNow;
-                    step.Status = "RolledBackAndVerified";
-                    restoredCount++;
+                        if (snapshotEntry != null)
+                        {
+                            if (snapshotEntry.State != BaselineValueState.Exists)
+                            {
+                                throw new InvalidOperationException(
+                                    $"Divergência entre plano de rollback (RestoreValue) e snapshot original ({snapshotEntry.State}) para '{step.ValueName}'.");
+                            }
+
+                            if (!Enum.TryParse<RegistryValueType>(snapshotEntry.ValueKind, true, out var snapKind) || snapKind != kind)
+                            {
+                                throw new InvalidOperationException(
+                                    $"Divergência de tipo entre plano de rollback ({kind}) e snapshot original ({snapshotEntry.ValueKind ?? "null"}) para '{step.ValueName}'.");
+                            }
+
+                            object snapValue = NormalizeRegistryValue(snapKind, snapshotEntry.OriginalValue);
+                            if (!RegistryValuesEqual(kind, snapValue, expectedValue))
+                            {
+                                throw new InvalidOperationException(
+                                    $"Divergência de conteúdo entre plano de rollback ({FormatRegistryValue(expectedValue)}) e snapshot original ({FormatRegistryValue(snapValue)}) para '{step.ValueName}'.");
+                            }
+                        }
+
+                        bool alreadyMatches = VerifyRestoredRegistryValue(hive, resolvedSubKey, step.ValueName, kind, expectedValue, out _);
+                        if (!alreadyMatches)
+                        {
+                            _registry.SetValue(hive, resolvedSubKey, step.ValueName, CloneValueForWrite(kind, expectedValue), kind);
+                        }
+
+                        if (!VerifyRestoredRegistryValue(hive, resolvedSubKey, step.ValueName, kind, expectedValue, out string? mismatchReason))
+                        {
+                            throw new InvalidOperationException(
+                                mismatchReason ?? $"O valor '{step.ValueName}' não pôde ser confirmado após restauração.");
+                        }
+
+                        step.ExecutedAt = DateTime.UtcNow;
+                        step.VerifiedAt = DateTime.UtcNow;
+                        step.Status = "RolledBackAndVerified";
+                        if (stepWasPreviouslyApplied || !alreadyMatches)
+                        {
+                            restoredCount++;
+                        }
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException($"Operação de rollback desconhecida: '{step.Operation}'.");
+                    }
                 }
                 catch (Exception ex)
                 {
                     step.Status = $"Failed: {ex.Message}";
+                    failedCount++;
+                    errors.Add($"{step.PolicyId} ({step.ValueName}): {ex.Message}");
                 }
             }
 
-            return restoredCount;
+            return (restoredCount, failedCount, errors);
+        }
+
+        private bool IsUserScopedStep(RollbackStepDto step, string? targetUserSid)
+        {
+            if (step.Scope.HasValue)
+            {
+                return step.Scope.Value == PolicyScope.User;
+            }
+
+            var handler = _catalog.GetPolicy(step.PolicyId);
+            if (handler != null)
+            {
+                return handler.Scope == PolicyScope.User;
+            }
+
+            var parsedHive = InMemoryRegistryService.ParseHive(step.Hive);
+            if (parsedHive == RegistryHiveType.LocalMachine)
+            {
+                return false;
+            }
+
+            return parsedHive == RegistryHiveType.Users ||
+                   parsedHive == RegistryHiveType.CurrentUser ||
+                   !string.IsNullOrWhiteSpace(targetUserSid);
+        }
+
+        private (RegistryHiveType Hive, string SubKey) ResolveStepTarget(
+            RollbackStepDto step,
+            string? targetUserSid,
+            IUserHiveScope? hiveScope)
+        {
+            if (string.IsNullOrWhiteSpace(step.ValueName))
+            {
+                throw new InvalidOperationException("Nome do valor de registro ausente no plano de rollback.");
+            }
+
+            if (IsUserScopedStep(step, targetUserSid))
+            {
+                if (string.IsNullOrWhiteSpace(targetUserSid))
+                {
+                    throw new InvalidOperationException(
+                        $"Registro de transação sem TargetUserSid confiável para '{step.PolicyId}'; recuperação bloqueada para evitar mutação acidental em HKCU.");
+                }
+
+                var sidValidation = SecurityValidator.ValidateTargetUserSid(targetUserSid);
+                if (!sidValidation.IsValid)
+                {
+                    throw new InvalidOperationException(
+                        sidValidation.Error ?? $"TargetUserSid inválido para recuperação: '{targetUserSid}'.");
+                }
+
+                if (hiveScope == null || !hiveScope.IsAvailable)
+                {
+                    throw new InvalidOperationException(
+                        hiveScope?.ErrorMessage ?? $"Hive do usuário '{targetUserSid}' indisponível no momento da recuperação.");
+                }
+
+                string relativeSubKey = ResolveRelativeSubKey(step, targetUserSid);
+                if (string.IsNullOrWhiteSpace(relativeSubKey))
+                {
+                    throw new InvalidOperationException(
+                        $"Subchave relativa ausente ou não confiável no plano de rollback para '{step.PolicyId}'.");
+                }
+
+                return BaselineSnapshotManager.ResolveTargetKey(relativeSubKey, targetUserSid, hiveScope);
+            }
+
+            if (!IsExplicitLocalMachineHive(step.Hive))
+            {
+                throw new InvalidOperationException(
+                    $"Hive de destino inválido ou não confiável no plano de rollback: '{step.Hive}'.");
+            }
+
+            if (string.IsNullOrWhiteSpace(step.SubKey))
+            {
+                throw new InvalidOperationException(
+                    $"Subchave ausente no plano de rollback para '{step.PolicyId}'.");
+            }
+
+            return (RegistryHiveType.LocalMachine, step.SubKey);
+        }
+
+        private static bool IsExplicitLocalMachineHive(string? hive)
+        {
+            if (string.IsNullOrWhiteSpace(hive)) return false;
+            string trimmed = hive.Trim();
+            return string.Equals(trimmed, nameof(RegistryHiveType.LocalMachine), StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("HKLM", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("HKEY_LOCAL_MACHINE", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string ResolveRelativeSubKey(RollbackStepDto step, string? targetUserSid)
+        {
+            if (!string.IsNullOrWhiteSpace(step.RelativeSubKey))
+            {
+                return step.RelativeSubKey.Trim('\\');
+            }
+
+            if (_catalog.GetPolicy(step.PolicyId) is RegistryDWordPolicyHandler dwordHandler)
+            {
+                return dwordHandler.RelativeSubKeyPath.Trim('\\');
+            }
+
+            string subKey = (step.SubKey ?? string.Empty).Trim('\\');
+            if (!string.IsNullOrWhiteSpace(targetUserSid))
+            {
+                string cleanSid = targetUserSid.Trim();
+                string mountedPrefix = $"WinLab_Mounted_{cleanSid}\\";
+                if (subKey.StartsWith(mountedPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    return subKey[mountedPrefix.Length..];
+                }
+
+                string sidPrefix = $"{cleanSid}\\";
+                if (subKey.StartsWith(sidPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    return subKey[sidPrefix.Length..];
+                }
+            }
+
+            // Earlier record with unknown PolicyId and without SID prefix or RelativeSubKey cannot be reliably mapped
+            return string.Empty;
+        }
+
+        private RegistryValueSnapshotDto? FindMatchingSnapshotEntry(
+            BaselineSnapshotDto? baseline,
+            RollbackStepDto step,
+            string? targetUserSid,
+            string resolvedSubKey)
+        {
+            if (baseline?.Entries == null || baseline.Entries.Count == 0)
+            {
+                return null;
+            }
+
+            string stepRelative = !string.IsNullOrWhiteSpace(step.RelativeSubKey)
+                ? step.RelativeSubKey.Trim('\\')
+                : ResolveRelativeSubKey(step, targetUserSid);
+
+            return baseline.Entries.FirstOrDefault(e =>
+                string.Equals(e.PolicyId, step.PolicyId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(e.ValueName, step.ValueName, StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(e.SubKey.Trim('\\'), step.SubKey.Trim('\\'), StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(e.SubKey.Trim('\\'), resolvedSubKey.Trim('\\'), StringComparison.OrdinalIgnoreCase) ||
+                 (!string.IsNullOrWhiteSpace(e.RelativeSubKey) &&
+                  string.Equals(e.RelativeSubKey.Trim('\\'), stepRelative, StringComparison.OrdinalIgnoreCase))));
+        }
+
+        private bool IsRegistryValueAbsent(RegistryHiveType hive, string subKey, string valueName)
+        {
+            return !_registry.GetValueNames(hive, subKey).Contains(valueName, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private bool VerifyRestoredRegistryValue(
+            RegistryHiveType hive,
+            string subKey,
+            string valueName,
+            RegistryValueType expectedKind,
+            object expectedValue,
+            out string? mismatchReason)
+        {
+            mismatchReason = null;
+
+            if (!_registry.ValueExists(hive, subKey, valueName) ||
+                !_registry.GetValueNames(hive, subKey).Contains(valueName, StringComparer.OrdinalIgnoreCase))
+            {
+                mismatchReason = $"O valor '{valueName}' não foi encontrado em '{hive}\\{subKey}' após restauração.";
+                return false;
+            }
+
+            var actualKind = _registry.GetValueKind(hive, subKey, valueName);
+            if (!actualKind.HasValue || actualKind.Value != expectedKind)
+            {
+                mismatchReason = $"Tipo restaurado divergente para '{hive}\\{subKey}\\{valueName}': esperado {expectedKind}, obtido {actualKind?.ToString() ?? "null"}.";
+                return false;
+            }
+
+            var actualValue = _registry.GetValue(hive, subKey, valueName, null);
+            if (!RegistryValuesEqual(expectedKind, expectedValue, actualValue))
+            {
+                mismatchReason = $"Conteúdo restaurado divergente para '{hive}\\{subKey}\\{valueName}': esperado {FormatRegistryValue(expectedValue)}, obtido {FormatRegistryValue(actualValue)}.";
+                return false;
+            }
+
+            return true;
+        }
+
+        private static object NormalizeRegistryValue(RegistryValueType kind, object? raw)
+        {
+            switch (kind)
+            {
+                case RegistryValueType.DWord:
+                    if (TryAsInt32(raw, out int dVal)) return dVal;
+                    throw new InvalidOperationException($"Valor DWord inválido no snapshot: '{FormatRegistryValue(raw)}'.");
+
+                case RegistryValueType.QWord:
+                    if (TryAsInt64(raw, out long qVal)) return qVal;
+                    throw new InvalidOperationException($"Valor QWord inválido no snapshot: '{FormatRegistryValue(raw)}'.");
+
+                case RegistryValueType.String:
+                case RegistryValueType.ExpandString:
+                    if (raw == null) return string.Empty;
+                    if (raw is string s) return s;
+                    if (raw is JsonElement sElem && sElem.ValueKind == JsonValueKind.String)
+                    {
+                        return sElem.GetString() ?? string.Empty;
+                    }
+                    throw new InvalidOperationException($"Valor {kind} inválido no snapshot: '{FormatRegistryValue(raw)}'.");
+
+                case RegistryValueType.Binary:
+                    if (raw == null) return Array.Empty<byte>();
+                    if (raw is byte[] bytes) return bytes.ToArray();
+                    if (raw is JsonElement bElem)
+                    {
+                        if (bElem.ValueKind == JsonValueKind.String)
+                        {
+                            return bElem.GetBytesFromBase64();
+                        }
+                        if (bElem.ValueKind == JsonValueKind.Array)
+                        {
+                            return bElem.EnumerateArray().Select(e => e.GetByte()).ToArray();
+                        }
+                    }
+                    throw new InvalidOperationException($"Valor Binary inválido no snapshot: '{FormatRegistryValue(raw)}'.");
+
+                case RegistryValueType.MultiString:
+                    if (raw == null) return Array.Empty<string>();
+                    if (raw is string[] arr) return arr.ToArray();
+                    if (raw is JsonElement mElem && mElem.ValueKind == JsonValueKind.Array)
+                    {
+                        return mElem.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
+                    }
+                    throw new InvalidOperationException($"Valor MultiString inválido no snapshot: '{FormatRegistryValue(raw)}'.");
+
+                default:
+                    throw new InvalidOperationException($"Tipo de registro não suportado: {kind}.");
+            }
+        }
+
+        private static object CloneValueForWrite(RegistryValueType kind, object value)
+        {
+            return kind switch
+            {
+                RegistryValueType.Binary when value is byte[] bytes => bytes.ToArray(),
+                RegistryValueType.MultiString when value is string[] arr => arr.ToArray(),
+                _ => value
+            };
+        }
+
+        private static bool RegistryValuesEqual(RegistryValueType kind, object? expected, object? actual)
+        {
+            if (actual == null) return false;
+
+            switch (kind)
+            {
+                case RegistryValueType.DWord:
+                    return TryAsInt32(expected, out int expDword) &&
+                           TryAsInt32(actual, out int actDword) &&
+                           expDword == actDword;
+
+                case RegistryValueType.QWord:
+                    return TryAsInt64(expected, out long expQword) &&
+                           TryAsInt64(actual, out long actQword) &&
+                           expQword == actQword;
+
+                case RegistryValueType.String:
+                case RegistryValueType.ExpandString:
+                    return TryAsString(expected, out string? expStr) &&
+                           TryAsString(actual, out string? actStr) &&
+                           string.Equals(expStr, actStr, StringComparison.Ordinal);
+
+                case RegistryValueType.Binary:
+                    return TryAsBytes(expected, out byte[]? expBytes) &&
+                           TryAsBytes(actual, out byte[]? actBytes) &&
+                           expBytes != null && actBytes != null &&
+                           expBytes.AsSpan().SequenceEqual(actBytes);
+
+                case RegistryValueType.MultiString:
+                    return TryAsMultiString(expected, out string[]? expMulti) &&
+                           TryAsMultiString(actual, out string[]? actMulti) &&
+                           expMulti != null && actMulti != null &&
+                           expMulti.SequenceEqual(actMulti, StringComparer.Ordinal);
+
+                default:
+                    return false;
+            }
+        }
+
+        private static bool TryAsInt32(object? raw, out int value)
+        {
+            value = 0;
+            switch (raw)
+            {
+                case int i:
+                    value = i;
+                    return true;
+                case uint u:
+                    value = unchecked((int)u);
+                    return true;
+                case long l when l >= int.MinValue && l <= uint.MaxValue:
+                    value = unchecked((int)l);
+                    return true;
+                case short s:
+                    value = s;
+                    return true;
+                case ushort us:
+                    value = us;
+                    return true;
+                case byte b:
+                    value = b;
+                    return true;
+                case sbyte sb:
+                    value = sb;
+                    return true;
+                case JsonElement je when je.ValueKind == JsonValueKind.Number:
+                    if (je.TryGetInt32(out int i32))
+                    {
+                        value = i32;
+                        return true;
+                    }
+                    if (je.TryGetUInt32(out uint u32))
+                    {
+                        value = unchecked((int)u32);
+                        return true;
+                    }
+                    return false;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool TryAsInt64(object? raw, out long value)
+        {
+            value = 0;
+            switch (raw)
+            {
+                case long l:
+                    value = l;
+                    return true;
+                case ulong ul:
+                    value = unchecked((long)ul);
+                    return true;
+                case int i:
+                    value = i;
+                    return true;
+                case uint u:
+                    value = u;
+                    return true;
+                case short s:
+                    value = s;
+                    return true;
+                case ushort us:
+                    value = us;
+                    return true;
+                case byte b:
+                    value = b;
+                    return true;
+                case sbyte sb:
+                    value = sb;
+                    return true;
+                case JsonElement je when je.ValueKind == JsonValueKind.Number:
+                    if (je.TryGetInt64(out long i64))
+                    {
+                        value = i64;
+                        return true;
+                    }
+                    if (je.TryGetUInt64(out ulong u64))
+                    {
+                        value = unchecked((long)u64);
+                        return true;
+                    }
+                    return false;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool TryAsString(object? raw, out string? value)
+        {
+            if (raw is string s)
+            {
+                value = s;
+                return true;
+            }
+
+            if (raw is JsonElement je && je.ValueKind == JsonValueKind.String)
+            {
+                value = je.GetString() ?? string.Empty;
+                return true;
+            }
+
+            value = null;
+            return false;
+        }
+
+        private static bool TryAsBytes(object? raw, out byte[]? value)
+        {
+            if (raw is byte[] bytes)
+            {
+                value = bytes;
+                return true;
+            }
+
+            if (raw is JsonElement je)
+            {
+                try
+                {
+                    if (je.ValueKind == JsonValueKind.String)
+                    {
+                        value = je.GetBytesFromBase64();
+                        return true;
+                    }
+                    if (je.ValueKind == JsonValueKind.Array)
+                    {
+                        value = je.EnumerateArray().Select(e => e.GetByte()).ToArray();
+                        return true;
+                    }
+                }
+                catch
+                {
+                    value = null;
+                    return false;
+                }
+            }
+
+            value = null;
+            return false;
+        }
+
+        private static bool TryAsMultiString(object? raw, out string[]? value)
+        {
+            if (raw is string[] arr)
+            {
+                value = arr;
+                return true;
+            }
+
+            if (raw is JsonElement je && je.ValueKind == JsonValueKind.Array)
+            {
+                var list = new List<string>();
+                foreach (var elem in je.EnumerateArray())
+                {
+                    if (elem.ValueKind != JsonValueKind.String)
+                    {
+                        value = null;
+                        return false;
+                    }
+                    list.Add(elem.GetString() ?? string.Empty);
+                }
+                value = list.ToArray();
+                return true;
+            }
+
+            value = null;
+            return false;
+        }
+
+        private static string FormatRegistryValue(object? value)
+        {
+            return value switch
+            {
+                null => "null",
+                byte[] bytes => $"byte[{bytes.Length}]({Convert.ToHexString(bytes)})",
+                string[] arr => $"string[{arr.Length}]({string.Join("|", arr)})",
+                _ => value.ToString() ?? "null"
+            };
         }
 
         public async Task<TransactionDto?> GetTransactionAsync(string transactionId, CancellationToken ct = default)

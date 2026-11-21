@@ -100,6 +100,54 @@ if (-not $baselineFixture) {
 
 & {
     param($Path)
+    . $Path
+
+    function Test-WinLabDesktopAppLockerState { return $true }
+    try {
+        $gate = Enter-WinLabAppLockerOperation
+        [void]$gate.Release()
+        $gate.Dispose()
+        throw "AppLocker do Desktop deveria impedir a operação Web."
+    }
+    catch {
+        if ($_.Exception.Message -notlike "O Desktop gerencia o AppLocker*") { throw }
+    }
+
+    function Test-WinLabDesktopAppLockerState { return $false }
+    $gate = Enter-WinLabAppLockerOperation
+    [void]$gate.Release()
+    $gate.Dispose()
+
+    function Get-WinLabState { return $null }
+    function Get-AppLockerPolicy {
+        param([switch]$Local, [switch]$Effective, [switch]$Xml)
+        if ($Effective) {
+            return '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled" /></AppLockerPolicy>'
+        }
+        return '<AppLockerPolicy Version="1" />'
+    }
+    try {
+        Assert-WinLabAppLockerBaselineAvailable
+        throw "A política institucional deveria impedir a aplicação Web."
+    }
+    catch {
+        if ($_.Exception.Message -notlike "*AppLocker local ou efetiva*") { throw }
+    }
+
+    $EnforcementMode = "Enabled"
+    try {
+        Install-WinLabProfile
+        throw "Enabled should be rejected before any Web setup change."
+    }
+    catch {
+        if ($_.Exception.Message -notlike "*somente AppLocker AuditOnly*") { throw }
+    }
+} $baselineFixture.FullName
+
+Write-Host "AppLocker coexistence smoke tests: OK" -ForegroundColor Green
+
+& {
+    param($Path)
 
     . $Path
 

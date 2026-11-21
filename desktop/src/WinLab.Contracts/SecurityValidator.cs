@@ -241,9 +241,18 @@ namespace WinLab.Contracts
             var matchingUser = accounts.FirstOrDefault(u =>
                 u != null && string.Equals(u.Name?.Trim(), trimmed, StringComparison.OrdinalIgnoreCase));
 
-            if (matchingUser != null && matchingUser.IsAdmin)
+            if (matchingUser != null)
             {
-                return (false, "A conta selecionada possui privilégios de Administrador. O WinLab impede restrições em contas administrativas para prevenir perda de controle do computador.");
+                var classification = matchingUser.GetEffectivePrivilegeClassification();
+                if (classification == AccountPrivilegeClassification.Administrator)
+                {
+                    return (false, "A conta selecionada possui privilégios de Administrador. O WinLab impede restrições em contas administrativas para prevenir perda de controle do computador.");
+                }
+
+                if (classification == AccountPrivilegeClassification.Unknown)
+                {
+                    return (false, $"Não foi possível confirmar os privilégios da conta '{matchingUser.Name}' (classificação desconhecida). Operações restritivas foram bloqueadas por segurança.");
+                }
             }
 
             return (true, null);
@@ -271,13 +280,104 @@ namespace WinLab.Contracts
                     u != null && (string.Equals(u.Name?.Trim(), trimmed, StringComparison.OrdinalIgnoreCase) ||
                                  string.Equals(u.Sid?.Trim(), trimmed, StringComparison.OrdinalIgnoreCase)));
 
-                if (matchingUser != null && matchingUser.IsAdmin)
+                if (matchingUser != null)
                 {
-                    return (false, "A conta selecionada possui privilégios de Administrador. O WinLab impede restrições em contas administrativas para prevenir perda de controle do computador.");
+                    var classification = matchingUser.GetEffectivePrivilegeClassification();
+                    if (classification == AccountPrivilegeClassification.Administrator)
+                    {
+                        return (false, "A conta selecionada possui privilégios de Administrador. O WinLab impede restrições em contas administrativas para prevenir perda de controle do computador.");
+                    }
+
+                    if (classification == AccountPrivilegeClassification.Unknown)
+                    {
+                        return (false, $"Não foi possível confirmar os privilégios da conta '{matchingUser.Name}' (classificação desconhecida). Operações restritivas foram bloqueadas por segurança.");
+                    }
                 }
             }
 
             return (true, null);
+        }
+
+        public static (bool IsValid, string? Error) ValidateTargetUserSid(string? targetUserSid)
+        {
+            if (string.IsNullOrWhiteSpace(targetUserSid))
+            {
+                return (false, "Selecione uma conta comum válida (SID obrigatório) para operações por usuário.");
+            }
+
+            if (!string.Equals(targetUserSid, targetUserSid.Trim(), StringComparison.Ordinal))
+            {
+                return (false, "O SID da conta-alvo não pode conter espaços nas extremidades.");
+            }
+
+            if (targetUserSid.Length > 184 || targetUserSid.Any(char.IsControl))
+            {
+                return (false, "O SID da conta-alvo excede o tamanho permitido ou contém caracteres de controle.");
+            }
+
+            // Formato canônico Windows Security Identifier: S-1-<authority>-<subauthority...>
+            if (!System.Text.RegularExpressions.Regex.IsMatch(
+                    targetUserSid,
+                    @"^S-1-\d+(-\d+)+$",
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            {
+                return (false, $"Formato de SID inválido: '{targetUserSid}'.");
+            }
+
+            var adminCheck = ValidateTargetNotAdministrator(targetUserSid);
+            if (!adminCheck.IsValid)
+            {
+                return adminCheck;
+            }
+
+            return (true, null);
+        }
+
+        /// <summary>
+        /// Reescreve com segurança o campo "action" de um envelope JSON preservando integralmente
+        /// todas as demais propriedades sem substituição textual insegura.
+        /// </summary>
+        public static string RewriteEnvelopeAction(string rawJson, string newAction)
+        {
+            if (string.IsNullOrWhiteSpace(newAction))
+            {
+                throw new ArgumentException("Ação IPC de destino não pode ser vazia.", nameof(newAction));
+            }
+
+            using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                throw new InvalidOperationException("Envelope IPC deve ser um objeto JSON.");
+            }
+
+            using var stream = new System.IO.MemoryStream();
+            using (var writer = new System.Text.Json.Utf8JsonWriter(stream))
+            {
+                writer.WriteStartObject();
+                bool wroteAction = false;
+                foreach (var prop in root.EnumerateObject())
+                {
+                    if (string.Equals(prop.Name, "action", StringComparison.Ordinal))
+                    {
+                        writer.WriteString("action", newAction);
+                        wroteAction = true;
+                    }
+                    else
+                    {
+                        prop.WriteTo(writer);
+                    }
+                }
+
+                if (!wroteAction)
+                {
+                    writer.WriteString("action", newAction);
+                }
+
+                writer.WriteEndObject();
+            }
+
+            return System.Text.Encoding.UTF8.GetString(stream.ToArray());
         }
     }
 }
