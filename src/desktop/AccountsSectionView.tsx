@@ -5,7 +5,9 @@ import type { IpcResponse, LocalUserDto } from "./contracts";
 import {
   ADMIN_IPC_ACTIONS,
   buildUnifiedAccountRows,
+  isCanonicalLocalWindowsSid,
   type AdminAccountApplyPayload,
+  type AdminAccountPlan,
   type AdminAccountPreviewDto,
   type AdminAccountResultDto,
   type AdminAccountsDto,
@@ -60,14 +62,41 @@ export function AccountsSectionView({
   sendIpc
 }: AccountsSectionViewProps) {
   const [adminPreview, setAdminPreview] = useState<AdminAccountPreviewDto | null>(null);
+  const [pendingPlan, setPendingPlan] = useState<AdminAccountPlan | null>(null);
   const [pendingActionLabel, setPendingActionLabel] = useState<string | null>(null);
+  const [recoveryPassword, setRecoveryPassword] = useState("");
   const [localBusy, setLocalBusy] = useState(false);
 
   const unifiedRows = buildUnifiedAccountRows(localUsers, adminAccountsData);
   const eligibleTargets = unifiedRows.filter((row) => row.canBePolicyTarget);
   const recoveryAccount = unifiedRows.find((row) => row.role === "Recovery") ?? null;
-  const superadminCount = unifiedRows.filter((row) => row.role === "Superadmin").length;
+  const adminCount = unifiedRows.filter(
+    (row) => row.role === "Superadmin" || row.privilegeClassification === "Administrator"
+  ).length;
   const studentCount = unifiedRows.filter((row) => row.role === "Student").length;
+
+  async function requestAccountPreview(plan: AdminAccountPlan, actionLabel: string) {
+    setLocalBusy(true);
+    try {
+      const previewRes = await sendIpc<AdminAccountPreviewDto>(
+        ADMIN_IPC_ACTIONS.ACCOUNTS_PREVIEW,
+        plan
+      );
+      if (!previewRes.success || !previewRes.data) {
+        onNotify({
+          tone: "error",
+          message: previewRes.error || "Não foi possível gerar a prévia da operação na conta."
+        });
+        return;
+      }
+      setRecoveryPassword("");
+      setPendingPlan(plan);
+      setAdminPreview(previewRes.data);
+      setPendingActionLabel(actionLabel);
+    } finally {
+      setLocalBusy(false);
+    }
+  }
 
   async function handleAdminCreatePreview(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -92,74 +121,57 @@ export function AccountsSectionView({
       return;
     }
 
-    setLocalBusy(true);
-    try {
-      const previewRes = await sendIpc<AdminAccountPreviewDto>(ADMIN_IPC_ACTIONS.ACCOUNTS_PREVIEW, {
-        operation: "Create",
-        name: trimmedName,
-        role: accountRole === "admin" ? "Superadmin" : "Student"
-      });
-      if (!previewRes.success || !previewRes.data) {
-        onNotify({
-          tone: "error",
-          message: previewRes.error || "Não foi possível gerar a prévia de criação da conta."
-        });
-        return;
-      }
-      setAdminPreview(previewRes.data);
-      setPendingActionLabel(
-        `Criar conta ${accountRole === "admin" ? "Superadmin" : "Aluno"} '${trimmedName}'`
-      );
-    } finally {
-      setLocalBusy(false);
-    }
+    const role: "Student" | "Superadmin" = accountRole === "admin" ? "Superadmin" : "Student";
+    await requestAccountPreview(
+      { operation: "Create", name: trimmedName, role },
+      `Criar conta ${role === "Superadmin" ? "Superadmin" : "Aluno"} '${trimmedName}'`
+    );
   }
 
   async function handleConfirmAdminAccountPreview() {
-    if (!adminPreview) return;
+    if (!adminPreview || !pendingPlan) return;
     setLocalBusy(true);
     try {
       let payload: AdminAccountApplyPayload;
-      if (adminPreview.after.role === "Student" || adminPreview.after.role === "Superadmin") {
-        if (adminPreview.before === null) {
-          payload = {
-            plan: {
-              operation: "Create",
-              name: adminPreview.after.name,
-              role: adminPreview.after.role
-            },
-            revision: adminPreview.revision,
-            password: accountPassword
-          };
-        } else {
-          payload = {
-            plan: {
-              operation: "SetEnabled",
-              sid: adminPreview.after.sid || "",
-              enabled: adminPreview.after.enabled
-            },
-            revision: adminPreview.revision
-          };
-        }
-      } else {
+      if (pendingPlan.operation === "Create") {
         payload = {
-          plan: {
-            operation: "ProtectRecovery",
-            sid: adminPreview.after.sid || ""
-          },
+          plan: pendingPlan,
           revision: adminPreview.revision,
           password: accountPassword
         };
+      } else if (pendingPlan.operation === "ProtectRecovery") {
+        payload = {
+          plan: pendingPlan,
+          revision: adminPreview.revision,
+          password: recoveryPassword
+        };
+      } else {
+        payload = {
+          plan: pendingPlan,
+          revision: adminPreview.revision
+        };
       }
+
       const res = await sendIpc<AdminAccountResultDto>(ADMIN_IPC_ACTIONS.ACCOUNTS_APPLY, payload);
       if (res.success && res.data) {
+        const appliedOperation = pendingPlan.operation;
         setAdminPreview(null);
+        setPendingPlan(null);
         setPendingActionLabel(null);
-        onAccountNameChange("");
+        if (appliedOperation === "Create") {
+          onAccountNameChange("");
+        }
         await onRefreshAccounts();
+        if (
+          appliedOperation === "Create" &&
+          res.data.account.role === "Student" &&
+          isCanonicalLocalWindowsSid(res.data.account.sid)
+        ) {
+          await onSelectUser(res.data.account.sid);
+        }
         onNotify({
           tone: "success",
-          message: res.data.message || `Conta '${res.data.account.name}' criada com sucesso.`
+          message: res.data.message || `Operação concluída para '${res.data.account.name}'.`
         });
       } else {
         onNotify({
@@ -170,11 +182,14 @@ export function AccountsSectionView({
     } finally {
       onAccountPasswordChange("");
       onRepeatPasswordChange("");
+      setRecoveryPassword("");
       setLocalBusy(false);
     }
   }
 
   const effectiveBusy = busy || localBusy;
+  const adminCanWrite = adminCapabilities.accounts ? Boolean(adminAccountsData?.canWrite) : true;
+  const isRecoveryPreview = pendingPlan?.operation === "ProtectRecovery";
 
   return (
     <div className="wl-section-content">
@@ -182,8 +197,10 @@ export function AccountsSectionView({
       <div className="wl-stats">
         <div>
           <span>Superadmin / Administradores</span>
-          <strong>{superadminCount}</strong>
-          <small>Imunidade automática contra restrições de laboratório.</small>
+          <strong>{adminCount}</strong>
+          <small>
+            Não são alvo de políticas por usuário; políticas de máquina inteira (HKLM) ainda podem afetá-los.
+          </small>
         </div>
         <div>
           <span>Administrador de recuperação</span>
@@ -243,11 +260,18 @@ export function AccountsSectionView({
           <div>
             <h2>Contas encontradas neste computador</h2>
             <p>
-              Classificação de privilégios verificada no Windows. Contas administrativas e contas com privilégio incerto nunca recebem restrições.
+              Classificação de privilégios verificada no Windows. Contas administrativas e contas com privilégio incerto não são selecionadas como alvo por usuário (políticas HKLM afetam toda a estação).
             </p>
           </div>
           <span className="wl-policy-count">{unifiedRows.length} conta(s)</span>
         </div>
+
+        {adminCapabilities.accounts && adminAccountsData && adminAccountsData.limitations.length > 0 && (
+          <div className="wl-notice-box warning" style={{ marginBottom: 12 }} role="status">
+            <strong>Condições administrativas de contas:</strong>{" "}
+            {adminAccountsData.limitations.join(" ")}
+          </div>
+        )}
 
         {isScanning && unifiedRows.length === 0 ? (
           <div className="wl-skeleton-stack" aria-label="Carregando contas locais">
@@ -256,89 +280,82 @@ export function AccountsSectionView({
           </div>
         ) : unifiedRows.length > 0 ? (
           <div className="wl-account-list">
-            {unifiedRows.map((user) => (
-              <div key={user.key} className="wl-account">
-                <div className="wl-avatar">{user.name.slice(0, 1).toUpperCase()}</div>
-                <div>
-                  <strong>{user.name}</strong>
-                  <small>
-                    {user.enabled ? "Ativa" : "Desativada"} · SID: {user.sid || "Não informado"}
-                    {user.classificationDetail ? ` · ${user.classificationDetail}` : ""}
-                  </small>
+            {unifiedRows.map((user) => {
+              const canProtectRecovery =
+                adminCapabilities.accounts &&
+                Boolean(user.sid) &&
+                user.enabled &&
+                user.privilegeClassification === "Administrator" &&
+                (user.role === "Unmanaged" || user.role === "Recovery");
+              const canToggleStudentEnabled =
+                adminCapabilities.accounts &&
+                Boolean(user.sid) &&
+                !user.protected &&
+                user.role === "Student";
+
+              return (
+                <div key={user.key} className="wl-account">
+                  <div className="wl-avatar">{user.name.slice(0, 1).toUpperCase()}</div>
+                  <div>
+                    <strong>{user.name}</strong>
+                    <small>
+                      {user.enabled ? "Ativa" : "Desativada"} · SID: {user.sid || "Não informado"}
+                      {user.classificationDetail ? ` · ${user.classificationDetail}` : ""}
+                    </small>
+                  </div>
+                  {!user.enabled && <span className="wl-pill disabled">Desativada</span>}
+                  <span
+                    className={`wl-pill ${
+                      user.role === "Superadmin" || user.role === "Recovery" ? "admin" : ""
+                    }`}
+                  >
+                    {user.roleLabel}
+                  </span>
+                  {user.canBePolicyTarget && user.sid && (
+                    <button
+                      type="button"
+                      className={`wl-button ${selectedUserSid === user.sid ? "primary" : "secondary"}`}
+                      onClick={() => void onSelectUser(user.sid!)}
+                      disabled={effectiveBusy || selectedUserSid === user.sid}
+                    >
+                      {selectedUserSid === user.sid ? "Alvo selecionado" : "Selecionar como alvo"}
+                    </button>
+                  )}
+                  {canProtectRecovery && user.sid && (
+                    <button
+                      type="button"
+                      className="wl-button secondary"
+                      disabled={effectiveBusy || !adminCanWrite}
+                      onClick={() =>
+                        void requestAccountPreview(
+                          { operation: "ProtectRecovery", sid: user.sid! },
+                          user.role === "Recovery"
+                            ? `Revalidar Administrador de recuperação '${user.name}'`
+                            : `Designar '${user.name}' como Administrador de recuperação`
+                        )
+                      }
+                    >
+                      {user.role === "Recovery" ? "Verificar recuperação" : "Proteger recuperação"}
+                    </button>
+                  )}
+                  {canToggleStudentEnabled && user.sid && (
+                    <button
+                      type="button"
+                      className="wl-button secondary"
+                      disabled={effectiveBusy || !adminCanWrite}
+                      onClick={() =>
+                        void requestAccountPreview(
+                          { operation: "SetEnabled", sid: user.sid!, enabled: !user.enabled },
+                          `${user.enabled ? "Desativar" : "Reativar"} conta '${user.name}'`
+                        )
+                      }
+                    >
+                      {user.enabled ? "Desativar conta" : "Reativar conta"}
+                    </button>
+                  )}
                 </div>
-                {!user.enabled && <span className="wl-pill disabled">Desativada</span>}
-                <span
-                  className={`wl-pill ${
-                    user.role === "Superadmin" || user.role === "Recovery" ? "admin" : ""
-                  }`}
-                >
-                  {user.roleLabel}
-                </span>
-                {user.canBePolicyTarget && user.sid && (
-                  <button
-                    type="button"
-                    className={`wl-button ${selectedUserSid === user.sid ? "primary" : "secondary"}`}
-                    onClick={() => void onSelectUser(user.sid!)}
-                    disabled={effectiveBusy || selectedUserSid === user.sid}
-                  >
-                    {selectedUserSid === user.sid ? "Alvo selecionado" : "Selecionar como alvo"}
-                  </button>
-                )}
-                {adminCapabilities.accounts && user.sid && user.role === "Superadmin" && user.enabled && (
-                  <button
-                    type="button"
-                    className="wl-button secondary"
-                    disabled={effectiveBusy || !adminAccountsData?.canWrite}
-                    onClick={() => {
-                      void sendIpc<AdminAccountPreviewDto>(ADMIN_IPC_ACTIONS.ACCOUNTS_PREVIEW, {
-                        operation: "ProtectRecovery",
-                        sid: user.sid
-                      }).then((res) => {
-                        if (res.success && res.data) {
-                          setAdminPreview(res.data);
-                          setPendingActionLabel(`Designar '${user.name}' como Administrador de recuperação`);
-                        } else {
-                          onNotify({
-                            tone: "error",
-                            message: res.error || "Não foi possível gerar a prévia de proteção."
-                          });
-                        }
-                      });
-                    }}
-                  >
-                    Proteger recuperação
-                  </button>
-                )}
-                {adminCapabilities.accounts && user.sid && !user.protected && (
-                  <button
-                    type="button"
-                    className="wl-button secondary"
-                    disabled={effectiveBusy || !adminAccountsData?.canWrite}
-                    onClick={() => {
-                      void sendIpc<AdminAccountPreviewDto>(ADMIN_IPC_ACTIONS.ACCOUNTS_PREVIEW, {
-                        operation: "SetEnabled",
-                        sid: user.sid,
-                        enabled: !user.enabled
-                      }).then((res) => {
-                        if (res.success && res.data) {
-                          setAdminPreview(res.data);
-                          setPendingActionLabel(
-                            `${user.enabled ? "Desativar" : "Reativar"} conta '${user.name}'`
-                          );
-                        } else {
-                          onNotify({
-                            tone: "error",
-                            message: res.error || "Não foi possível gerar a prévia de alteração da conta."
-                          });
-                        }
-                      });
-                    }}
-                  >
-                    {user.enabled ? "Desativar conta" : "Reativar conta"}
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <p className="wl-muted">Nenhuma conta local carregada ainda.</p>
@@ -356,7 +373,7 @@ export function AccountsSectionView({
           <div>
             <h2>Criar nova conta local</h2>
             <p>
-              A senha é enviada apenas no momento da criação para a API nativa do Windows e limpa da memória imediatamente após o envio.
+              A senha é enviada apenas no momento da execução para a API nativa do Windows e limpa da memória imediatamente após o envio.
             </p>
           </div>
           <span className="wl-scope-tag">
@@ -382,18 +399,20 @@ export function AccountsSectionView({
               onClick={() => onAccountRoleChange("admin")}
             >
               <span>Superadmin (Administrador)</span>
-              <small>Controle total da estação e imunidade automática contra bloqueios.</small>
+              <small>
+                Controle administrativo local. Não é alvo de políticas por usuário, mas políticas de máquina inteira (HKLM) ainda se aplicam.
+              </small>
             </button>
             <div className="wl-role-unavailable" aria-disabled="true">
               <div className="wl-setting-header">
                 <span>Administrador de recuperação</span>
                 <span className="wl-status-badge neutral">
-                  {adminCapabilities.accounts ? "Gerenciável via contrato" : "Indisponível"}
+                  {adminCapabilities.accounts ? "Ordem obrigatória" : "Indisponível"}
                 </span>
               </div>
               <small>
                 {adminCapabilities.accounts
-                  ? "Use a operação ProtectRecovery após criar o Superadmin."
+                  ? "Designe primeiro um administrador local independente (Unmanaged) via 'Proteger recuperação' antes de criar Superadmin ou desativar Aluno."
                   : "Designação dedicada aguarda publicação do contrato IPC admin.accounts.*."}
               </small>
             </div>
@@ -434,7 +453,11 @@ export function AccountsSectionView({
           </div>
 
           <div className="wl-head-actions">
-            <button type="submit" className="wl-button primary" disabled={effectiveBusy || !canOperateAgent}>
+            <button
+              type="submit"
+              className="wl-button primary"
+              disabled={effectiveBusy || !canOperateAgent || !adminCanWrite}
+            >
               {effectiveBusy
                 ? "Processando..."
                 : adminCapabilities.accounts
@@ -449,35 +472,40 @@ export function AccountsSectionView({
           </div>
         </form>
 
-        {adminPreview && (
-          <div className="wl-expansion-preview" style={{ marginTop: 16 }}>
+        {adminPreview && pendingPlan && (
+          <div className="wl-expansion-preview" style={{ marginTop: 16 }} role="region" aria-label="Prévia da operação de conta">
             <h3>Prévia: {pendingActionLabel}</h3>
             <p className="wl-muted">
-              Escopo: {adminPreview.scope} · Revisão {adminPreview.revision}
+              Escopo: {adminPreview.scope} · Revisão {adminPreview.revision.slice(0, 12)}
             </p>
             <div className="wl-expansion-diff">
               <div className="wl-diff-card">
                 <strong>Antes</strong>
-                <span>{adminPreview.before ? adminPreview.before.name : "Conta inexistente"}</span>
+                <span>
+                  {adminPreview.before
+                    ? `${adminPreview.before.name} (${adminPreview.before.role} · ${adminPreview.before.enabled ? "Ativa" : "Desativada"})`
+                    : "Conta inexistente"}
+                </span>
               </div>
               <div className="wl-diff-card">
                 <strong>Depois</strong>
                 <span>
-                  {adminPreview.after.name} ({adminPreview.after.role})
+                  {adminPreview.after.name} ({adminPreview.after.role} ·{" "}
+                  {adminPreview.after.enabled ? "Ativa" : "Desativada"})
                 </span>
               </div>
             </div>
             {adminPreview.limitations.length > 0 && (
               <p className="wl-requires-action">{adminPreview.limitations.join(" ")}</p>
             )}
-            {adminPreview.after.role === "Recovery" && (
-              <label className="wl-full" style={{ maxWidth: 360 }}>
-                Senha da conta de recuperação (enviada apenas neste comando)
+            {isRecoveryPreview && (
+              <label className="wl-full" style={{ maxWidth: 380 }}>
+                Senha atual da conta de recuperação (validação transitória de logon)
                 <input
                   type="password"
-                  autoComplete="new-password"
-                  value={accountPassword}
-                  onChange={(e) => onAccountPasswordChange(e.target.value)}
+                  autoComplete="current-password"
+                  value={recoveryPassword}
+                  onChange={(e) => setRecoveryPassword(e.target.value)}
                   disabled={effectiveBusy}
                 />
               </label>
@@ -486,7 +514,11 @@ export function AccountsSectionView({
               <button
                 type="button"
                 className="wl-button secondary"
-                onClick={() => setAdminPreview(null)}
+                onClick={() => {
+                  setAdminPreview(null);
+                  setPendingPlan(null);
+                  setRecoveryPassword("");
+                }}
                 disabled={effectiveBusy}
               >
                 Cancelar
@@ -498,7 +530,8 @@ export function AccountsSectionView({
                 disabled={
                   effectiveBusy ||
                   !adminPreview.canApply ||
-                  (adminPreview.after.role === "Recovery" && accountPassword.length < 8)
+                  !adminCanWrite ||
+                  (isRecoveryPreview && recoveryPassword.length < 1)
                 }
               >
                 Confirmar alteração

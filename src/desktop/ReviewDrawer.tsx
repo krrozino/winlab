@@ -3,7 +3,15 @@
 import { useEffect, useRef } from "react";
 import type { OperatingMode } from "@/lib/types";
 import type { LocalUserDto } from "./contracts";
-import type { PermissionCardViewModel } from "./permissions-catalog";
+import type {
+  AdminPermissionDto,
+  AdminPermissionPreviewDto
+} from "./admin-contracts-compat";
+import {
+  ADMIN_INTENT_META,
+  formatAdminOriginLabel,
+  type PermissionCardViewModel
+} from "./permissions-catalog";
 import type { PolicyExecutionOutcome } from "./policy-state-machine";
 
 export interface ReviewDrawerItem {
@@ -24,6 +32,13 @@ export interface ReviewDrawerItem {
   desiredEnabled: boolean;
 }
 
+export interface AdminDrawerPreviewState {
+  preview: AdminPermissionPreviewDto;
+  permission: AdminPermissionDto | null;
+  elevatedReadUsed?: boolean;
+  canWrite?: boolean;
+}
+
 export interface ReviewDrawerProps {
   open: boolean;
   mode: OperatingMode;
@@ -38,6 +53,9 @@ export interface ReviewDrawerProps {
     hasInconclusive: boolean;
     message: string;
   } | null;
+  adminPreview?: AdminDrawerPreviewState | null;
+  onRetryElevatedAdminPreview?: () => void | Promise<void>;
+  onConfirmAdminPreview?: () => void | Promise<void>;
   onRemoveItem: (policyId: string) => void;
   onDiscardAll: () => void;
   onCancel: () => void;
@@ -90,6 +108,9 @@ export function ReviewDrawer({
   canConfirm,
   outcomes = {},
   batchResult = null,
+  adminPreview = null,
+  onRetryElevatedAdminPreview,
+  onConfirmAdminPreview,
   onRemoveItem,
   onDiscardAll,
   onCancel,
@@ -118,6 +139,220 @@ export function ReviewDrawer({
 
   if (!open) return null;
 
+  // Modo 1: Previa administrativa individual (AdminPermissionPreviewDto)
+  if (adminPreview) {
+    const { preview, permission, elevatedReadUsed = false, canWrite = true } = adminPreview;
+    const intentMeta = ADMIN_INTENT_META[preview.intent];
+    const isMachineScope = preview.scope === "Machine";
+    const needsUacElevatedRetry =
+      preview.scope === "User" &&
+      !elevatedReadUsed &&
+      Boolean(onRetryElevatedAdminPreview) &&
+      (preview.before.effectiveState === "Inconclusive" ||
+        preview.before.configuredState === "Inconclusive" ||
+        preview.before.origin === "Inconclusive" ||
+        !preview.canApply);
+    const confirmBlocked =
+      busy ||
+      !preview.canApply ||
+      (preview.intent !== "Preserve" && !canWrite) ||
+      !onConfirmAdminPreview;
+
+    return (
+      <div
+        className="wl-drawer-overlay"
+        onClick={() => {
+          if (!busy) onCancel();
+        }}
+      >
+        <aside
+          ref={panelRef}
+          tabIndex={-1}
+          className="wl-drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="wl-review-drawer-title"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="wl-drawer-header">
+            <div>
+              <span className="wl-overline">PRÉVIA E CONFIRMAÇÃO · PERMISSÃO ADMINISTRATIVA</span>
+              <h2 id="wl-review-drawer-title">{permission?.name ?? preview.permissionId}</h2>
+              <p>
+                Intenção selecionada: <strong>{intentMeta.previewActionLabel}</strong> · Revisão{" "}
+                <code>{preview.revision.slice(0, 12)}</code>
+              </p>
+            </div>
+            <button
+              type="button"
+              className="wl-button secondary"
+              onClick={onCancel}
+              disabled={busy}
+              aria-label="Fechar painel de prévia"
+            >
+              Fechar
+            </button>
+          </div>
+
+          <div className="wl-drawer-body">
+            {busy && (
+              <div className="wl-feedback warning" role="status" aria-live="polite">
+                <div>
+                  <strong>Em processamento no executor administrativo...</strong>
+                  <p>Aguardando autorização e releitura real do Windows antes de confirmar.</p>
+                </div>
+              </div>
+            )}
+
+            <section className="wl-drawer-section" aria-label="Intenção e escopo">
+              <h3>Contas afetadas, escopo e intenção</h3>
+              <div className="wl-review-target-grid">
+                <div className="wl-review-target-card">
+                  <span>{isMachineScope ? "Máquina inteira (HKLM)" : "Por usuário (conta comum)"}</span>
+                  <strong>
+                    {isMachineScope
+                      ? "Todas as contas desta estação"
+                      : preview.target
+                        ? preview.target.name
+                        : "Conta comum não informada"}
+                  </strong>
+                  <small>
+                    {isMachineScope
+                      ? "Política de máquina inteira (HKLM): afeta todas as contas, inclusive administradores e Superadmin."
+                      : preview.target?.sid
+                        ? `SID: ${preview.target.sid} · Políticas por usuário não selecionam administradores como alvo.`
+                        : "Selecione uma conta comum válida."}
+                  </small>
+                </div>
+                <div className="wl-review-target-card">
+                  <span>Operação prevista</span>
+                  <strong>{intentMeta.label}</strong>
+                  <small>{intentMeta.shortDesc}</small>
+                </div>
+              </div>
+            </section>
+
+            <section className="wl-drawer-section" aria-label="Antes e depois">
+              <h3>Antes e depois (leitura real do sistema)</h3>
+              <div className="wl-diff-grid">
+                <div>
+                  <span>Antes (Estado observado)</span>
+                  <strong>
+                    {preview.before.configuredState} · {preview.before.effectiveState}
+                  </strong>
+                  <small className="wl-muted" style={{ display: "block", marginTop: 4 }}>
+                    Origem: {formatAdminOriginLabel(preview.before.origin)}
+                  </small>
+                  {preview.before.evidence && (
+                    <small className="wl-perm-detail-note">{preview.before.evidence}</small>
+                  )}
+                </div>
+                <div>
+                  <span>Depois (Resultado previsto)</span>
+                  <strong>
+                    {preview.after.configuredState} · {preview.after.effectiveState}
+                  </strong>
+                  <small className="wl-muted" style={{ display: "block", marginTop: 4 }}>
+                    Origem: {formatAdminOriginLabel(preview.after.origin)}
+                  </small>
+                  {preview.after.evidence && (
+                    <small className="wl-perm-detail-note">{preview.after.evidence}</small>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            <section className="wl-drawer-section" aria-label="Avisos de impacto administrativo e limitações">
+              <h3>Avisos de impacto administrativo e limitações</h3>
+              <div className="wl-drawer-warnings">
+                {(!preview.canApply || (preview.intent !== "Preserve" && !canWrite)) && (
+                  <div className="wl-feedback error" role="alert">
+                    <span>
+                      Operação bloqueada para confirmação (canApply = false). Revise as limitações abaixo antes de aplicar.
+                    </span>
+                  </div>
+                )}
+                {isMachineScope && (
+                  <div className="wl-notice-box warning">
+                    <strong>Impacto em toda a máquina (inclusive administradores):</strong> Políticas de máquina inteira (HKLM) afetam todas as contas deste computador, inclusive administradores e Superadmin, até serem revertidas.
+                  </div>
+                )}
+                {preview.limitations.length > 0 && (
+                  <div className="wl-notice-box warning">
+                    <strong>Limitações e observações do executor:</strong>
+                    <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
+                      {preview.limitations.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {needsUacElevatedRetry && (
+                  <div className="wl-notice-box info">
+                    <strong>Leitura do perfil de usuário incompleta:</strong> você pode solicitar uma releitura da prévia sob elevação administrativa (UAC) antes de aplicar.
+                    <div style={{ marginTop: 8 }}>
+                      <button
+                        type="button"
+                        className="wl-button secondary"
+                        disabled={busy}
+                        onClick={() => void onRetryElevatedAdminPreview?.()}
+                      >
+                        Repetir prévia sob UAC (leitura elevada)
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {permission && (
+              <section className="wl-drawer-section" aria-label="Compatibilidade e reinicializações">
+                <h3>Compatibilidade e reinicializações</h3>
+                <p className="wl-review-effect">{permission.compatibility}</p>
+                <div className="wl-compat-pills" style={{ marginTop: 8 }}>
+                  <span className={`wl-status-badge ${permission.requiresRestart ? "warning" : "neutral"}`}>
+                    {permission.requiresRestart ? "Requer reiniciar o Windows" : "Sem reinício obrigatório do Windows"}
+                  </span>
+                  <span className={`wl-status-badge ${permission.requiresLogoff ? "warning" : "neutral"}`}>
+                    {permission.requiresLogoff ? "Requer novo login (logoff) da conta" : "Sem logoff obrigatório"}
+                  </span>
+                  <span className={`wl-status-badge ${permission.requiresAppRestart ? "warning" : "neutral"}`}>
+                    {permission.requiresAppRestart ? "Requer fechar e reabrir navegadores" : "Aplicativos sem reinício"}
+                  </span>
+                </div>
+              </section>
+            )}
+          </div>
+
+          <div className="wl-drawer-footer">
+            <span className="wl-muted">
+              {elevatedReadUsed ? "Prévia consultada sob UAC (elevatedRead)." : "Confirmação explícita obrigatória."}
+            </span>
+            <div className="wl-head-actions">
+              <button
+                type="button"
+                className="wl-button secondary"
+                onClick={onCancel}
+                disabled={busy}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="wl-button primary"
+                onClick={() => void onConfirmAdminPreview?.()}
+                disabled={confirmBlocked}
+              >
+                {busy ? "Aplicando no executor..." : "Confirmar e aplicar"}
+              </button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    );
+  }
+
+  // Modo 2: Transacao em lote (motor transacional existente / Demo)
   const userScopedItems = items.filter((item) => item.scopeKind === "User");
   const machineScopedItems = items.filter((item) => item.scopeKind === "Machine");
   const requiresRestart = items.some((item) => item.requiresRestart);
@@ -209,7 +444,7 @@ export function ReviewDrawer({
                   {userScopedItems.length === 0
                     ? "Somente configurações globais da máquina serão alteradas."
                     : selectedUser?.sid
-                      ? `SID: ${selectedUser.sid} · Contas Administradoras possuem imunidade automática.`
+                      ? `SID: ${selectedUser.sid} · Políticas por usuário não selecionam contas administrativas como alvo.`
                       : "Selecione uma conta comum válida antes de confirmar políticas por usuário."}
                 </small>
               </div>
@@ -222,7 +457,7 @@ export function ReviewDrawer({
                 </strong>
                 <small>
                   {machineScopedItems.length > 0
-                    ? "Escopo HKLM: afeta Chrome, Edge ou gravação USB em todo o computador."
+                    ? "Escopo HKLM: afeta todas as contas deste computador, inclusive administradores e Superadmin."
                     : "Escopo global não será modificado nesta operação."}
                 </small>
               </div>
@@ -240,12 +475,12 @@ export function ReviewDrawer({
               )}
               {machineScopedItems.length > 0 && (
                 <div className="wl-notice-box warning">
-                  <strong>Impacto em toda a máquina:</strong> {machineScopedItems.length} alteração(ões) em escopo de máquina afetam também sessões administrativas nos navegadores ou gravação USB até serem revertidas.
+                  <strong>Impacto em toda a máquina:</strong> {machineScopedItems.length} alteração(ões) em escopo de máquina (HKLM) afetam todas as contas desta estação, inclusive administradores e Superadmin, até serem revertidas.
                 </div>
               )}
               {mediumOrHighRiskCount > 0 && (
                 <div className="wl-notice-box warning">
-                  <strong>Restrições administrativas de sistema:</strong> {mediumOrHighRiskCount} política(s) de impacto moderado/elevado (como CMD, Regedit ou Painel de Controle). O WinLab mantém contas administradoras imunes.
+                  <strong>Restrições administrativas de sistema:</strong> {mediumOrHighRiskCount} política(s) de impacto moderado/elevado. Em políticas por usuário, contas administrativas não são alvo; em políticas de máquina inteira (HKLM), administradores também são afetados.
                 </div>
               )}
               <div className="wl-notice-box info">

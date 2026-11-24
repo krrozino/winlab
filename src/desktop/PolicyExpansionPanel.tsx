@@ -53,11 +53,15 @@ interface Status {
 
 interface Preview {
   revision: string;
+  scope?: "Machine";
+  targetUserSid?: string | null;
   before: unknown;
   after: unknown;
   detail: string;
+  canApply?: boolean;
   requiresAppRestart: boolean;
   requiresRestart: boolean;
+  limitations?: string[];
 }
 
 interface PanelProps {
@@ -398,13 +402,16 @@ export function PolicyExpansionPanel({ target, real, sid, detectedApps = [], sen
             </div>
             {preview.result.requiresAppRestart && <p>Compatibilidade e reinício: feche e reabra o navegador para verificar o efeito.</p>}
             {preview.result.requiresRestart && <p>Compatibilidade e reinício: reinicie o Windows e reconecte o dispositivo para verificar o efeito.</p>}
+            {preview.result.limitations && preview.result.limitations.length > 0 && (
+              <p className="wl-requires-action">{preview.result.limitations.join(" ")}</p>
+            )}
             <div className="wl-expansion-diff">
               <div className="wl-diff-card"><strong>Antes (Configuração anterior)</strong><PolicyValues data={preview.result.before} /></div>
               <div className="wl-diff-card"><strong>Depois (Configuração prevista)</strong><PolicyValues data={preview.result.after} /></div>
             </div>
             <div className="wl-expansion-actions">
               <button type="button" className="wl-button secondary" disabled={busy} onClick={() => setPreview(null)}>Cancelar</button>
-              <button type="button" className="wl-button primary" disabled={busy} onClick={() => {
+              <button type="button" className="wl-button primary" disabled={busy || preview.result.canApply === false} onClick={() => {
                 const { plan: reviewed, result } = preview;
                 setPreview(null);
                 void perform<Status>(IPC.ACTION_EXPANSION_APPLY, { plan: reviewed, revision: result.revision }, current => {

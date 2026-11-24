@@ -1,10 +1,16 @@
 "use client";
 
 import type { DetectedAppDto, IpcResponse, LocalUserDto } from "./contracts";
-import type { AdminPermissionDto, AdminPermissionIntent } from "./admin-contracts-compat";
+import type {
+  AdminManagementDto,
+  AdminPermissionDto,
+  AdminPermissionIntent
+} from "./admin-contracts-compat";
 import {
+  ADMIN_INTENT_META,
   PERMISSION_GROUPS,
   UNAVAILABLE_FUTURE_PERMISSIONS,
+  formatAdminOriginLabel,
   type PermissionCardViewModel,
   type PermissionGroup
 } from "./permissions-catalog";
@@ -32,6 +38,8 @@ export interface PermissionsCenterViewProps {
   onTogglePolicy: (card: PermissionCardViewModel) => void;
   adminPermissionsEnabled: boolean;
   adminPermissions: AdminPermissionDto[] | null;
+  adminCanWrite?: boolean;
+  adminManagement?: AdminManagementDto | null;
   onSelectAdminIntent?: (permission: AdminPermissionDto, intent: AdminPermissionIntent) => void;
   realExpansionActive: boolean;
   detectedApps: DetectedAppDto[];
@@ -40,21 +48,59 @@ export interface PermissionsCenterViewProps {
   sendIpc: <T>(action: string, payload?: unknown) => Promise<IpcResponse<T>>;
 }
 
-const INTENT_LABELS: Record<AdminPermissionIntent, string> = {
-  Allow: "Permitir",
-  Block: "Bloquear",
-  Restore: "Herdar",
-  Preserve: "Preservar"
-};
+const ADMIN_INTENT_ORDER: readonly AdminPermissionIntent[] = [
+  "Allow",
+  "Block",
+  "Preserve",
+  "Restore"
+];
+
+function getUnavailableIntentHint(intent: AdminPermissionIntent, adminCanWrite: boolean): string {
+  if (!adminCanWrite && intent !== "Preserve") {
+    return "Modo somente leitura ativo (canWrite = false): apenas Herdar / Preservar pode ser pré-visualizado.";
+  }
+  switch (intent) {
+    case "Block":
+      return "Indisponível porque já existe configuração gravada no registro ou pendência no histórico.";
+    case "Allow":
+      return "Disponível quando houver bloqueio WinLab com baseline confirmando ausência prévia de política.";
+    case "Restore":
+      return "Disponível quando houver baseline WinLab íntegro registrado antes da restrição.";
+    default:
+      return "Indisponível para o estado atual.";
+  }
+}
+
+function ExpansionAdminSummaryStrip({ items }: { items: AdminPermissionDto[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="wl-expansion-admin-strip" aria-label="Resumo administrativo de expansão">
+      {items.map((item) => (
+        <div key={item.id} className="wl-expansion-admin-item">
+          <div className="wl-setting-header">
+            <strong>{item.name}</strong>
+            <span className="wl-scope-tag scope-machine">Máquina inteira (todas as contas)</span>
+            <span className="wl-status-badge neutral">
+              {item.state.configuredState} · {formatAdminOriginLabel(item.state.origin)}
+            </span>
+          </div>
+          <small className="wl-muted">{item.description}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function PermissionCard({
   card,
   adminPermission,
+  adminCanWrite,
   onToggle,
   onSelectAdminIntent
 }: {
   card: PermissionCardViewModel;
   adminPermission?: AdminPermissionDto | null;
+  adminCanWrite: boolean;
   onToggle: (card: PermissionCardViewModel) => void;
   onSelectAdminIntent?: (permission: AdminPermissionDto, intent: AdminPermissionIntent) => void;
 }) {
@@ -84,28 +130,37 @@ function PermissionCard({
             <span className={`wl-status-badge ${card.currentStateTone}`}>
               Estado atual: {card.currentStateLabel}
             </span>
+            {card.originLabel && (
+              <span className="wl-scope-tag">Origem: {card.originLabel}</span>
+            )}
           </div>
           <p className="wl-setting-description">{card.description}</p>
         </div>
 
         <div className="wl-perm-controls">
-          {card.controlMode === "tristate" && adminPermission && onSelectAdminIntent ? (
-            <div className="wl-tristate" role="group" aria-label={`Controle de ${card.simpleName}`}>
-              {(["Allow", "Block", "Restore"] as const).map((intent) => {
+          {card.controlMode === "admin-intents" && adminPermission && onSelectAdminIntent ? (
+            <div className="wl-tristate" role="group" aria-label={`Intenções de ${card.simpleName}`}>
+              {ADMIN_INTENT_ORDER.map((intent) => {
                 const supported = adminPermission.intents.includes(intent);
-                const isSelected =
-                  (intent === "Allow" && card.activeTriState === "Allow") ||
-                  (intent === "Block" && card.activeTriState === "Block") ||
-                  (intent === "Restore" && card.activeTriState === "Inherit");
+                const intentCanWrite = intent === "Preserve" || adminCanWrite;
+                const isSelected = card.activeAdminIntent === intent;
+                const meta = ADMIN_INTENT_META[intent];
+                const isDisabled = card.disabled || !supported || !intentCanWrite;
                 return (
                   <button
                     key={intent}
                     type="button"
-                    disabled={card.disabled || !supported}
+                    disabled={isDisabled}
+                    aria-pressed={isSelected}
+                    title={
+                      supported && intentCanWrite
+                        ? meta.shortDesc
+                        : getUnavailableIntentHint(intent, adminCanWrite)
+                    }
                     className={`wl-tristate-btn ${isSelected ? "active" : ""}`}
                     onClick={() => onSelectAdminIntent(adminPermission, intent)}
                   >
-                    {INTENT_LABELS[intent]}
+                    {meta.label}
                   </button>
                 );
               })}
@@ -157,16 +212,20 @@ function PermissionCard({
         </div>
       </dl>
 
-      {card.controlMode === "binary-compat" && (
+      {card.controlMode === "admin-intents" ? (
+        <p className="wl-compat-hint wl-intent-legend">
+          <strong>Semântica distinta:</strong> Permitir (remove bloqueio WinLab quando possível) · Bloquear (aplica restrição suportada) · Herdar / Preservar (mantém configuração sem alteração) · Restaurar (recupera baseline registrado). Clique em uma ação para abrir a prévia.
+        </p>
+      ) : (
         <p className="wl-compat-hint">
-          Semântica atual do motor: ativar aplica bloqueio; desativar restaura a herança padrão do Windows (NotConfigured). A opção forçada Permitir requer suporte explícito do backend.
+          Semântica atual do motor: ativar aplica bloqueio; desativar restaura a herança padrão do Windows (NotConfigured). A opção forçada Permitir requer o contrato administrativo v2.
         </p>
       )}
 
       {card.disabledReason && <p className="wl-requires-action">{card.disabledReason}</p>}
 
       <details className="wl-setting-details">
-        <summary>Detalhes técnicos (registro e auditoria)</summary>
+        <summary>Detalhes técnicos (registro, limitações e auditoria)</summary>
         <div>
           <span>Identificador: {card.technicalDetails.policyId}</span>
           <span>
@@ -182,6 +241,9 @@ function PermissionCard({
           </span>
           {card.technicalDetails.evidence && (
             <span>Leitura do sistema: {card.technicalDetails.evidence}</span>
+          )}
+          {card.limitations && card.limitations.length > 0 && (
+            <span>Limitações registradas: {card.limitations.join(" ")}</span>
           )}
           {card.technicalDetails.lastVerified && (
             <span>
@@ -213,6 +275,8 @@ export function PermissionsCenterView({
   onTogglePolicy,
   adminPermissionsEnabled,
   adminPermissions,
+  adminCanWrite = true,
+  adminManagement = null,
   onSelectAdminIntent,
   realExpansionActive,
   detectedApps,
@@ -242,6 +306,7 @@ export function PermissionsCenterView({
     if (
       statusFilter === "inconclusive" &&
       card.technicalDetails.effectiveState !== "Inconclusive" &&
+      card.technicalDetails.configuredState !== "Inconclusive" &&
       card.operationPhase !== "inconclusive"
     ) {
       return false;
@@ -253,6 +318,7 @@ export function PermissionsCenterView({
   });
 
   const adminMap = new Map((adminPermissions ?? []).map((item) => [item.id, item]));
+  const expansionAdminItems = (adminPermissions ?? []).filter((item) => item.mechanism === "Expansion");
   const groupsToDisplay =
     selectedGroup === "all" ? PERMISSION_GROUPS : PERMISSION_GROUPS.filter((g) => g === selectedGroup);
 
@@ -273,8 +339,8 @@ export function PermissionsCenterView({
             )}
           </div>
           <small>
-            <strong>Por usuário ({userScopedCount}):</strong> aplica apenas à conta comum escolhida (Administradores são imunes).{" "}
-            <strong>Máquina inteira ({machineScopedCount}):</strong> aplica para todas as contas do computador.
+            <strong>Por usuário ({userScopedCount}):</strong> aplica apenas à conta comum escolhida (contas administrativas não são selecionadas como alvo).{" "}
+            <strong>Máquina inteira ({machineScopedCount}):</strong> aplica para todas as contas do computador, inclusive administradores e Superadmin.
           </small>
         </div>
 
@@ -292,18 +358,32 @@ export function PermissionsCenterView({
               </option>
             ))}
           </select>
-          {hasInconclusiveUserPolicies && realExpansionActive && (
+          {hasInconclusiveUserPolicies && (realExpansionActive || adminPermissionsEnabled) && (
             <button
               type="button"
               className="wl-button secondary"
               onClick={() => void onQueryOfflineProfile()}
               disabled={busy}
             >
-              Consultar perfil offline (Admin)
+              Consultar perfil sob UAC (Admin)
             </button>
           )}
         </div>
       </div>
+
+      {adminPermissionsEnabled && adminManagement && adminManagement.status !== "NotDetected" && (
+        <div className="wl-notice-box warning" role="status">
+          <strong>Gerenciamento externo/institucional detectado ({adminManagement.status}):</strong>{" "}
+          Domínio: {adminManagement.domain} · Entra ID: {adminManagement.entra}
+          {adminManagement.entraScope ? ` (${adminManagement.entraScope})` : ""} · MDM: {adminManagement.mdm}. Alterações administrativas permanecem suspensas (somente leitura / Herdar ou Preservar).
+        </div>
+      )}
+
+      {adminPermissionsEnabled && !adminCanWrite && (!adminManagement || adminManagement.status === "NotDetected") && (
+        <div className="wl-notice-box warning" role="status">
+          <strong>Modo administrativo somente leitura (canWrite = false):</strong> pré-visualizações de alteração ficam restritas até haver autorização elevada e histórico de baseline íntegro.
+        </div>
+      )}
 
       {/* Filtros e busca da central de permissoes */}
       <div className="wl-card wl-filter-card">
@@ -312,7 +392,7 @@ export function PermissionsCenterView({
             <span>Filtrar permissões</span>
             <input
               type="search"
-              placeholder="Buscar por nome, recurso, navegador, USB, CMD..."
+              placeholder="Buscar por nome, recurso, navegador, USB, CMD, MSI..."
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
             />
@@ -325,7 +405,7 @@ export function PermissionsCenterView({
             >
               <option value="all">Todos os escopos</option>
               <option value="User">Por usuário (conta selecionada)</option>
-              <option value="Machine">Máquina inteira (HKLM)</option>
+              <option value="Machine">Máquina inteira (HKLM — inclui administradores)</option>
             </select>
           </label>
           <label>
@@ -391,9 +471,16 @@ export function PermissionsCenterView({
             statusFilter === "all" &&
             matchesSearch(`${item.simpleName} ${item.description} ${item.group}`)
         );
-        const showsAppExpansion = group === "Aplicativos" && statusFilter === "all";
-        const showsBrowserExpansion = group === "Internet" && statusFilter === "all";
-        const showsUsbExpansion = group === "Dispositivos" && statusFilter === "all";
+        const showsAppExpansion = group === "Aplicativos" && statusFilter === "all" && scopeFilter !== "User";
+        const showsBrowserExpansion = group === "Internet" && statusFilter === "all" && scopeFilter !== "User";
+        const showsUsbExpansion = group === "Dispositivos" && statusFilter === "all" && scopeFilter !== "User";
+
+        const groupExpansionSummary = expansionAdminItems.filter((item) => {
+          if (group === "Aplicativos") return item.expansionTarget === "apps";
+          if (group === "Internet") return item.expansionTarget === "chrome" || item.expansionTarget === "edge";
+          if (group === "Dispositivos") return item.expansionTarget === "usb";
+          return false;
+        });
 
         if (
           groupCards.length === 0 &&
@@ -411,14 +498,14 @@ export function PermissionsCenterView({
               <div>
                 <h2>{group}</h2>
                 <small className="wl-muted">
-                  {group === "Sistema" && "Ferramentas administrativas e configurações críticas do sistema."}
-                  {group === "Personalização" && "Aparência visual, área de trabalho, sons e cursor."}
-                  {group === "Aplicativos" && "Microsoft Store e auditoria de aplicativos permitidos."}
-                  {group === "Internet" && "Restrições de Chrome e Edge em toda a máquina."}
+                  {group === "Sistema" && "Ferramentas administrativas, Configurações e controles críticos do sistema."}
+                  {group === "Personalização" && "Aparência visual, tela de bloqueio, sons e cursor."}
+                  {group === "Aplicativos" && "Microsoft Store, Windows Installer (MSI) e auditoria AppLocker."}
+                  {group === "Internet" && "Restrições de Chrome/Edge na máquina e conexões LAN por usuário."}
                   {group === "Dispositivos" && "Proteção contra gravação, leitura e execução em mídias USB."}
                 </small>
               </div>
-              <span className="wl-policy-count">{groupCards.length} controle(s) ativo(s)</span>
+              <span className="wl-policy-count">{groupCards.length} controle(s)</span>
             </div>
 
             {groupCards.length > 0 && (
@@ -428,6 +515,7 @@ export function PermissionsCenterView({
                     key={card.id}
                     card={card}
                     adminPermission={adminPermissionsEnabled ? adminMap.get(card.id) : null}
+                    adminCanWrite={adminCanWrite}
                     onToggle={onTogglePolicy}
                     onSelectAdminIntent={onSelectAdminIntent}
                   />
@@ -436,22 +524,31 @@ export function PermissionsCenterView({
             )}
 
             {showsAppExpansion && (
-              <PolicyExpansionPanel
-                key={`apps-${selectedUserSid || "no-user"}`}
-                target="apps"
-                real={realExpansionActive}
-                sid={selectedUserSid}
-                detectedApps={detectedApps}
-                sendIpc={sendIpc}
-              />
+              <>
+                <ExpansionAdminSummaryStrip items={groupExpansionSummary} />
+                <PolicyExpansionPanel
+                  key={`apps-${selectedUserSid || "no-user"}`}
+                  target="apps"
+                  real={realExpansionActive}
+                  sid={selectedUserSid}
+                  detectedApps={detectedApps}
+                  sendIpc={sendIpc}
+                />
+              </>
             )}
 
             {showsBrowserExpansion && (
-              <BrowserExpansion real={realExpansionActive} sendIpc={sendIpc} />
+              <>
+                <ExpansionAdminSummaryStrip items={groupExpansionSummary} />
+                <BrowserExpansion real={realExpansionActive} sendIpc={sendIpc} />
+              </>
             )}
 
             {showsUsbExpansion && (
-              <PolicyExpansionPanel target="usb" real={realExpansionActive} sendIpc={sendIpc} />
+              <>
+                <ExpansionAdminSummaryStrip items={groupExpansionSummary} />
+                <PolicyExpansionPanel target="usb" real={realExpansionActive} sendIpc={sendIpc} />
+              </>
             )}
 
             {futureItems.length > 0 && (

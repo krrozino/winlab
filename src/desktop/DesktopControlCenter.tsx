@@ -8,6 +8,7 @@ import type {
   DesktopIpcTransport,
   IpcEnvelope,
   IpcResponse,
+  LocalUserDto,
   MachineInventoryDto,
   NetworkShareEnvironmentDto,
   PolicyItemDto,
@@ -31,14 +32,14 @@ import {
 } from "@/desktop/policy-state-machine";
 import {
   ADMIN_IPC_ACTIONS,
-  detectAdminBackendCapabilities,
+  AdminCenterSession,
+  buildAdminPermissionApplyPayload,
+  isCanonicalLocalWindowsSid,
   type AdminAccountsDto,
   type AdminBackendCapabilities,
   type AdminDiagnosticsDto,
-  type AdminPermissionApplyPayload,
   type AdminPermissionDto,
   type AdminPermissionIntent,
-  type AdminPermissionPreviewDto,
   type AdminPermissionResultDto,
   type AdminPermissionsDto
 } from "@/desktop/admin-contracts-compat";
@@ -46,6 +47,7 @@ import {
   DESKTOP_NAVIGATION_ITEMS,
   GLOBAL_SEARCH_CATALOG,
   SECTION_HELP_CONTENT,
+  buildPermissionCardFromAdminDto,
   buildPermissionCardViewModel,
   type DesktopSection,
   type PermissionGroup
@@ -56,7 +58,11 @@ import {
   type StatusFilter
 } from "@/desktop/PermissionsCenterView";
 import { AccountsSectionView } from "@/desktop/AccountsSectionView";
-import { ReviewDrawer, buildReviewDrawerItems } from "@/desktop/ReviewDrawer";
+import {
+  ReviewDrawer,
+  buildReviewDrawerItems,
+  type AdminDrawerPreviewState
+} from "@/desktop/ReviewDrawer";
 import { DiagnosticReport } from "@/desktop/DiagnosticReport";
 import { FirstRunWizard } from "@/desktop/FirstRunWizard";
 import { presets, getPreset } from "@/lib/presets";
@@ -91,6 +97,9 @@ export interface DesktopControlCenterProps {
   sendIpc: <T>(action: string, payload?: unknown) => Promise<IpcResponse<T>>;
   initialSection?: DesktopSection;
   adminCapabilitiesOverride?: Partial<AdminBackendCapabilities>;
+  initialAdminAccountsData?: AdminAccountsDto | null;
+  initialAdminPermissionsData?: AdminPermissionsDto | null;
+  initialAdminDiagnosticsData?: AdminDiagnosticsDto | null;
 }
 
 interface SessionTransactionEntry {
@@ -191,6 +200,36 @@ function SectionIcon({ id }: { id: DesktopSection }) {
   }
 }
 
+function invalidateUserScopedAdminPermissions(
+  prev: AdminPermissionsDto | null,
+  nextSid: string | null
+): AdminPermissionsDto | null {
+  if (!prev) return null;
+  const evidence = nextSid
+    ? "Consultando estado real da conta selecionada..."
+    : "Selecione uma conta comum válida para consultar políticas por usuário.";
+  return {
+    ...prev,
+    target: null,
+    permissions: prev.permissions.map((perm) =>
+      perm.scope === "User"
+        ? {
+            ...perm,
+            intents: ["Preserve"],
+            state: {
+              ...perm.state,
+              origin: "Inconclusive",
+              configuredState: "Inconclusive",
+              effectiveState: "NotVerified",
+              observedValue: null,
+              evidence
+            }
+          }
+        : perm
+    )
+  };
+}
+
 export function DesktopControlCenter({
   mode,
   native,
@@ -210,7 +249,10 @@ export function DesktopControlCenter({
   onAdvanced,
   sendIpc,
   initialSection = "overview",
-  adminCapabilitiesOverride
+  adminCapabilitiesOverride,
+  initialAdminAccountsData = null,
+  initialAdminPermissionsData = null,
+  initialAdminDiagnosticsData = null
 }: DesktopControlCenterProps) {
   const [section, setSection] = useState<DesktopSection>(initialSection);
   const [busy, setBusy] = useState(false);
@@ -248,15 +290,26 @@ export function DesktopControlCenter({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const upgradedFoundationKeyRef = useRef<string | null>(null);
 
-  // Contratos administrativos opcionais (Sprint 03A)
-  const adminCapabilities = useMemo(
-    () => detectAdminBackendCapabilities(undefined, adminCapabilitiesOverride),
-    [adminCapabilitiesOverride]
+  // Contratos administrativos (sondagem dinâmica em runtime com guarda contra respostas obsoletas)
+  const adminSessionRef = useRef<AdminCenterSession | null>(null);
+  if (!adminSessionRef.current) {
+    adminSessionRef.current = new AdminCenterSession();
+  }
+  const [adminCapabilities, setAdminCapabilities] = useState<AdminBackendCapabilities>(() => ({
+    accounts: adminCapabilitiesOverride?.accounts ?? Boolean(initialAdminAccountsData),
+    permissions: adminCapabilitiesOverride?.permissions ?? Boolean(initialAdminPermissionsData),
+    diagnostics: adminCapabilitiesOverride?.diagnostics ?? Boolean(initialAdminDiagnosticsData)
+  }));
+  const [adminAccountsData, setAdminAccountsData] = useState<AdminAccountsDto | null>(
+    initialAdminAccountsData
   );
-  const [adminAccountsData, setAdminAccountsData] = useState<AdminAccountsDto | null>(null);
-  const [adminPermissionsData, setAdminPermissionsData] = useState<AdminPermissionsDto | null>(null);
-  const [adminDiagnosticsData, setAdminDiagnosticsData] = useState<AdminDiagnosticsDto | null>(null);
-  const [adminPermPreview, setAdminPermPreview] = useState<AdminPermissionPreviewDto | null>(null);
+  const [adminPermissionsData, setAdminPermissionsData] = useState<AdminPermissionsDto | null>(
+    initialAdminPermissionsData
+  );
+  const [adminDiagnosticsData, setAdminDiagnosticsData] = useState<AdminDiagnosticsDto | null>(
+    initialAdminDiagnosticsData
+  );
+  const [adminPermPreview, setAdminPermPreview] = useState<AdminDrawerPreviewState | null>(null);
 
   // Criacao de contas locais
   const [accountRole, setAccountRole] = useState<"standard" | "admin">("standard");
@@ -326,13 +379,32 @@ export function DesktopControlCenter({
     setDisplayPolicies(policyStates);
   }, [policyStates]);
 
-  const nonAdminUsers = useMemo(
-    () => getEligibleTargetUsers(inventory?.localUsers),
-    [inventory?.localUsers]
-  );
+  const nonAdminUsers = useMemo<LocalUserDto[]>(() => {
+    if (adminCapabilities.accounts && adminAccountsData?.accounts?.length) {
+      return adminAccountsData.accounts
+        .filter(
+          (acc) =>
+            acc.enabled &&
+            !acc.protected &&
+            acc.role === "Student" &&
+            acc.privilegeClassification === "StandardUser" &&
+            isCanonicalLocalWindowsSid(acc.sid)
+        )
+        .map((acc) => ({
+          name: acc.name,
+          enabled: acc.enabled,
+          isAdmin: false,
+          privilegeClassification: acc.privilegeClassification,
+          sid: acc.sid ?? undefined
+        }));
+    }
+    return getEligibleTargetUsers(inventory?.localUsers);
+  }, [adminCapabilities.accounts, adminAccountsData, inventory?.localUsers]);
 
   const selectedUserSid =
     externalSelectedUserSid !== undefined ? externalSelectedUserSid : localSelectedUserSid;
+  const selectedUserSidRef = useRef<string | null>(selectedUserSid);
+  selectedUserSidRef.current = selectedUserSid;
 
   useEffect(() => {
     if (nonAdminUsers.length > 0) {
@@ -378,37 +450,80 @@ export function DesktopControlCenter({
   }, [canOperateAgent, mode, sendIpc]);
 
   const refreshAdminCapabilitiesData = useCallback(async () => {
+    const session = adminSessionRef.current;
+    if (!session) return;
     if (!canOperateAgent) {
+      session.invalidate(null);
+      setAdminCapabilities({
+        accounts: adminCapabilitiesOverride?.accounts ?? false,
+        permissions: adminCapabilitiesOverride?.permissions ?? false,
+        diagnostics: adminCapabilitiesOverride?.diagnostics ?? false
+      });
       setAdminAccountsData(null);
       setAdminPermissionsData(null);
       setAdminDiagnosticsData(null);
+      setAdminPermPreview(null);
       return;
     }
-    if (adminCapabilities.accounts) {
-      const accRes = await sendIpc<AdminAccountsDto>(ADMIN_IPC_ACTIONS.ACCOUNTS_QUERY);
-      if (accRes.success && accRes.data) setAdminAccountsData(accRes.data);
-    }
-    if (adminCapabilities.permissions) {
-      const permRes = await sendIpc<AdminPermissionsDto>(
-        ADMIN_IPC_ACTIONS.PERMISSIONS_QUERY,
-        selectedUserSid ? { targetUserSid: selectedUserSid } : undefined
-      );
-      if (permRes.success && permRes.data) setAdminPermissionsData(permRes.data);
-    }
-    if (adminCapabilities.diagnostics) {
-      const diagRes = await sendIpc<AdminDiagnosticsDto>(ADMIN_IPC_ACTIONS.DIAGNOSTICS_QUERY);
-      if (diagRes.success && diagRes.data) setAdminDiagnosticsData(diagRes.data);
-    }
-  }, [canOperateAgent, adminCapabilities, selectedUserSid, sendIpc]);
+
+    const res = await session.probeAndLoad(sendIpc, {
+      targetUserSid: selectedUserSidRef.current,
+      override: adminCapabilitiesOverride
+    });
+    if (res.stale) return;
+
+    setAdminCapabilities(res.capabilities);
+    setAdminAccountsData(res.accounts);
+    setAdminPermissionsData(res.permissions);
+    setAdminDiagnosticsData(res.diagnostics);
+  }, [canOperateAgent, adminCapabilitiesOverride, sendIpc]);
+
+  const refreshAdminTarget = useCallback(
+    async (targetSid: string | null, elevatedRead = false) => {
+      const session = adminSessionRef.current;
+      if (!session || !canOperateAgent) return null;
+      if (!adminCapabilities.permissions && !adminCapabilities.diagnostics) return null;
+      const result = await session.queryTarget(sendIpc, {
+        targetUserSid: targetSid,
+        elevatedRead,
+        includePermissions: adminCapabilities.permissions,
+        includeDiagnostics: adminCapabilities.diagnostics
+      });
+      if (result.stale) return result;
+      if (result.permissions) setAdminPermissionsData(result.permissions);
+      if (result.diagnostics) setAdminDiagnosticsData(result.diagnostics);
+      return result;
+    },
+    [canOperateAgent, adminCapabilities.permissions, adminCapabilities.diagnostics, sendIpc]
+  );
 
   useEffect(() => {
     setNetworkEnvironment(null);
     setUpdateStatus(null);
+    setAdminPermPreview(null);
     if (canOperateAgent) {
       void refreshSystemDiagnostics();
       void refreshAdminCapabilitiesData();
+    } else {
+      adminSessionRef.current?.invalidate(null);
+      setAdminAccountsData(null);
+      setAdminPermissionsData(null);
+      setAdminDiagnosticsData(null);
     }
   }, [canOperateAgent, mode, refreshSystemDiagnostics, refreshAdminCapabilitiesData]);
+
+  useEffect(() => {
+    if (!canOperateAgent) return;
+    if (!adminCapabilities.permissions && !adminCapabilities.diagnostics) return;
+    if (adminSessionRef.current?.getTargetSid() === (selectedUserSid ?? null)) return;
+    void refreshAdminTarget(selectedUserSid ?? null, false);
+  }, [
+    canOperateAgent,
+    adminCapabilities.permissions,
+    adminCapabilities.diagnostics,
+    selectedUserSid,
+    refreshAdminTarget
+  ]);
 
   // Garante carregamento do catalogo interativo completo (12 politicas) se veio do resumo inicial
   useEffect(() => {
@@ -450,9 +565,20 @@ export function DesktopControlCenter({
   );
 
   const permissionCards = useMemo(() => {
-    const adminMap = new Map(
-      (adminPermissionsData?.permissions ?? []).map((item) => [item.id, item])
-    );
+    if (adminCapabilities.permissions && adminPermissionsData) {
+      return adminPermissionsData.permissions
+        .filter((item) => item.mechanism === "Transaction")
+        .map((permission) =>
+          buildPermissionCardFromAdminDto({
+            permission,
+            canWrite: adminPermissionsData.canWrite,
+            isApplying: busy,
+            hasSelectedStandardUser: selectedUser !== null,
+            selectedUserName: selectedUser?.name ?? null,
+            executionOutcome: executionOutcomes[permission.id]
+          })
+        );
+    }
     return (displayPolicies ?? []).map((policy) =>
       buildPermissionCardViewModel({
         policy,
@@ -460,8 +586,7 @@ export function DesktopControlCenter({
         isApplying: busy,
         hasSelectedStandardUser: selectedUser !== null,
         selectedUserName: selectedUser?.name ?? null,
-        executionOutcome: executionOutcomes[policy.id],
-        adminOverride: adminCapabilities.permissions ? adminMap.get(policy.id) ?? null : null
+        executionOutcome: executionOutcomes[policy.id]
       })
     );
   }, [
@@ -497,18 +622,23 @@ export function DesktopControlCenter({
     [displayPolicies, pendingPolicies]
   );
 
-  const hasInconclusiveUserPolicies = useMemo(
-    () =>
-      Boolean(
-        selectedUserSid &&
-          (displayPolicies ?? []).some(
-            (p) =>
-              p.scope === "User" &&
-              (p.effectiveState === "Inconclusive" || p.currentState === "Inconclusive")
-          )
-      ),
-    [displayPolicies, selectedUserSid]
-  );
+  const hasInconclusiveUserPolicies = useMemo(() => {
+    if (!selectedUserSid) return false;
+    if (adminCapabilities.permissions && adminPermissionsData) {
+      return adminPermissionsData.permissions.some(
+        (p) =>
+          p.scope === "User" &&
+          (p.state.configuredState === "Inconclusive" ||
+            p.state.effectiveState === "Inconclusive" ||
+            p.state.origin === "Inconclusive")
+      );
+    }
+    return (displayPolicies ?? []).some(
+      (p) =>
+        p.scope === "User" &&
+        (p.effectiveState === "Inconclusive" || p.currentState === "Inconclusive")
+    );
+  }, [adminCapabilities.permissions, adminPermissionsData, displayPolicies, selectedUserSid]);
 
   const pendingCount = Object.keys(pendingPolicies).length;
   const canApply =
@@ -549,9 +679,12 @@ export function DesktopControlCenter({
         policies: displayPolicies
       });
 
+      adminSessionRef.current?.invalidate(nextSid);
       setLocalSelectedUserSid(nextSid);
       setPendingPolicies(transition.nextPendingPolicies);
       setDisplayPolicies(transition.invalidatedPolicies);
+      setAdminPermissionsData((prev) => invalidateUserScopedAdminPermissions(prev, nextSid));
+      setAdminPermPreview((prev) => (prev?.preview.scope === "User" ? null : prev));
       setExecutionOutcomes({});
 
       if (transition.clearedUserPendingCount > 0) {
@@ -563,20 +696,37 @@ export function DesktopControlCenter({
         setFeedback(null);
       }
 
-      if (onSelectUser) {
-        await onSelectUser(nextSid);
-      } else if (nextSid) {
-        const res = await sendIpc<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES, {
-          targetUserSid: nextSid
-        });
-        if (res.success && res.data) {
-          setDisplayPolicies(res.data.items);
-        } else if (res.error) {
-          setFeedback({ tone: "error", message: res.error });
-        }
-      }
+      const legacyPromise = onSelectUser
+        ? onSelectUser(nextSid)
+        : nextSid
+          ? sendIpc<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES, {
+              targetUserSid: nextSid
+            }).then((res) => {
+              if (res.success && res.data) {
+                setDisplayPolicies(res.data.items);
+              } else if (res.error) {
+                setFeedback({ tone: "error", message: res.error });
+              }
+            })
+          : Promise.resolve();
+
+      const adminPromise =
+        adminCapabilities.permissions || adminCapabilities.diagnostics
+          ? refreshAdminTarget(nextSid, false)
+          : Promise.resolve(null);
+
+      await Promise.all([legacyPromise, adminPromise]);
     },
-    [selectedUserSid, pendingPolicies, displayPolicies, onSelectUser, sendIpc]
+    [
+      selectedUserSid,
+      pendingPolicies,
+      displayPolicies,
+      onSelectUser,
+      sendIpc,
+      adminCapabilities.permissions,
+      adminCapabilities.diagnostics,
+      refreshAdminTarget
+    ]
   );
 
   const handleQueryOfflineProfile = useCallback(async () => {
@@ -584,30 +734,54 @@ export function DesktopControlCenter({
     setBusy(true);
     setFeedback(null);
     try {
-      if (onQueryOfflineProfile) {
-        await onQueryOfflineProfile(selectedUserSid);
-      } else {
-        const res = await sendIpc<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES, {
-          targetUserSid: selectedUserSid,
-          allowElevation: true
-        });
-        if (res.success && res.data) {
-          setDisplayPolicies(res.data.items);
-          setFeedback({
-            tone: "success",
-            message: `Perfil da conta '${selectedUser?.name ?? selectedUserSid}' consultado com sucesso.`
-          });
+      if (adminCapabilities.permissions || adminCapabilities.diagnostics) {
+        const adminRes = await refreshAdminTarget(selectedUserSid, true);
+        if (adminRes && !adminRes.stale) {
+          if (adminRes.permissionsError) {
+            setFeedback({ tone: "error", message: adminRes.permissionsError });
+          } else if (adminRes.permissions) {
+            setFeedback({
+              tone: "success",
+              message: `Perfil da conta '${selectedUser?.name ?? selectedUserSid}' consultado sob UAC com sucesso.`
+            });
+          }
+        }
+      }
+
+      if (!adminCapabilities.permissions) {
+        if (onQueryOfflineProfile) {
+          await onQueryOfflineProfile(selectedUserSid);
         } else {
-          setFeedback({
-            tone: "error",
-            message: res.error || "Não foi possível ler o perfil offline desta conta."
+          const res = await sendIpc<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES, {
+            targetUserSid: selectedUserSid,
+            allowElevation: true
           });
+          if (res.success && res.data) {
+            setDisplayPolicies(res.data.items);
+            setFeedback({
+              tone: "success",
+              message: `Perfil da conta '${selectedUser?.name ?? selectedUserSid}' consultado com sucesso.`
+            });
+          } else {
+            setFeedback({
+              tone: "error",
+              message: res.error || "Não foi possível ler o perfil offline desta conta."
+            });
+          }
         }
       }
     } finally {
       setBusy(false);
     }
-  }, [selectedUserSid, selectedUser?.name, onQueryOfflineProfile, sendIpc]);
+  }, [
+    selectedUserSid,
+    selectedUser?.name,
+    adminCapabilities.permissions,
+    adminCapabilities.diagnostics,
+    refreshAdminTarget,
+    onQueryOfflineProfile,
+    sendIpc
+  ]);
 
   const applyPendingChanges = useCallback(async () => {
     if (!canOperateAgent) {
@@ -758,18 +932,36 @@ export function DesktopControlCenter({
   ]);
 
   const handleSelectAdminIntent = useCallback(
-    async (permission: AdminPermissionDto, intent: AdminPermissionIntent) => {
-      if (!adminCapabilities.permissions) return;
+    async (permission: AdminPermissionDto, intent: AdminPermissionIntent, elevatedRead = false) => {
+      if (!adminCapabilities.permissions || !adminSessionRef.current) return;
+      if (permission.scope === "User" && !isCanonicalLocalWindowsSid(selectedUserSid)) {
+        setFeedback({
+          tone: "error",
+          message:
+            "Selecione uma conta comum com SID local válido antes de pré-visualizar permissões por usuário."
+        });
+        return;
+      }
+
       setBusy(true);
       setFeedback(null);
       try {
-        const res = await sendIpc<AdminPermissionPreviewDto>(ADMIN_IPC_ACTIONS.PERMISSIONS_PREVIEW, {
+        const previewResult = await adminSessionRef.current.previewPermission(sendIpc, {
           permissionId: permission.id,
           intent,
-          targetUserSid: permission.scope === "User" ? selectedUserSid ?? undefined : undefined
+          scope: permission.scope,
+          targetUserSid: selectedUserSid,
+          elevatedRead
         });
+        if (previewResult.stale) return;
+        const res = previewResult.response;
         if (res.success && res.data) {
-          setAdminPermPreview(res.data);
+          setAdminPermPreview({
+            preview: res.data,
+            permission,
+            elevatedReadUsed: elevatedRead,
+            canWrite: adminPermissionsData?.canWrite ?? true
+          });
         } else {
           setFeedback({
             tone: "error",
@@ -780,33 +972,91 @@ export function DesktopControlCenter({
         setBusy(false);
       }
     },
-    [adminCapabilities.permissions, selectedUserSid, sendIpc]
+    [adminCapabilities.permissions, adminPermissionsData?.canWrite, selectedUserSid, sendIpc]
   );
+
+  const handleRetryElevatedAdminPreview = useCallback(async () => {
+    if (!adminPermPreview) return;
+    const { preview, permission } = adminPermPreview;
+    const perm =
+      permission ??
+      adminPermissionsData?.permissions.find((item) => item.id === preview.permissionId) ??
+      null;
+    if (!perm) return;
+    await handleSelectAdminIntent(perm, preview.intent, true);
+  }, [adminPermPreview, adminPermissionsData, handleSelectAdminIntent]);
 
   const handleConfirmAdminPermPreview = useCallback(async () => {
     if (!adminPermPreview) return;
+    const { preview, permission } = adminPermPreview;
+    if (!preview.canApply) {
+      setFeedback({
+        tone: "error",
+        message: "Operação bloqueada na prévia (canApply = false). Revise as limitações exibidas."
+      });
+      return;
+    }
+
     setBusy(true);
     try {
-      const payload: AdminPermissionApplyPayload = {
-        plan: {
-          permissionId: adminPermPreview.permissionId,
-          intent: adminPermPreview.intent,
-          targetUserSid: adminPermPreview.target?.sid ?? undefined
-        },
-        revision: adminPermPreview.revision
-      };
+      const payload = buildAdminPermissionApplyPayload(preview);
       const res = await sendIpc<AdminPermissionResultDto>(ADMIN_IPC_ACTIONS.PERMISSIONS_APPLY, payload);
       if (res.success && res.data) {
+        const outcomePhase =
+          res.data.permission.state.origin === "Inconclusive" ||
+          res.data.permission.state.configuredState === "Inconclusive"
+            ? "inconclusive"
+            : "confirmed";
+        setExecutionOutcomes((prev) => ({
+          ...prev,
+          [preview.permissionId]: {
+            policyId: preview.permissionId,
+            requestedState: preview.intent,
+            phase: outcomePhase,
+            detail: res.data!.message,
+            updatedAt: new Date().toISOString()
+          }
+        }));
+        if (res.data.transactionId) {
+          setTransactionHistory((prev) => [
+            {
+              transactionId: res.data!.transactionId!,
+              appliedAt: new Date().toISOString(),
+              targetUserName: preview.target?.name,
+              targetUserSid: preview.target?.sid ?? undefined,
+              appliedCount: 1,
+              status: "Committed"
+            },
+            ...prev.slice(0, 14)
+          ]);
+        }
         setAdminPermPreview(null);
-        await refreshAdminCapabilitiesData();
-        setFeedback({ tone: "success", message: res.data.message });
+        await refreshAdminTarget(selectedUserSid ?? null, false);
+        setFeedback({
+          tone: outcomePhase === "inconclusive" ? "warning" : "success",
+          message:
+            res.data.message || `Operação concluída para '${permission?.name ?? preview.permissionId}'.`
+        });
       } else {
-        setFeedback({ tone: "error", message: res.error || "Falha ao aplicar permissão." });
+        setExecutionOutcomes((prev) => ({
+          ...prev,
+          [preview.permissionId]: {
+            policyId: preview.permissionId,
+            requestedState: preview.intent,
+            phase: "failed",
+            detail: res.error || "Falha ao aplicar permissão administrativa.",
+            updatedAt: new Date().toISOString()
+          }
+        }));
+        setFeedback({
+          tone: "error",
+          message: res.error || "Falha ao aplicar permissão administrativa."
+        });
       }
     } finally {
       setBusy(false);
     }
-  }, [adminPermPreview, sendIpc, refreshAdminCapabilitiesData]);
+  }, [adminPermPreview, sendIpc, refreshAdminTarget, selectedUserSid]);
 
   const handleRollbackTransaction = useCallback(
     async (tx: SessionTransactionEntry) => {
@@ -1164,12 +1414,32 @@ export function DesktopControlCenter({
     DESKTOP_NAVIGATION_ITEMS.find((item) => item.id === section) ?? DESKTOP_NAVIGATION_ITEMS[0];
   const helpContent = SECTION_HELP_CONTENT[section];
 
-  const adminUsersCount = inventory?.localUsers.filter((u) => u.enabled && u.isAdmin).length ?? 0;
+  const adminUsersCount =
+    adminCapabilities.accounts && adminAccountsData?.accounts?.length
+      ? adminAccountsData.accounts.filter(
+          (acc) =>
+            acc.enabled &&
+            (acc.role === "Superadmin" ||
+              acc.role === "Recovery" ||
+              acc.privilegeClassification === "Administrator")
+        ).length
+      : inventory?.localUsers.filter((u) => u.enabled && u.isAdmin).length ?? 0;
   const standardUsersCount = nonAdminUsers.length;
-  const appliedPoliciesCount = (displayPolicies ?? []).filter((p) =>
-    isPolicyCurrentlyEnabled(p)
-  ).length;
-  const totalPoliciesCount = displayPolicies?.length ?? 0;
+  const adminTransactionPerms =
+    adminCapabilities.permissions && adminPermissionsData
+      ? adminPermissionsData.permissions.filter((item) => item.mechanism === "Transaction")
+      : null;
+  const appliedPoliciesCount = adminTransactionPerms
+    ? adminTransactionPerms.filter(
+        (item) =>
+          item.state.configuredState === "Blocked" ||
+          item.state.effectiveState === "Blocked" ||
+          item.state.effectiveState === "Applied"
+      ).length
+    : (displayPolicies ?? []).filter((p) => isPolicyCurrentlyEnabled(p)).length;
+  const totalPoliciesCount = adminTransactionPerms
+    ? adminTransactionPerms.length
+    : displayPolicies?.length ?? 0;
   const systemDisk = inventory?.disks?.[0] ?? null;
   const latestCommittedTx = transactionHistory.find((t) => t.status === "Committed") ?? null;
 
@@ -1552,7 +1822,9 @@ export function DesktopControlCenter({
                 <div>
                   <span>Políticas</span>
                   <strong>
-                    {displayPolicies ? `${appliedPoliciesCount} de ${totalPoliciesCount} ativas` : "—"}
+                    {displayPolicies || adminTransactionPerms
+                      ? `${appliedPoliciesCount} de ${totalPoliciesCount} ativas`
+                      : "—"}
                   </strong>
                   <small>
                     {driftSummary.hasDrift
@@ -1576,7 +1848,7 @@ export function DesktopControlCenter({
               <div className="wl-user-selector-info">
                 <label htmlFor="wl-overview-user-select">Conta comum alvo ativa</label>
                 <small>
-                  Políticas por usuário atingem apenas esta conta comum. Administradores são imunes.
+                  Políticas por usuário atingem apenas esta conta comum (administradores não são alvo por usuário). Políticas de máquina inteira (HKLM) afetam todas as contas.
                 </small>
               </div>
               <div className="wl-user-selector-controls">
@@ -1674,51 +1946,6 @@ export function DesktopControlCenter({
         {/* 3. PERMISSOES */}
         {section === "permissions" && (
           <div className="wl-page-enter" key="page-permissions">
-            {adminPermPreview && (
-              <div className="wl-card" role="region" aria-label="Prévia administrativa">
-                <div className="wl-card-title">
-                  <div>
-                    <h2>Prévia da permissão administrativa</h2>
-                    <p>
-                      Permissão: <strong>{adminPermPreview.permissionId}</strong> · Intenção:{" "}
-                      <strong>{adminPermPreview.intent}</strong>
-                    </p>
-                  </div>
-                </div>
-                <div className="wl-expansion-diff">
-                  <div className="wl-diff-card">
-                    <strong>Antes</strong>
-                    <span>{adminPermPreview.before.effectiveState}</span>
-                  </div>
-                  <div className="wl-diff-card">
-                    <strong>Depois</strong>
-                    <span>{adminPermPreview.after.effectiveState}</span>
-                  </div>
-                </div>
-                {adminPermPreview.limitations.length > 0 && (
-                  <p className="wl-requires-action">{adminPermPreview.limitations.join(" ")}</p>
-                )}
-                <div className="wl-expansion-actions">
-                  <button
-                    type="button"
-                    className="wl-button secondary"
-                    onClick={() => setAdminPermPreview(null)}
-                    disabled={busy}
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="button"
-                    className="wl-button primary"
-                    onClick={() => void handleConfirmAdminPermPreview()}
-                    disabled={busy || !adminPermPreview.canApply}
-                  >
-                    Confirmar operação
-                  </button>
-                </div>
-              </div>
-            )}
-
             <PermissionsCenterView
               cards={permissionCards}
               searchQuery={permSearch}
@@ -1738,11 +1965,15 @@ export function DesktopControlCenter({
               onTogglePolicy={handleTogglePolicyCard}
               adminPermissionsEnabled={adminCapabilities.permissions}
               adminPermissions={adminPermissionsData?.permissions ?? null}
-              onSelectAdminIntent={handleSelectAdminIntent}
+              adminCanWrite={adminPermissionsData?.canWrite ?? true}
+              adminManagement={
+                adminPermissionsData?.management ?? adminDiagnosticsData?.management ?? null
+              }
+              onSelectAdminIntent={(perm, intent) => void handleSelectAdminIntent(perm, intent, false)}
               realExpansionActive={native && mode === "Real"}
               detectedApps={inventory?.detectedApps ?? []}
               busy={busy}
-              isLoadingPolicies={isScanning && !displayPolicies}
+              isLoadingPolicies={isScanning && !displayPolicies && !adminPermissionsData}
               sendIpc={sendIpc}
             />
           </div>
@@ -2179,9 +2410,11 @@ export function DesktopControlCenter({
                 </small>
               </div>
               <div>
-                <span>Imunidade Administrativa</span>
+                <span>Proteção de Contas Administrativas</span>
                 <strong>{adminUsersCount} conta(s) protegida(s)</strong>
-                <small>Administradores locais nunca recebem restrições de usuário.</small>
+                <small>
+                  Administradores não são selecionados em políticas por usuário; políticas de máquina inteira (HKLM) afetam todas as contas.
+                </small>
               </div>
             </div>
 
@@ -2192,11 +2425,19 @@ export function DesktopControlCenter({
                     <h2>Sinais de gerenciamento e origem das políticas</h2>
                     <p>
                       Domínio: {adminDiagnosticsData.management.domain} · Entra ID:{" "}
-                      {adminDiagnosticsData.management.entra} · MDM:{" "}
-                      {adminDiagnosticsData.management.mdm}
+                      {adminDiagnosticsData.management.entra}
+                      {adminDiagnosticsData.management.entraScope
+                        ? ` (${adminDiagnosticsData.management.entraScope})`
+                        : ""}{" "}
+                      · MDM: {adminDiagnosticsData.management.mdm}
                     </p>
                   </div>
                 </div>
+                {adminDiagnosticsData.limitations.length > 0 && (
+                  <p className="wl-requires-action" style={{ marginBottom: 10 }}>
+                    {adminDiagnosticsData.limitations.join(" ")}
+                  </p>
+                )}
                 {adminDiagnosticsData.signals.length > 0 && (
                   <div className="wl-account-list">
                     {adminDiagnosticsData.signals.map((sig) => (
@@ -2600,7 +2841,7 @@ export function DesktopControlCenter({
 
         {/* PAINEL LATERAL DE PREVIA E CONFIRMACAO */}
         <ReviewDrawer
-          open={showReviewDrawer}
+          open={showReviewDrawer || Boolean(adminPermPreview)}
           mode={mode}
           busy={busy}
           items={reviewDrawerItems}
@@ -2609,9 +2850,13 @@ export function DesktopControlCenter({
           canConfirm={canApply && Boolean(transactionValidation?.valid)}
           outcomes={executionOutcomes}
           batchResult={drawerBatchResult}
+          adminPreview={adminPermPreview}
+          onRetryElevatedAdminPreview={handleRetryElevatedAdminPreview}
+          onConfirmAdminPreview={handleConfirmAdminPermPreview}
           onRemoveItem={handleRemovePendingItem}
           onDiscardAll={discardPendingChanges}
           onCancel={() => {
+            setAdminPermPreview(null);
             setShowReviewDrawer(false);
             setDrawerBatchResult(null);
           }}

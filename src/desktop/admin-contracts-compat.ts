@@ -1,173 +1,191 @@
 import {
   ALLOWED_IPC_ACTIONS,
+  IPC_CONSTANTS,
   type AccountPrivilegeClassification,
+  type AdminAccountApplyPayload,
+  type AdminAccountDto,
+  type AdminAccountPlan,
+  type AdminAccountPreviewDto,
+  type AdminAccountResultDto,
+  type AdminAccountRole,
+  type AdminAccountsDto,
+  type AdminDiagnosticSignalDto,
+  type AdminDiagnosticsDto,
+  type AdminExpansionPreviewDto,
+  type AdminManagementDto,
+  type AdminPermissionApplyPayload,
+  type AdminPermissionDto,
+  type AdminPermissionIntent,
+  type AdminPermissionPlan,
+  type AdminPermissionPreviewDto,
+  type AdminPermissionPreviewPayload,
+  type AdminPermissionResultDto,
+  type AdminPermissionStateDto,
+  type AdminPermissionsDto,
+  type AdminPolicyOrigin,
+  type AdminTargetQueryPayload,
+  type IpcResponse,
   type LocalUserDto,
-  type PolicyRisk,
+  type ManagementEvidence,
   type PolicyScope
 } from "./contracts";
 
+export type {
+  AdminAccountApplyPayload,
+  AdminAccountDto,
+  AdminAccountPlan,
+  AdminAccountPreviewDto,
+  AdminAccountResultDto,
+  AdminAccountRole,
+  AdminAccountsDto,
+  AdminDiagnosticSignalDto,
+  AdminDiagnosticsDto,
+  AdminExpansionPreviewDto,
+  AdminManagementDto,
+  AdminPermissionApplyPayload,
+  AdminPermissionDto,
+  AdminPermissionIntent,
+  AdminPermissionPlan,
+  AdminPermissionPreviewDto,
+  AdminPermissionPreviewPayload,
+  AdminPermissionResultDto,
+  AdminPermissionStateDto,
+  AdminPermissionsDto,
+  AdminPolicyOrigin,
+  AdminTargetQueryPayload,
+  ManagementEvidence
+};
+
 /**
- * Acoes administrativas do contrato Sprint 03A (WinLab.Contracts.Administration.AdminActions).
- * Mantidas aqui em camada compativel para nao alterar src/desktop/contracts.ts sem coordenacao.
+ * Aliases apontando diretamente para os contratos oficiais em IPC_CONSTANTS.
  */
 export const ADMIN_IPC_ACTIONS = {
-  ACCOUNTS_QUERY: "admin.accounts.query",
-  ACCOUNTS_PREVIEW: "admin.accounts.preview",
-  ACCOUNTS_APPLY: "admin.accounts.apply",
-  DIAGNOSTICS_QUERY: "admin.diagnostics.query",
-  PERMISSIONS_QUERY: "admin.permissions.query",
-  PERMISSIONS_PREVIEW: "admin.permissions.preview",
-  PERMISSIONS_APPLY: "admin.permissions.apply"
+  ACCOUNTS_QUERY: IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_QUERY,
+  ACCOUNTS_PREVIEW: IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_PREVIEW,
+  ACCOUNTS_APPLY: IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_APPLY,
+  DIAGNOSTICS_QUERY: IPC_CONSTANTS.ACTION_ADMIN_DIAGNOSTICS_QUERY,
+  PERMISSIONS_QUERY: IPC_CONSTANTS.ACTION_ADMIN_PERMISSIONS_QUERY,
+  PERMISSIONS_PREVIEW: IPC_CONSTANTS.ACTION_ADMIN_PERMISSIONS_PREVIEW,
+  PERMISSIONS_APPLY: IPC_CONSTANTS.ACTION_ADMIN_PERMISSIONS_APPLY
 } as const;
 
-export type AdminAccountRole = "Student" | "Superadmin" | "Recovery" | "Unmanaged";
+const MUTATION_IPC_ACTIONS: ReadonlySet<string> = new Set([
+  IPC_CONSTANTS.ACTION_EXPANSION_APPLY,
+  IPC_CONSTANTS.ACTION_EXPANSION_ROLLBACK,
+  IPC_CONSTANTS.ACTION_APPLY_TRANSACTION,
+  IPC_CONSTANTS.ACTION_ROLLBACK_TRANSACTION,
+  IPC_CONSTANTS.ACTION_CREATE_LOCAL_ACCOUNT,
+  IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_APPLY,
+  IPC_CONSTANTS.ACTION_ADMIN_PERMISSIONS_APPLY
+]);
 
-export interface AdminAccountDto {
-  name: string;
-  sid: string | null;
-  enabled: boolean;
-  role: AdminAccountRole;
-  privilegeClassification: AccountPrivilegeClassification;
-  protected: boolean;
-  groupSids: string[];
+const ADMIN_FALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
+  "UNHANDLED_ACTION",
+  "UNAUTHORIZED_ACTION",
+  "PLATFORM_NOT_SUPPORTED",
+  "ADMIN_UNAVAILABLE"
+]);
+
+const LOCAL_WINDOWS_SID_REGEX = /^S-1-5-21-(\d+)-(\d+)-(\d+)-(\d+)$/;
+
+/**
+ * Classifica acoes que exigem envelope type = "command" no transporte IPC (paridade com AdminRequest.cs).
+ */
+export function isMutationIpcAction(action: string): boolean {
+  return MUTATION_IPC_ACTIONS.has(action);
 }
 
-export interface AdminAccountsDto {
-  accounts: AdminAccountDto[];
-  recoverySid: string | null;
-  recoveryStatus: "NotDesignated" | "Observed" | "Inconclusive";
-  canWrite: boolean;
-  limitations: string[];
-}
-
-export type AdminAccountPlan =
-  | { operation: "Create"; name: string; role: "Student" | "Superadmin" }
-  | { operation: "ProtectRecovery"; sid: string }
-  | { operation: "SetEnabled"; sid: string; enabled: boolean };
-
-export interface AdminAccountPreviewDto {
-  revision: string;
-  scope: "Machine";
-  before: AdminAccountDto | null;
-  after: AdminAccountDto;
-  canApply: boolean;
-  limitations: string[];
-}
-
-/** A credencial e transitoria. Enviar somente no comando de criacao ou protecao de recuperacao. */
-export type AdminAccountApplyPayload =
-  | {
-      plan: Extract<AdminAccountPlan, { operation: "Create" | "ProtectRecovery" }>;
-      revision: string;
-      password: string;
+/**
+ * Valida se o SID segue o formato canonico local exigido pelo backend C# (AdminRequest.IsLocalSid):
+ * S-1-5-21-<a>-<b>-<c>-<rid> com 4 inteiros UInt32 e ate 60 caracteres.
+ */
+export function isCanonicalLocalWindowsSid(sid: string | null | undefined): sid is string {
+  if (typeof sid !== "string") return false;
+  if (sid.length === 0 || sid.length > 60) return false;
+  const match = LOCAL_WINDOWS_SID_REGEX.exec(sid);
+  if (!match) return false;
+  for (let i = 1; i <= 4; i++) {
+    const part = match[i];
+    if (part.length > 1 && part.startsWith("0")) return false;
+    const num = Number(part);
+    if (!Number.isInteger(num) || num < 0 || num > 4_294_967_295) {
+      return false;
     }
-  | { plan: Extract<AdminAccountPlan, { operation: "SetEnabled" }>; revision: string };
-
-export interface AdminAccountResultDto {
-  account: AdminAccountDto;
-  message: string;
+  }
+  return true;
 }
 
-export type ManagementEvidence = "Detected" | "NotDetected" | "Inconclusive";
-
-export interface AdminManagementDto {
-  status: ManagementEvidence;
-  domain: ManagementEvidence;
-  entra: ManagementEvidence;
-  mdm: ManagementEvidence;
+/**
+ * Constroi o payload estrito exigido por admin.permissions.query e admin.diagnostics.query.
+ * Sempre retorna um objeto (nunca undefined) e omite targetUserSid invalido ou não-local.
+ */
+export function buildAdminTargetQueryPayload(
+  targetUserSid?: string | null,
+  elevatedRead?: boolean
+): AdminTargetQueryPayload {
+  const payload: AdminTargetQueryPayload = {};
+  const cleanSid = targetUserSid?.trim();
+  if (isCanonicalLocalWindowsSid(cleanSid)) {
+    payload.targetUserSid = cleanSid;
+  }
+  if (elevatedRead === true) {
+    payload.elevatedRead = true;
+  }
+  return payload;
 }
 
-export type AdminPolicyOrigin =
-  | "WinLab"
-  | "ExternalLocal"
-  | "InstitutionalPossible"
-  | "Inconclusive"
-  | "None";
-
-export interface AdminDiagnosticSignalDto {
-  id: string;
-  name: string;
-  scope: PolicyScope;
-  observedState: string;
-  origin: AdminPolicyOrigin;
-  effectiveState: string;
-  detail: string;
-}
-
-export interface AdminDiagnosticsDto {
-  management: AdminManagementDto;
-  signals: AdminDiagnosticSignalDto[];
-  restrictions: AdminPermissionDto[];
-  limitations: string[];
-}
-
-export type AdminPermissionIntent = "Allow" | "Block" | "Preserve" | "Restore";
-
-export interface AdminPermissionStateDto {
-  origin: AdminPolicyOrigin;
-  configuredState: string;
-  effectiveState: string;
-  observedValue: unknown;
-  evidence: string | null;
-}
-
-export interface AdminPermissionDto {
-  id: string;
-  name: string;
-  category: string;
-  description: string;
-  expectedEffect: string;
-  scope: PolicyScope;
-  risk: PolicyRisk;
-  compatibility: string;
-  supported: boolean;
-  requiresRestart: boolean;
-  requiresLogoff: boolean;
-  requiresAppRestart: boolean;
-  mechanism: "Transaction" | "Expansion";
-  intents: AdminPermissionIntent[];
-  limitations: string[];
-  state: AdminPermissionStateDto;
-  expansionTarget: "chrome" | "edge" | "apps" | "usb" | null;
-}
-
-export interface AdminTargetQueryPayload {
-  targetUserSid?: string;
-}
-
-export interface AdminPermissionsDto {
-  target: AdminAccountDto | null;
-  management: AdminManagementDto;
-  permissions: AdminPermissionDto[];
-  canWrite: boolean;
-}
-
-export interface AdminPermissionPlan extends AdminTargetQueryPayload {
-  permissionId: string;
-  intent: AdminPermissionIntent;
-}
-
-export interface AdminPermissionPreviewDto {
-  revision: string;
+/**
+ * Constroi o payload estrito de admin.permissions.preview:
+ * omite targetUserSid para escopo Machine e inclui somente SID local canonico para escopo User.
+ */
+export function buildAdminPermissionPreviewPayload(params: {
   permissionId: string;
   intent: AdminPermissionIntent;
   scope: PolicyScope;
-  target: AdminAccountDto | null;
-  before: AdminPermissionStateDto;
-  after: AdminPermissionStateDto;
-  canApply: boolean;
-  limitations: string[];
+  targetUserSid?: string | null;
+  elevatedRead?: boolean;
+}): AdminPermissionPreviewPayload {
+  const payload: AdminPermissionPreviewPayload = {
+    permissionId: params.permissionId,
+    intent: params.intent
+  };
+  const cleanSid = params.targetUserSid?.trim();
+  if (params.scope === "User" && isCanonicalLocalWindowsSid(cleanSid)) {
+    payload.targetUserSid = cleanSid;
+  }
+  if (params.elevatedRead === true) {
+    payload.elevatedRead = true;
+  }
+  return payload;
 }
 
-export interface AdminPermissionApplyPayload {
-  plan: AdminPermissionPlan;
-  revision: string;
+/**
+ * Constroi o payload estrito de admin.permissions.apply:
+ * remove campos nao aceitos em plan (como elevatedRead) e omite targetUserSid em escopo Machine.
+ */
+export function buildAdminPermissionApplyPayload(
+  preview: AdminPermissionPreviewDto
+): AdminPermissionApplyPayload {
+  const targetSid = preview.target?.sid?.trim();
+  const plan: AdminPermissionPlan = {
+    permissionId: preview.permissionId,
+    intent: preview.intent,
+    ...(preview.scope === "User" && isCanonicalLocalWindowsSid(targetSid)
+      ? { targetUserSid: targetSid }
+      : {})
+  };
+  return {
+    plan,
+    revision: preview.revision
+  };
 }
 
-export interface AdminPermissionResultDto {
-  permission: AdminPermissionDto;
-  transactionId: string | null;
-  message: string;
+/**
+ * Indica se o erro retornado por uma consulta admin.* representa ausencia de suporte no agente
+ * (Mock, agente legado ou host fora do Windows), devendo cair graciosamente para o modo legado.
+ */
+export function isAdminFallbackErrorCode(errorCode?: string | null): boolean {
+  return Boolean(errorCode && ADMIN_FALLBACK_ERROR_CODES.has(errorCode));
 }
 
 export interface AdminBackendCapabilities {
@@ -177,8 +195,9 @@ export interface AdminBackendCapabilities {
 }
 
 /**
- * Detecta se o contrato IPC publicado no runtime ja registra as acoes administrativas Sprint 03A.
- * No baseline atual (sem o merge do backend 03A), retorna false para nao disparar acoes nao autorizadas.
+ * Verifica se as acoes administrativas estao registradas na allowlist estatica do protocolo IPC.
+ * No runtime real, use AdminCenterSession.probeAndLoad para detectar se o agente conectado
+ * (Real vs Mock vs legado) efetivamente implementa o centro administrativo.
  */
 export function detectAdminBackendCapabilities(
   allowedActions: readonly string[] = ALLOWED_IPC_ACTIONS,
@@ -204,6 +223,201 @@ export function detectAdminBackendCapabilities(
   };
 }
 
+export type IpcSender = <T>(action: string, payload?: unknown) => Promise<IpcResponse<T>>;
+
+export type AdminProbeLoadResult =
+  | { stale: true }
+  | {
+      stale: false;
+      capabilities: AdminBackendCapabilities;
+      accounts: AdminAccountsDto | null;
+      permissions: AdminPermissionsDto | null;
+      diagnostics: AdminDiagnosticsDto | null;
+    };
+
+export type AdminTargetQueryResult =
+  | { stale: true }
+  | {
+      stale: false;
+      permissions: AdminPermissionsDto | null;
+      permissionsError?: string;
+      diagnostics: AdminDiagnosticsDto | null;
+      diagnosticsError?: string;
+    };
+
+export type AdminPermissionPreviewResult =
+  | { stale: true }
+  | {
+      stale: false;
+      response: IpcResponse<AdminPermissionPreviewDto>;
+    };
+
+/**
+ * Coordena sondagem e consultas administrativas com token de geracao monotonico
+ * para descartar respostas desatualizadas ao trocar de conta ou modo.
+ */
+export class AdminCenterSession {
+  private generation = 0;
+  private previewGeneration = 0;
+  private currentTargetSid: string | null = null;
+
+  public getTargetSid(): string | null {
+    return this.currentTargetSid;
+  }
+
+  /**
+   * Invalida imediatamente quaisquer consultas e previas em andamento ao trocar conta ou modo.
+   */
+  public invalidate(nextTargetSid?: string | null): number {
+    this.generation += 1;
+    this.previewGeneration += 1;
+    this.currentTargetSid = nextTargetSid?.trim() ? nextTargetSid.trim() : null;
+    return this.generation;
+  }
+
+  public async probeAndLoad(
+    sendIpc: IpcSender,
+    params: {
+      targetUserSid?: string | null;
+      elevatedRead?: boolean;
+      override?: Partial<AdminBackendCapabilities>;
+    } = {}
+  ): Promise<AdminProbeLoadResult> {
+    const gen = this.invalidate(params.targetUserSid ?? null);
+    const { override, elevatedRead } = params;
+
+    if (
+      override?.accounts === false &&
+      override?.permissions === false &&
+      override?.diagnostics === false
+    ) {
+      return {
+        stale: false,
+        capabilities: { accounts: false, permissions: false, diagnostics: false },
+        accounts: null,
+        permissions: null,
+        diagnostics: null
+      };
+    }
+
+    let accountsData: AdminAccountsDto | null = null;
+    let detectedAccounts = false;
+
+    if (override?.accounts !== false) {
+      const accRes = await sendIpc<AdminAccountsDto>(ADMIN_IPC_ACTIONS.ACCOUNTS_QUERY, {});
+      if (gen !== this.generation) {
+        return { stale: true };
+      }
+      if (accRes.success && accRes.data) {
+        detectedAccounts = true;
+        accountsData = accRes.data;
+      } else if (
+        override?.accounts === undefined &&
+        override?.permissions !== true &&
+        override?.diagnostics !== true &&
+        (isAdminFallbackErrorCode(accRes.errorCode) || !accRes.success)
+      ) {
+        return {
+          stale: false,
+          capabilities: { accounts: false, permissions: false, diagnostics: false },
+          accounts: null,
+          permissions: null,
+          diagnostics: null
+        };
+      }
+    }
+
+    const queryPayload = buildAdminTargetQueryPayload(params.targetUserSid, elevatedRead);
+    const shouldQueryPerms = override?.permissions !== false && (detectedAccounts || override?.permissions === true);
+    const shouldQueryDiag = override?.diagnostics !== false && (detectedAccounts || override?.diagnostics === true);
+
+    const [permRes, diagRes] = await Promise.all([
+      shouldQueryPerms
+        ? sendIpc<AdminPermissionsDto>(ADMIN_IPC_ACTIONS.PERMISSIONS_QUERY, queryPayload)
+        : Promise.resolve(null),
+      shouldQueryDiag
+        ? sendIpc<AdminDiagnosticsDto>(ADMIN_IPC_ACTIONS.DIAGNOSTICS_QUERY, queryPayload)
+        : Promise.resolve(null)
+    ]);
+
+    if (gen !== this.generation) {
+      return { stale: true };
+    }
+
+    const permissionsData = permRes && permRes.success && permRes.data ? permRes.data : null;
+    const diagnosticsData = diagRes && diagRes.success && diagRes.data ? diagRes.data : null;
+
+    return {
+      stale: false,
+      capabilities: {
+        accounts: override?.accounts ?? detectedAccounts,
+        permissions: override?.permissions ?? Boolean(permissionsData),
+        diagnostics: override?.diagnostics ?? Boolean(diagnosticsData)
+      },
+      accounts: accountsData,
+      permissions: permissionsData,
+      diagnostics: diagnosticsData
+    };
+  }
+
+  public async queryTarget(
+    sendIpc: IpcSender,
+    params: {
+      targetUserSid?: string | null;
+      elevatedRead?: boolean;
+      includePermissions: boolean;
+      includeDiagnostics: boolean;
+    }
+  ): Promise<AdminTargetQueryResult> {
+    const gen = this.invalidate(params.targetUserSid ?? null);
+    const payload = buildAdminTargetQueryPayload(params.targetUserSid, params.elevatedRead);
+
+    const [permRes, diagRes] = await Promise.all([
+      params.includePermissions
+        ? sendIpc<AdminPermissionsDto>(ADMIN_IPC_ACTIONS.PERMISSIONS_QUERY, payload)
+        : Promise.resolve(null),
+      params.includeDiagnostics
+        ? sendIpc<AdminDiagnosticsDto>(ADMIN_IPC_ACTIONS.DIAGNOSTICS_QUERY, payload)
+        : Promise.resolve(null)
+    ]);
+
+    if (gen !== this.generation) {
+      return { stale: true };
+    }
+
+    return {
+      stale: false,
+      permissions: permRes && permRes.success && permRes.data ? permRes.data : null,
+      permissionsError: permRes && !permRes.success ? permRes.error : undefined,
+      diagnostics: diagRes && diagRes.success && diagRes.data ? diagRes.data : null,
+      diagnosticsError: diagRes && !diagRes.success ? diagRes.error : undefined
+    };
+  }
+
+  public async previewPermission(
+    sendIpc: IpcSender,
+    params: {
+      permissionId: string;
+      intent: AdminPermissionIntent;
+      scope: PolicyScope;
+      targetUserSid?: string | null;
+      elevatedRead?: boolean;
+    }
+  ): Promise<AdminPermissionPreviewResult> {
+    const targetGen = this.generation;
+    const previewGen = ++this.previewGeneration;
+    const payload = buildAdminPermissionPreviewPayload(params);
+    const response = await sendIpc<AdminPermissionPreviewDto>(
+      ADMIN_IPC_ACTIONS.PERMISSIONS_PREVIEW,
+      payload
+    );
+    if (targetGen !== this.generation || previewGen !== this.previewGeneration) {
+      return { stale: true };
+    }
+    return { stale: false, response };
+  }
+}
+
 export interface UnifiedAccountRow {
   key: string;
   name: string;
@@ -220,16 +434,16 @@ export interface UnifiedAccountRow {
 }
 
 function getRoleLabel(role: AdminAccountRole, classification: AccountPrivilegeClassification): string {
-  if (role === "Superadmin") return "Superadmin (Administrador protegido)";
+  if (role === "Superadmin") return "Superadmin (Administrador)";
   if (role === "Recovery") return "Administrador de recuperação";
   if (role === "Student") return "Aluno (Conta comum)";
-  if (classification === "Administrator") return "Administrador local (Protegido)";
+  if (classification === "Administrator") return "Administrador local";
   if (classification === "StandardUser") return "Conta comum";
   return "Conta não classificada";
 }
 
 /**
- * Normaliza as contas do contrato administrativo (quando disponivel) ou do inventário local atual.
+ * Normaliza as contas do contrato administrativo (quando disponivel) ou do inventario local legado.
  */
 export function buildUnifiedAccountRows(
   localUsers: LocalUserDto[] | undefined | null,

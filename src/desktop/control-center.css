@@ -955,6 +955,7 @@
 
 .wl-tristate {
   display: inline-flex;
+  flex-wrap: wrap;
   background: #0d141c;
   border: 1px solid #354657;
   border-radius: 8px;
@@ -981,6 +982,25 @@
 .wl-tristate-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.wl-intent-legend {
+  color: #a9bacb;
+}
+
+.wl-expansion-admin-strip {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.wl-expansion-admin-item {
+  background: #0f1720;
+  border: 1px solid #263442;
+  border-radius: 9px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
 }
 
 .wl-perm-facts {
