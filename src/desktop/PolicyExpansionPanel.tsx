@@ -290,24 +290,71 @@ export function PolicyExpansionPanel({ target, real, sid, detectedApps = [], sen
   const editDisabled = busy || !status?.supported || !status.canWrite || status.state === "RecoveryRequired";
   const effective = status?.configured;
   const shown = Array.isArray(effective) ? effective : effective?.effective;
+  const scopeTag = target === "apps" ? "Por usuário + regras na máquina" : "Máquina inteira (todas as contas)";
+  const compatTag =
+    target === "apps"
+      ? "Windows 10/11 · AppLocker (AuditOnly)"
+      : target === "usb"
+        ? "Windows 10/11 · Discos removíveis"
+        : `${target === "chrome" ? "Google Chrome" : "Microsoft Edge"} · Windows 10/11`;
+  const restartTag =
+    target === "apps"
+      ? "Auditoria imediata"
+      : target === "usb"
+        ? "Requer reiniciar o Windows / reconectar USB"
+        : "Requer reiniciar o navegador";
 
   return (
     <div className="wl-card">
-      <div className="wl-card-title"><div><h2>{titles[target]}</h2>
-        {real && <p>{target === "apps" ? "Auditoria AppLocker por conta local. As coleções são instaladas na máquina."
-          : "Política de toda a máquina, inclusive para contas administrativas."}</p>}
-      </div></div>
-      {!real ? <p className="wl-muted">Conecte ao Windows real para consultar e administrar esta configuração.</p> : (
+      <div className="wl-card-title">
+        <div>
+          <div className="wl-setting-header" style={{ marginBottom: 6 }}>
+            <h2>{titles[target]}</h2>
+            <span className="wl-scope-tag">{scopeTag}</span>
+            <span className="wl-scope-tag">{compatTag}</span>
+            <span className="wl-scope-tag">{restartTag}</span>
+          </div>
+          {real ? (
+            <p>
+              {target === "apps"
+                ? "Auditoria AppLocker por conta local (somente AuditOnly — registra eventos sem bloquear abertura). As coleções são instaladas na máquina."
+                : "Política de toda a máquina, inclusive para contas administrativas. Todas as alterações passam por prévia antes de confirmar."}
+            </p>
+          ) : (
+            <p>
+              Estrutura real de políticas estendidas do Windows. Em Modo Demonstração ou Web, a consulta e aplicação ao vivo ficam indisponíveis para evitar simulação enganosa.
+            </p>
+          )}
+        </div>
+      </div>
+      {!real ? (
+        <div className="wl-notice-box info">
+          <strong>Indisponível no Modo Demonstração / Web:</strong> Conecte ao <strong>Computador Real</strong> no aplicativo WinLab Desktop instalado no Windows para consultar e revisar esta configuração avançada.
+        </div>
+      ) : (
         <>
           {error && <p role="alert" className="wl-feedback error">{error}</p>}
           {message && <p role="status" className="wl-feedback">{message}</p>}
+          {!status && !error && (
+            <div className="wl-skeleton-stack" aria-label="Consultando configuração no Windows">
+              <div className="wl-skeleton wl-skeleton-line" />
+              <div className="wl-skeleton wl-skeleton-line short" />
+            </div>
+          )}
           {status && (
             <div className="wl-expansion-status">
               <strong>{states[status.state] ?? status.state}</strong>
               <span>{status.detail}</span>
               {!status.supported && <span>Alterações indisponíveis neste ambiente.</span>}
               {!status.canWrite && <span>Somente leitura. Use a instalação por máquina em Program Files com uma conta administrativa.</span>}
-              {(shown?.length ?? 0) > 0 && <details><summary>Configuração encontrada</summary><PolicyValues data={shown} /></details>}
+              {(shown?.length ?? 0) > 0 && (
+                <details className="wl-setting-details">
+                  <summary>Detalhes técnicos encontrados no sistema</summary>
+                  <div>
+                    <PolicyValues data={shown} />
+                  </div>
+                </details>
+              )}
             </div>
           )}
           {plan.target === "apps" && <AppEditor plan={plan} setPlan={updatePlan} detectedApps={detectedApps} disabled={editDisabled || !sid} />}
@@ -343,27 +390,32 @@ export function PolicyExpansionPanel({ target, real, sid, detectedApps = [], sen
                 });
               }}>Restaurar configuração anterior</button>}
           </div>
-          {preview && <div className="wl-expansion-preview">
-            <h3>Confirmar alterações</h3>
+          {preview && <div className="wl-expansion-preview" role="region" aria-label="Prévia da alteração estruturada">
+            <h3>Prévia: confirmar alterações</h3>
             <p>{preview.result.detail}</p>
-            {preview.result.requiresAppRestart && <p>Reinicie o navegador para verificar o efeito das políticas.</p>}
-            {preview.result.requiresRestart && <p>Reinicie o Windows e reconecte o dispositivo para verificar o efeito.</p>}
-            <div className="wl-expansion-diff">
-              <div><strong>Configuração anterior</strong><PolicyValues data={preview.result.before} /></div>
-              <div><strong>Configuração prevista</strong><PolicyValues data={preview.result.after} /></div>
+            <div className="wl-notice-box warning">
+              <strong>Impacto administrativo:</strong> {target === "apps" ? "Atualiza a política AppLocker AuditOnly desta máquina." : "Modifica chaves de máquina (HKLM) e solicita elevação UAC."}
             </div>
-            <button type="button" className="wl-button primary" disabled={busy} onClick={() => {
-              const { plan: reviewed, result } = preview;
-              setPreview(null);
-              void perform<Status>(IPC.ACTION_EXPANSION_APPLY, { plan: reviewed, revision: result.revision }, current => {
-                setMessage(target === "apps"
-                  ? current.state === "AuditOnly" ? "Política efetiva confirmada em AuditOnly." : "Linha de base AppLocker confirmada."
-                  : "Configuração confirmada no registro do Windows. Verifique o efeito após o reinício indicado.");
-                setStatus(current);
-                setReload(value => value + 1);
-              });
-            }}>Confirmar e aplicar</button>
-            <button type="button" className="wl-button secondary" disabled={busy} onClick={() => setPreview(null)}>Cancelar</button>
+            {preview.result.requiresAppRestart && <p>Compatibilidade e reinício: feche e reabra o navegador para verificar o efeito.</p>}
+            {preview.result.requiresRestart && <p>Compatibilidade e reinício: reinicie o Windows e reconecte o dispositivo para verificar o efeito.</p>}
+            <div className="wl-expansion-diff">
+              <div className="wl-diff-card"><strong>Antes (Configuração anterior)</strong><PolicyValues data={preview.result.before} /></div>
+              <div className="wl-diff-card"><strong>Depois (Configuração prevista)</strong><PolicyValues data={preview.result.after} /></div>
+            </div>
+            <div className="wl-expansion-actions">
+              <button type="button" className="wl-button secondary" disabled={busy} onClick={() => setPreview(null)}>Cancelar</button>
+              <button type="button" className="wl-button primary" disabled={busy} onClick={() => {
+                const { plan: reviewed, result } = preview;
+                setPreview(null);
+                void perform<Status>(IPC.ACTION_EXPANSION_APPLY, { plan: reviewed, revision: result.revision }, current => {
+                  setMessage(target === "apps"
+                    ? current.state === "AuditOnly" ? "Política efetiva confirmada em AuditOnly." : "Linha de base AppLocker confirmada."
+                    : "Configuração confirmada no registro do Windows. Verifique o efeito após o reinício indicado.");
+                  setStatus(current);
+                  setReload(value => value + 1);
+                });
+              }}>Confirmar e aplicar</button>
+            </div>
           </div>}
         </>
       )}

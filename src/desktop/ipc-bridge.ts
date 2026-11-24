@@ -69,14 +69,30 @@ export class WebViewIpcBridge implements DesktopIpcTransport {
     }
 
     const messageId = envelope.id || crypto.randomUUID();
-    const expansionMutation = envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_APPLY ||
-      envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_ROLLBACK;
-    const expansionQuery = envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_QUERY ||
-      envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_PREVIEW;
-    const timeoutMs = Math.max(this.timeoutMs, expansionMutation ? 150_000 : expansionQuery ? 30_000 : 0);
+    const mutationActions: ReadonlySet<string> = new Set([
+      IPC_CONSTANTS.ACTION_EXPANSION_APPLY,
+      IPC_CONSTANTS.ACTION_EXPANSION_ROLLBACK,
+      IPC_CONSTANTS.ACTION_APPLY_TRANSACTION,
+      IPC_CONSTANTS.ACTION_ROLLBACK_TRANSACTION,
+      IPC_CONSTANTS.ACTION_CREATE_LOCAL_ACCOUNT,
+      "admin.accounts.apply",
+      "admin.permissions.apply"
+    ]);
+    const extendedQueryActions: ReadonlySet<string> = new Set([
+      IPC_CONSTANTS.ACTION_EXPANSION_QUERY,
+      IPC_CONSTANTS.ACTION_EXPANSION_PREVIEW,
+      "admin.accounts.query",
+      "admin.accounts.preview",
+      "admin.diagnostics.query",
+      "admin.permissions.query",
+      "admin.permissions.preview"
+    ]);
+    const isLongMutation = mutationActions.has(envelope.action);
+    const isExtendedQuery = extendedQueryActions.has(envelope.action);
+    const timeoutMs = Math.max(this.timeoutMs, isLongMutation ? 150_000 : isExtendedQuery ? 30_000 : 0);
     const finalEnvelope: IpcEnvelope = {
       ...envelope,
-      type: expansionMutation ? "command" : envelope.type,
+      type: isLongMutation ? "command" : envelope.type,
       id: messageId
     };
 

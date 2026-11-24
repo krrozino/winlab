@@ -1,9 +1,12 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { Config, OperatingMode, PresetId } from "@/lib/types";
 import type {
   ApplyTransactionResultDto,
+  BaselineCreationResultDto,
+  DesktopIpcTransport,
+  IpcEnvelope,
   IpcResponse,
   MachineInventoryDto,
   NetworkShareEnvironmentDto,
@@ -18,15 +21,44 @@ import {
   SavedPolicyProfile,
   buildValidatedTransactionRequest,
   computePolicyDriftSummary,
-  computePolicyVisualModel,
   computeSavedProfileDiff,
+  derivePostApplyOutcomes,
   getEligibleTargetUsers,
   isPolicyCurrentlyEnabled,
   togglePolicyPendingState,
-  transitionTargetUserContext
+  transitionTargetUserContext,
+  type PolicyExecutionOutcome
 } from "@/desktop/policy-state-machine";
+import {
+  ADMIN_IPC_ACTIONS,
+  detectAdminBackendCapabilities,
+  type AdminAccountsDto,
+  type AdminBackendCapabilities,
+  type AdminDiagnosticsDto,
+  type AdminPermissionApplyPayload,
+  type AdminPermissionDto,
+  type AdminPermissionIntent,
+  type AdminPermissionPreviewDto,
+  type AdminPermissionResultDto,
+  type AdminPermissionsDto
+} from "@/desktop/admin-contracts-compat";
+import {
+  DESKTOP_NAVIGATION_ITEMS,
+  GLOBAL_SEARCH_CATALOG,
+  SECTION_HELP_CONTENT,
+  buildPermissionCardViewModel,
+  type DesktopSection,
+  type PermissionGroup
+} from "@/desktop/permissions-catalog";
+import {
+  PermissionsCenterView,
+  type ScopeFilter,
+  type StatusFilter
+} from "@/desktop/PermissionsCenterView";
+import { AccountsSectionView } from "@/desktop/AccountsSectionView";
+import { ReviewDrawer, buildReviewDrawerItems } from "@/desktop/ReviewDrawer";
 import { DiagnosticReport } from "@/desktop/DiagnosticReport";
-import { BrowserExpansion, PolicyExpansionPanel } from "@/desktop/PolicyExpansionPanel";
+import { FirstRunWizard } from "@/desktop/FirstRunWizard";
 import { presets, getPreset } from "@/lib/presets";
 import { parseConfigJson, serializeConfig } from "@/lib/config-io";
 import {
@@ -57,17 +89,9 @@ export interface DesktopControlCenterProps {
   onRefresh: () => void | Promise<void>;
   onAdvanced?: () => void;
   sendIpc: <T>(action: string, payload?: unknown) => Promise<IpcResponse<T>>;
+  initialSection?: DesktopSection;
+  adminCapabilitiesOverride?: Partial<AdminBackendCapabilities>;
 }
-
-type Section =
-  | "home"
-  | "accounts"
-  | "apps"
-  | "internet"
-  | "system"
-  | "network"
-  | "diagnostics"
-  | "settings";
 
 interface SessionTransactionEntry {
   transactionId: string;
@@ -78,7 +102,7 @@ interface SessionTransactionEntry {
   status: "Committed" | "RolledBack";
 }
 
-function SectionIcon({ id }: { id: Section }) {
+function SectionIcon({ id }: { id: DesktopSection }) {
   const common = {
     width: 17,
     height: 17,
@@ -90,7 +114,7 @@ function SectionIcon({ id }: { id: Section }) {
     strokeLinejoin: "round" as const
   };
   switch (id) {
-    case "home":
+    case "overview":
       return (
         <svg {...common} aria-hidden="true">
           <rect x="3" y="3" width="8" height="8" rx="1.5" />
@@ -108,28 +132,22 @@ function SectionIcon({ id }: { id: Section }) {
           <path d="M16 3.13a4 4 0 0 1 0 7.75" />
         </svg>
       );
-    case "apps":
+    case "permissions":
       return (
         <svg {...common} aria-hidden="true">
-          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-          <polyline points="3.3 7 12 12 20.7 7" />
-          <line x1="12" y1="22" x2="12" y2="12" />
+          <line x1="4" y1="6" x2="20" y2="6" />
+          <circle cx="9" cy="6" r="2.5" fill="currentColor" />
+          <line x1="4" y1="12" x2="20" y2="12" />
+          <circle cx="15" cy="12" r="2.5" fill="currentColor" />
+          <line x1="4" y1="18" x2="20" y2="18" />
+          <circle cx="10" cy="18" r="2.5" fill="currentColor" />
         </svg>
       );
-    case "internet":
+    case "profiles":
       return (
         <svg {...common} aria-hidden="true">
-          <circle cx="12" cy="12" r="9" />
-          <line x1="3" y1="12" x2="21" y2="12" />
-          <path d="M12 3a14.5 14.5 0 0 1 0 18 14.5 14.5 0 0 1 0-18" />
-        </svg>
-      );
-    case "system":
-      return (
-        <svg {...common} aria-hidden="true">
-          <rect x="2" y="3" width="20" height="14" rx="2" />
-          <line x1="8" y1="21" x2="16" y2="21" />
-          <line x1="12" y1="17" x2="12" y2="21" />
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
         </svg>
       );
     case "network":
@@ -142,10 +160,25 @@ function SectionIcon({ id }: { id: Section }) {
           <line x1="12" y1="12" x2="12" y2="8" />
         </svg>
       );
+    case "security":
+      return (
+        <svg {...common} aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          <path d="M9 12l2 2 4-4" />
+        </svg>
+      );
     case "diagnostics":
       return (
         <svg {...common} aria-hidden="true">
           <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+        </svg>
+      );
+    case "history":
+      return (
+        <svg {...common} aria-hidden="true">
+          <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+          <polyline points="3 3 3 8 8 8" />
+          <polyline points="12 7 12 12 15 14" />
         </svg>
       );
     case "settings":
@@ -156,109 +189,6 @@ function SectionIcon({ id }: { id: Section }) {
         </svg>
       );
   }
-}
-
-const NAVIGATION_ITEMS: { id: Section; label: string }[] = [
-  { id: "home", label: "Início" },
-  { id: "accounts", label: "Contas e permissões" },
-  { id: "apps", label: "Aplicativos" },
-  { id: "internet", label: "Internet e navegadores" },
-  { id: "system", label: "Sistema Windows" },
-  { id: "network", label: "Rede e compartilhamento" },
-  { id: "diagnostics", label: "Diagnóstico" },
-  { id: "settings", label: "Configurações do WinLab" }
-];
-
-const CATEGORY_TO_SECTION: Record<string, Section> = {
-  Personalization: "system",
-  Personalização: "system",
-  Browsers: "internet",
-  Navegadores: "internet",
-  Navegador: "internet",
-  Internet: "internet",
-  System: "system",
-  Sistema: "system",
-  Accounts: "accounts",
-  Contas: "accounts",
-  "Contas Locais": "accounts",
-  Storage: "system",
-  Armazenamento: "system",
-  "Armazenamento e USB": "system",
-  "Controle de Aplicativos": "apps",
-  Aplicativos: "apps",
-  Rede: "network"
-};
-
-interface PolicySettingProps {
-  policy: PolicyItemDto;
-  pendingPolicies: Record<string, boolean>;
-  isApplying: boolean;
-  hasSelectedStandardUser: boolean;
-  onToggle: (policy: PolicyItemDto) => void;
-}
-
-function PolicySetting({
-  policy,
-  pendingPolicies,
-  isApplying,
-  hasSelectedStandardUser,
-  onToggle
-}: PolicySettingProps) {
-  const visual = computePolicyVisualModel(policy, pendingPolicies, {
-    isApplying,
-    hasSelectedStandardUser
-  });
-
-  const scopeLabel = policy.scope === "User" ? "Conta comum selecionada" : "Todo o computador";
-  const riskLabel: Record<string, string> = {
-    Low: "Baixo",
-    Medium: "Moderado",
-    High: "Elevado",
-    Critical: "Crítico"
-  };
-
-  return (
-    <div className="wl-setting" data-policy-id={policy.id}>
-      <div className="wl-setting-info">
-        <div className="wl-setting-header">
-          <strong>{policy.title}</strong>
-          <span className="wl-scope-tag">{scopeLabel}</span>
-          <span className={`wl-status-badge ${visual.badgeTone}`}>{visual.badgeLabel}</span>
-        </div>
-        <p className="wl-setting-description">{policy.description}</p>
-        {visual.actionRequirements.length > 0 && (
-          <small className="wl-requires-action">
-            Efeito completo: {visual.actionRequirements.join(" · ")}
-          </small>
-        )}
-        {policy.evidence && (
-          <details className="wl-setting-details">
-            <summary>Detalhes técnicos da verificação</summary>
-            <div>
-              <span>Identificador: {policy.id}</span>
-              <span>Impacto: {riskLabel[policy.risk] ?? policy.risk}</span>
-              <span>Leitura do sistema: {policy.evidence}</span>
-              {policy.lastVerified && <span>Última leitura: {new Date(policy.lastVerified).toLocaleString()}</span>}
-            </div>
-          </details>
-        )}
-      </div>
-      <div className="wl-setting-controls">
-        <button
-          type="button"
-          role="switch"
-          aria-label={`Alternar ${policy.title}`}
-          aria-checked={visual.switchChecked}
-          title={visual.disabledReason}
-          className={`wl-switch ${visual.switchChecked ? "selected" : ""} ${visual.hasPendingChange ? "pending" : ""}`}
-          onClick={() => onToggle(policy)}
-          disabled={visual.disabled}
-        >
-          <span />
-        </button>
-      </div>
-    </div>
-  );
 }
 
 export function DesktopControlCenter({
@@ -278,53 +208,120 @@ export function DesktopControlCenter({
   onChangeMode,
   onRefresh,
   onAdvanced,
-  sendIpc
+  sendIpc,
+  initialSection = "overview",
+  adminCapabilitiesOverride
 }: DesktopControlCenterProps) {
-  const [section, setSection] = useState<Section>("home");
+  const [section, setSection] = useState<DesktopSection>(initialSection);
   const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<{ tone: "success" | "error" | "warning"; message: string } | null>(null);
+  const [feedback, setFeedback] = useState<{
+    tone: "success" | "error" | "warning";
+    message: string;
+  } | null>(null);
   const [pendingPolicies, setPendingPolicies] = useState<Record<string, boolean>>({});
-  const [localSelectedUserSid, setLocalSelectedUserSid] = useState<string | null>(externalSelectedUserSid ?? null);
+  const [executionOutcomes, setExecutionOutcomes] = useState<Record<string, PolicyExecutionOutcome>>(
+    {}
+  );
+  const [drawerBatchResult, setDrawerBatchResult] = useState<{
+    hasError: boolean;
+    hasInconclusive: boolean;
+    message: string;
+  } | null>(null);
+  const [localSelectedUserSid, setLocalSelectedUserSid] = useState<string | null>(
+    externalSelectedUserSid ?? null
+  );
   const [displayPolicies, setDisplayPolicies] = useState<PolicyItemDto[] | null>(policyStates);
-  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [showReviewDrawer, setShowReviewDrawer] = useState(false);
   const [transactionHistory, setTransactionHistory] = useState<SessionTransactionEntry[]>([]);
+  const [latestBaseline, setLatestBaseline] = useState<BaselineCreationResultDto | null>(null);
 
-  // Criação de contas locais
+  // Pesquisa global, filtros da central de permissoes e ajuda contextual
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [permSearch, setPermSearch] = useState("");
+  const [selectedPermGroup, setSelectedPermGroup] = useState<PermissionGroup | "all">("all");
+  const [permScopeFilter, setPermScopeFilter] = useState<ScopeFilter>("all");
+  const [permStatusFilter, setPermStatusFilter] = useState<StatusFilter>("all");
+  const [showContextHelp, setShowContextHelp] = useState(false);
+  const [inventorySearch, setInventorySearch] = useState("");
+  const [showWizardModal, setShowWizardModal] = useState(false);
+  const [reducedMotionPref, setReducedMotionPref] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const upgradedFoundationKeyRef = useRef<string | null>(null);
+
+  // Contratos administrativos opcionais (Sprint 03A)
+  const adminCapabilities = useMemo(
+    () => detectAdminBackendCapabilities(undefined, adminCapabilitiesOverride),
+    [adminCapabilitiesOverride]
+  );
+  const [adminAccountsData, setAdminAccountsData] = useState<AdminAccountsDto | null>(null);
+  const [adminPermissionsData, setAdminPermissionsData] = useState<AdminPermissionsDto | null>(null);
+  const [adminDiagnosticsData, setAdminDiagnosticsData] = useState<AdminDiagnosticsDto | null>(null);
+  const [adminPermPreview, setAdminPermPreview] = useState<AdminPermissionPreviewDto | null>(null);
+
+  // Criacao de contas locais
   const [accountRole, setAccountRole] = useState<"standard" | "admin">("standard");
   const [accountName, setAccountName] = useState("");
   const [accountPassword, setAccountPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
 
-  // Rede SMB, canal de atualização e perfis locais salvos (sem credenciais)
+  // Rede SMB, canal de atualizacao e perfis locais salvos (sem credenciais)
   const [network, setNetwork] = useState<NetworkSharePlan>(DEFAULT_NETWORK_SHARE);
   const [networkStudentAccounts, setNetworkStudentAccounts] = useState<string>(
     config.studentUser || "Aluno"
   );
-  const [networkEnvironment, setNetworkEnvironment] = useState<NetworkShareEnvironmentDto | null>(null);
+  const [networkEnvironment, setNetworkEnvironment] = useState<NetworkShareEnvironmentDto | null>(
+    null
+  );
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusDto | null>(null);
   const [savedProfiles, setSavedProfiles] = useState<SavedPolicyProfile[]>([]);
   const [newProfileName, setNewProfileName] = useState<string>("");
 
-  // Carrega perfis salvos localmente no navegador/WebView2 (jamais armazena senhas)
+  // Carrega preferencias locais seguras (sem credenciais)
   useEffect(() => {
     try {
-      const raw = window.localStorage.getItem("winlab:desktop:saved-profiles:v1");
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        setSavedProfiles(
-          parsed.filter(
-            (item): item is SavedPolicyProfile =>
-              Boolean(item && typeof item.id === "string" && typeof item.name === "string" && item.policies && typeof item.policies === "object")
-          )
-        );
+      const rawProfiles = window.localStorage.getItem("winlab:desktop:saved-profiles:v1");
+      if (rawProfiles) {
+        const parsed = JSON.parse(rawProfiles);
+        if (Array.isArray(parsed)) {
+          setSavedProfiles(
+            parsed.filter(
+              (item): item is SavedPolicyProfile =>
+                Boolean(
+                  item &&
+                    typeof item.id === "string" &&
+                    typeof item.name === "string" &&
+                    item.policies &&
+                    typeof item.policies === "object"
+                )
+            )
+          );
+        }
+      }
+      const motionPref = window.localStorage.getItem("winlab:desktop:reduced-motion:v1");
+      if (motionPref === "true") {
+        setReducedMotionPref(true);
       }
     } catch {
-      // Ignora armazenamento corrompido
+      // Ignora armazenamento indisponivel ou corrompido
     }
   }, []);
 
-  // Sincroniza estados vindos da sessão
+  // Atalho de teclado '/' para foco na pesquisa global
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable) {
+        return;
+      }
+      event.preventDefault();
+      searchInputRef.current?.focus();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   useEffect(() => {
     setDisplayPolicies(policyStates);
   }, [policyStates]);
@@ -334,9 +331,9 @@ export function DesktopControlCenter({
     [inventory?.localUsers]
   );
 
-  const selectedUserSid = externalSelectedUserSid !== undefined ? externalSelectedUserSid : localSelectedUserSid;
+  const selectedUserSid =
+    externalSelectedUserSid !== undefined ? externalSelectedUserSid : localSelectedUserSid;
 
-  // Auto-seleciona a primeira conta comum elegível quando o inventário carrega
   useEffect(() => {
     if (nonAdminUsers.length > 0) {
       const stillValid =
@@ -372,7 +369,6 @@ export function DesktopControlCenter({
       setUpdateStatus(updateRes.data);
     }
     if (netRes.success && netRes.data) {
-      // Garante zero vazamento de dados simulados quando em modo Real
       if (mode === "Real" && netRes.data.isMock) {
         setNetworkEnvironment(null);
       } else {
@@ -381,104 +377,69 @@ export function DesktopControlCenter({
     }
   }, [canOperateAgent, mode, sendIpc]);
 
+  const refreshAdminCapabilitiesData = useCallback(async () => {
+    if (!canOperateAgent) {
+      setAdminAccountsData(null);
+      setAdminPermissionsData(null);
+      setAdminDiagnosticsData(null);
+      return;
+    }
+    if (adminCapabilities.accounts) {
+      const accRes = await sendIpc<AdminAccountsDto>(ADMIN_IPC_ACTIONS.ACCOUNTS_QUERY);
+      if (accRes.success && accRes.data) setAdminAccountsData(accRes.data);
+    }
+    if (adminCapabilities.permissions) {
+      const permRes = await sendIpc<AdminPermissionsDto>(
+        ADMIN_IPC_ACTIONS.PERMISSIONS_QUERY,
+        selectedUserSid ? { targetUserSid: selectedUserSid } : undefined
+      );
+      if (permRes.success && permRes.data) setAdminPermissionsData(permRes.data);
+    }
+    if (adminCapabilities.diagnostics) {
+      const diagRes = await sendIpc<AdminDiagnosticsDto>(ADMIN_IPC_ACTIONS.DIAGNOSTICS_QUERY);
+      if (diagRes.success && diagRes.data) setAdminDiagnosticsData(diagRes.data);
+    }
+  }, [canOperateAgent, adminCapabilities, selectedUserSid, sendIpc]);
+
   useEffect(() => {
     setNetworkEnvironment(null);
     setUpdateStatus(null);
     if (canOperateAgent) {
       void refreshSystemDiagnostics();
+      void refreshAdminCapabilitiesData();
     }
-  }, [canOperateAgent, mode, refreshSystemDiagnostics]);
+  }, [canOperateAgent, mode, refreshSystemDiagnostics, refreshAdminCapabilitiesData]);
+
+  // Garante carregamento do catalogo interativo completo (12 politicas) se veio do resumo inicial
+  useEffect(() => {
+    if (!canOperateAgent || !policyStates || policyStates.length === 0) return;
+    const isFoundationSummary =
+      policyStates.every((p) => !p.scope) ||
+      policyStates.some((p) => p.scope === "Device" || p.id === "applocker.mode");
+    if (!isFoundationSummary) return;
+
+    const upgradeKey = `${mode}:${selectedUserSid ?? "none"}`;
+    if (upgradedFoundationKeyRef.current === upgradeKey) return;
+    upgradedFoundationKeyRef.current = upgradeKey;
+
+    if (onSelectUser) {
+      void onSelectUser(selectedUserSid ?? null);
+    } else {
+      void sendIpc<PolicyStateSummaryDto>(
+        IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES,
+        selectedUserSid ? { targetUserSid: selectedUserSid } : undefined
+      ).then((res) => {
+        if (res.success && res.data) {
+          setDisplayPolicies(res.data.items);
+        }
+      });
+    }
+  }, [canOperateAgent, mode, policyStates, selectedUserSid, onSelectUser, sendIpc]);
 
   const driftSummary = useMemo(
     () => computePolicyDriftSummary(displayPolicies),
     [displayPolicies]
   );
-
-  const handleSaveCurrentProfile = useCallback(() => {
-    if (!displayPolicies || displayPolicies.length === 0) {
-      setFeedback({
-        tone: "error",
-        message: "Carregue as políticas da estação antes de salvar um perfil local."
-      });
-      return;
-    }
-    const trimmed = newProfileName.trim() || config.profileName.trim() || "Perfil Personalizado";
-    const snapshot: Record<string, boolean> = {};
-    for (const p of displayPolicies) {
-      snapshot[p.id] =
-        pendingPolicies[p.id] !== undefined ? pendingPolicies[p.id] : isPolicyCurrentlyEnabled(p);
-    }
-    const entry: SavedPolicyProfile = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      name: trimmed,
-      savedAt: new Date().toISOString(),
-      policies: snapshot
-    };
-    const next = [entry, ...savedProfiles.filter((s) => s.name.toLowerCase() !== trimmed.toLowerCase())].slice(0, 12);
-    setSavedProfiles(next);
-    setNewProfileName("");
-    try {
-      window.localStorage.setItem("winlab:desktop:saved-profiles:v1", JSON.stringify(next));
-    } catch {
-      // Ignora quota
-    }
-    setFeedback({
-      tone: "success",
-      message: `Perfil "${trimmed}" salvo localmente (nenhuma credencial armazenada).`
-    });
-  }, [displayPolicies, newProfileName, config.profileName, pendingPolicies, savedProfiles]);
-
-  const handleDeleteSavedProfile = useCallback(
-    (id: string) => {
-      const next = savedProfiles.filter((p) => p.id !== id);
-      setSavedProfiles(next);
-      try {
-        window.localStorage.setItem("winlab:desktop:saved-profiles:v1", JSON.stringify(next));
-      } catch {
-        // Ignora
-      }
-    },
-    [savedProfiles]
-  );
-
-  const handleStageSavedProfile = useCallback(
-    (profile: SavedPolicyProfile) => {
-      const diff = computeSavedProfileDiff(profile.policies, displayPolicies);
-      setPendingPolicies(diff.pendingMap);
-      const totalChanges = diff.toEnable.length + diff.toDisable.length;
-      setFeedback({
-        tone: totalChanges > 0 ? "warning" : "success",
-        message:
-          totalChanges > 0
-            ? `Perfil "${profile.name}" comparado com a estação atual: ${diff.toEnable.length} ativação(ões) e ${diff.toDisable.length} desativação(ões) prontas para revisão.`
-            : `A estação atual já está idêntica ao perfil "${profile.name}".`
-      });
-    },
-    [displayPolicies]
-  );
-
-  // Se o resumo inicial veio de policy.query_state (fundação sem escopo), carrega o catálogo interativo completo (policy.query_states)
-  useEffect(() => {
-    if (
-      canOperateAgent &&
-      policyStates &&
-      policyStates.length > 0 &&
-      policyStates.every((p) => !p.scope)
-    ) {
-      if (onSelectUser) {
-        void onSelectUser(selectedUserSid);
-      } else {
-        void sendIpc<PolicyStateSummaryDto>(
-          IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES,
-          selectedUserSid ? { targetUserSid: selectedUserSid } : undefined
-        ).then((res) => {
-          if (res.success && res.data) {
-            setDisplayPolicies(res.data.items);
-          }
-        });
-      }
-    }
-  }, [canOperateAgent, policyStates, selectedUserSid, onSelectUser, sendIpc]);
 
   const selectedUser = useMemo(
     () =>
@@ -488,23 +449,45 @@ export function DesktopControlCenter({
     [nonAdminUsers, selectedUserSid]
   );
 
-  const policiesBySection = useMemo(() => {
-    const grouped: Record<Section, PolicyItemDto[]> = {
-      home: [],
-      accounts: [],
-      apps: [],
-      internet: [],
-      system: [],
-      network: [],
-      diagnostics: [],
-      settings: []
-    };
-    (displayPolicies ?? []).forEach((policy) => {
-      const target = CATEGORY_TO_SECTION[policy.category] ?? "system";
-      grouped[target].push(policy);
+  const permissionCards = useMemo(() => {
+    const adminMap = new Map(
+      (adminPermissionsData?.permissions ?? []).map((item) => [item.id, item])
+    );
+    return (displayPolicies ?? []).map((policy) =>
+      buildPermissionCardViewModel({
+        policy,
+        pendingPolicies,
+        isApplying: busy,
+        hasSelectedStandardUser: selectedUser !== null,
+        selectedUserName: selectedUser?.name ?? null,
+        executionOutcome: executionOutcomes[policy.id],
+        adminOverride: adminCapabilities.permissions ? adminMap.get(policy.id) ?? null : null
+      })
+    );
+  }, [
+    displayPolicies,
+    pendingPolicies,
+    busy,
+    selectedUser,
+    executionOutcomes,
+    adminCapabilities.permissions,
+    adminPermissionsData
+  ]);
+
+  const reviewDrawerItems = useMemo(
+    () => buildReviewDrawerItems(permissionCards, pendingPolicies),
+    [permissionCards, pendingPolicies]
+  );
+
+  const transactionValidation = useMemo(() => {
+    if (Object.keys(pendingPolicies).length === 0) return null;
+    return buildValidatedTransactionRequest({
+      pendingPolicies,
+      policies: displayPolicies,
+      selectedUserSid: selectedUserSid ?? null,
+      localUsers: inventory?.localUsers
     });
-    return grouped;
-  }, [displayPolicies]);
+  }, [pendingPolicies, displayPolicies, selectedUserSid, inventory?.localUsers]);
 
   const hasUserScopedPending = useMemo(
     () =>
@@ -528,14 +511,34 @@ export function DesktopControlCenter({
   );
 
   const pendingCount = Object.keys(pendingPolicies).length;
-  const canApply = canOperateAgent && pendingCount > 0 && (!hasUserScopedPending || selectedUser !== null);
+  const canApply =
+    canOperateAgent && pendingCount > 0 && (!hasUserScopedPending || selectedUser !== null);
 
-  // Alterna uma política usando a máquina de estados simétrica
-  const handleTogglePolicy = useCallback((policy: PolicyItemDto) => {
-    setPendingPolicies((prev) => togglePolicyPendingState(prev, policy));
-  }, []);
+  const handleTogglePolicyCard = useCallback(
+    (card: { id: string }) => {
+      const targetPolicy = displayPolicies?.find((p) => p.id === card.id);
+      if (!targetPolicy) return;
+      setPendingPolicies((prev) => togglePolicyPendingState(prev, targetPolicy));
+      setDrawerBatchResult(null);
+    },
+    [displayPolicies]
+  );
 
-  // Troca de conta-alvo: limpa pendências de usuário, invalida estado anterior e reconsulta IPC
+  const handleRemovePendingItem = useCallback(
+    (policyId: string) => {
+      const remainingKeys = Object.keys(pendingPolicies).filter((k) => k !== policyId);
+      setPendingPolicies((prev) => {
+        const next = { ...prev };
+        delete next[policyId];
+        return next;
+      });
+      if (remainingKeys.length === 0) {
+        setShowReviewDrawer(false);
+      }
+    },
+    [pendingPolicies]
+  );
+
   const handleUserSwitch = useCallback(
     async (nextSidRaw: string) => {
       const nextSid = nextSidRaw.trim() ? nextSidRaw.trim() : null;
@@ -549,11 +552,12 @@ export function DesktopControlCenter({
       setLocalSelectedUserSid(nextSid);
       setPendingPolicies(transition.nextPendingPolicies);
       setDisplayPolicies(transition.invalidatedPolicies);
+      setExecutionOutcomes({});
 
       if (transition.clearedUserPendingCount > 0) {
         setFeedback({
           tone: "warning",
-          message: `${transition.clearedUserPendingCount} alteração(ões) pendente(s) da conta anterior foram limpas ao trocar de usuário.`
+          message: `${transition.clearedUserPendingCount} alteração(ões) pendente(s) da conta anterior foram descartadas ao trocar de conta.`
         });
       } else {
         setFeedback(null);
@@ -605,7 +609,6 @@ export function DesktopControlCenter({
     }
   }, [selectedUserSid, selectedUser?.name, onQueryOfflineProfile, sendIpc]);
 
-  // Aplica alterações pendentes com validação, transação atômica e releitura imediata
   const applyPendingChanges = useCallback(async () => {
     if (!canOperateAgent) {
       setFeedback({
@@ -632,13 +635,49 @@ export function DesktopControlCenter({
 
     setBusy(true);
     setFeedback(null);
-    setShowReviewModal(false);
+    setDrawerBatchResult(null);
 
     try {
       const response = await sendIpc<ApplyTransactionResultDto>(
         IPC_CONSTANTS.ACTION_APPLY_TRANSACTION,
         validation.request
       );
+
+      let refreshedItems: PolicyItemDto[] | null = null;
+      if (onSelectUser) {
+        const selectRes = (await onSelectUser(selectedUserSid ?? null)) as
+          | IpcResponse<PolicyStateSummaryDto>
+          | undefined;
+        if (selectRes && selectRes.success && selectRes.data?.items) {
+          refreshedItems = selectRes.data.items;
+          setDisplayPolicies(selectRes.data.items);
+        }
+      }
+
+      if (!refreshedItems) {
+        const refreshed = await sendIpc<PolicyStateSummaryDto>(
+          IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES,
+          selectedUserSid ? { targetUserSid: selectedUserSid } : undefined
+        );
+        if (refreshed.success && refreshed.data?.items) {
+          refreshedItems = refreshed.data.items;
+          setDisplayPolicies(refreshed.data.items);
+        }
+        if (!onSelectUser) {
+          await onRefresh();
+        }
+      }
+
+      const outcomes = derivePostApplyOutcomes({
+        requestedItems: validation.request.policies,
+        applyResponse: response,
+        refreshedPolicies: refreshedItems
+      });
+      setExecutionOutcomes((prev) => ({ ...prev, ...outcomes }));
+
+      const outcomeValues = Object.values(outcomes);
+      const hasFailedOutcome = outcomeValues.some((o) => o.phase === "failed");
+      const hasInconclusiveOutcome = outcomeValues.some((o) => o.phase === "inconclusive");
 
       if (response.success && response.data?.success) {
         const txData = response.data;
@@ -655,20 +694,6 @@ export function DesktopControlCenter({
           ...prev.slice(0, 14)
         ]);
 
-        // Reconsulta imediatamente o estado real verificado
-        if (onSelectUser) {
-          await onSelectUser(selectedUserSid ?? null);
-        } else {
-          const refreshed = await sendIpc<PolicyStateSummaryDto>(
-            IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES,
-            selectedUserSid ? { targetUserSid: selectedUserSid } : undefined
-          );
-          if (refreshed.success && refreshed.data) {
-            setDisplayPolicies(refreshed.data.items);
-          }
-          await onRefresh();
-        }
-
         const followUp: string[] = [];
         if (validation.requiresRestart) followUp.push("reinicie o computador");
         if (validation.requiresLogoff) followUp.push("encerre e inicie novamente a sessão da conta comum");
@@ -677,27 +702,45 @@ export function DesktopControlCenter({
         const followUpNote =
           followUp.length > 0 ? ` Para concluir o efeito em sessão ativa, ${followUp.join(" e ")}.` : "";
 
+        const summaryMsg = hasInconclusiveOutcome
+          ? `${txData.appliedCount} política(s) processada(s), porém com item(ns) inconclusivo(s) na releitura.${followUpNote}`
+          : `Confirmada: ${txData.appliedCount} política(s) aplicada(s) e verificada(s)${mode === "Demo" ? " em modo de demonstração" : " no Windows"}.${followUpNote}`;
+
         setFeedback({
-          tone: followUp.length > 0 ? "warning" : "success",
-          message: `${txData.appliedCount} política(s) aplicada(s) e verificada(s)${mode === "Demo" ? " em modo de demonstração" : " no Windows"}.${followUpNote}`
+          tone: hasInconclusiveOutcome || followUp.length > 0 ? "warning" : "success",
+          message: summaryMsg
         });
+
+        if (hasInconclusiveOutcome || hasFailedOutcome) {
+          setDrawerBatchResult({
+            hasError: hasFailedOutcome,
+            hasInconclusive: hasInconclusiveOutcome,
+            message: summaryMsg
+          });
+        } else {
+          setDrawerBatchResult(null);
+          setShowReviewDrawer(false);
+        }
       } else {
         const errorMsg =
           response.error ||
           response.data?.message ||
           "Não foi possível concluir a aplicação. As alterações foram revertidas.";
         setFeedback({ tone: "error", message: errorMsg });
-        // Reconsulta estados após falha/rollback automático para nunca exibir estado otimista incorreto
-        if (onSelectUser) {
-          await onSelectUser(selectedUserSid ?? null);
-        } else {
-          await onRefresh();
-        }
+        setDrawerBatchResult({
+          hasError: true,
+          hasInconclusive: false,
+          message: errorMsg
+        });
       }
     } catch (error) {
-      setFeedback({
-        tone: "error",
-        message: error instanceof Error ? error.message : "Erro inesperado ao aplicar alterações."
+      const errorMsg =
+        error instanceof Error ? error.message : "Erro inesperado ao aplicar alterações.";
+      setFeedback({ tone: "error", message: errorMsg });
+      setDrawerBatchResult({
+        hasError: true,
+        hasInconclusive: false,
+        message: errorMsg
       });
     } finally {
       setBusy(false);
@@ -713,6 +756,57 @@ export function DesktopControlCenter({
     onRefresh,
     mode
   ]);
+
+  const handleSelectAdminIntent = useCallback(
+    async (permission: AdminPermissionDto, intent: AdminPermissionIntent) => {
+      if (!adminCapabilities.permissions) return;
+      setBusy(true);
+      setFeedback(null);
+      try {
+        const res = await sendIpc<AdminPermissionPreviewDto>(ADMIN_IPC_ACTIONS.PERMISSIONS_PREVIEW, {
+          permissionId: permission.id,
+          intent,
+          targetUserSid: permission.scope === "User" ? selectedUserSid ?? undefined : undefined
+        });
+        if (res.success && res.data) {
+          setAdminPermPreview(res.data);
+        } else {
+          setFeedback({
+            tone: "error",
+            message: res.error || "Não foi possível gerar a prévia da permissão administrativa."
+          });
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    [adminCapabilities.permissions, selectedUserSid, sendIpc]
+  );
+
+  const handleConfirmAdminPermPreview = useCallback(async () => {
+    if (!adminPermPreview) return;
+    setBusy(true);
+    try {
+      const payload: AdminPermissionApplyPayload = {
+        plan: {
+          permissionId: adminPermPreview.permissionId,
+          intent: adminPermPreview.intent,
+          targetUserSid: adminPermPreview.target?.sid ?? undefined
+        },
+        revision: adminPermPreview.revision
+      };
+      const res = await sendIpc<AdminPermissionResultDto>(ADMIN_IPC_ACTIONS.PERMISSIONS_APPLY, payload);
+      if (res.success && res.data) {
+        setAdminPermPreview(null);
+        await refreshAdminCapabilitiesData();
+        setFeedback({ tone: "success", message: res.data.message });
+      } else {
+        setFeedback({ tone: "error", message: res.error || "Falha ao aplicar permissão." });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [adminPermPreview, sendIpc, refreshAdminCapabilitiesData]);
 
   const handleRollbackTransaction = useCallback(
     async (tx: SessionTransactionEntry) => {
@@ -757,8 +851,39 @@ export function DesktopControlCenter({
     [sendIpc, onSelectUser, selectedUserSid, onRefresh]
   );
 
+  const handleCreateBaseline = useCallback(async () => {
+    if (!canOperateAgent) {
+      setFeedback({
+        tone: "error",
+        message: "Conecte ao Windows real ou ative o Modo Demonstração para capturar o baseline."
+      });
+      return;
+    }
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const res = await sendIpc<BaselineCreationResultDto>(IPC_CONSTANTS.ACTION_CREATE_BASELINE, {
+        studentUser: selectedUser?.name || config.studentUser,
+        adminUser: config.adminUser
+      });
+      if (res.success && res.data?.success) {
+        setLatestBaseline(res.data);
+        setFeedback({ tone: "success", message: res.data.message });
+      } else {
+        setFeedback({
+          tone: "error",
+          message: res.error || res.data?.message || "Falha ao criar ponto de restauração inicial."
+        });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [canOperateAgent, sendIpc, selectedUser?.name, config.studentUser, config.adminUser]);
+
   const discardPendingChanges = useCallback(() => {
     setPendingPolicies({});
+    setDrawerBatchResult(null);
+    setShowReviewDrawer(false);
     setFeedback({ tone: "success", message: "Alterações pendentes descartadas." });
   }, []);
 
@@ -773,10 +898,15 @@ export function DesktopControlCenter({
         return;
       }
       const trimmedName = accountName.trim();
-      if (trimmedName.length < 1 || trimmedName.length > 20 || /["/\\[\]:;|=,+*?<>@]/.test(trimmedName)) {
+      if (
+        trimmedName.length < 1 ||
+        trimmedName.length > 20 ||
+        /["/\\[\]:;|=,+*?<>@]/.test(trimmedName)
+      ) {
         setFeedback({
           tone: "error",
-          message: "Informe um nome de conta entre 1 e 20 caracteres, sem símbolos reservados do Windows."
+          message:
+            "Informe um nome de conta entre 1 e 20 caracteres, sem símbolos reservados do Windows."
         });
         return;
       }
@@ -832,7 +962,6 @@ export function DesktopControlCenter({
           message: err instanceof Error ? err.message : "Erro ao criar conta local."
         });
       } finally {
-        // Senhas jamais permanecem em estado ou memória após o envio
         setAccountPassword("");
         setRepeatPassword("");
         setBusy(false);
@@ -850,6 +979,115 @@ export function DesktopControlCenter({
       onRefresh,
       onSelectUser
     ]
+  );
+
+  const handleSaveCurrentProfile = useCallback(() => {
+    if (!displayPolicies || displayPolicies.length === 0) {
+      setFeedback({
+        tone: "error",
+        message: "Carregue as políticas da estação antes de salvar um perfil local."
+      });
+      return;
+    }
+    const trimmed = newProfileName.trim() || config.profileName.trim() || "Perfil Personalizado";
+    const snapshot: Record<string, boolean> = {};
+    for (const p of displayPolicies) {
+      snapshot[p.id] =
+        pendingPolicies[p.id] !== undefined ? pendingPolicies[p.id] : isPolicyCurrentlyEnabled(p);
+    }
+    const entry: SavedPolicyProfile = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: trimmed,
+      savedAt: new Date().toISOString(),
+      policies: snapshot
+    };
+    const next = [
+      entry,
+      ...savedProfiles.filter((s) => s.name.toLowerCase() !== trimmed.toLowerCase())
+    ].slice(0, 12);
+    setSavedProfiles(next);
+    setNewProfileName("");
+    try {
+      window.localStorage.setItem("winlab:desktop:saved-profiles:v1", JSON.stringify(next));
+    } catch {
+      // Ignora quota
+    }
+    setFeedback({
+      tone: "success",
+      message: `Perfil "${trimmed}" salvo localmente (nenhuma credencial armazenada).`
+    });
+  }, [displayPolicies, newProfileName, config.profileName, pendingPolicies, savedProfiles]);
+
+  const handleDeleteSavedProfile = useCallback(
+    (id: string) => {
+      const next = savedProfiles.filter((p) => p.id !== id);
+      setSavedProfiles(next);
+      try {
+        window.localStorage.setItem("winlab:desktop:saved-profiles:v1", JSON.stringify(next));
+      } catch {
+        // Ignora
+      }
+    },
+    [savedProfiles]
+  );
+
+  const handleStageSavedProfile = useCallback(
+    (profile: SavedPolicyProfile) => {
+      const diff = computeSavedProfileDiff(profile.policies, displayPolicies);
+      setPendingPolicies(diff.pendingMap);
+      const totalChanges = diff.toEnable.length + diff.toDisable.length;
+      setFeedback({
+        tone: totalChanges > 0 ? "warning" : "success",
+        message:
+          totalChanges > 0
+            ? `Perfil "${profile.name}" comparado com a estação atual: ${diff.toEnable.length} bloqueio(s) e ${diff.toDisable.length} restauração(ões) prontos na barra de pendências.`
+            : `A estação atual já está idêntica ao perfil "${profile.name}".`
+      });
+    },
+    [displayPolicies]
+  );
+
+  const applyPresetToPending = useCallback(
+    (presetId: PresetId) => {
+      const presetCfg = getPreset(presetId);
+      setConfig(presetCfg);
+      if (!displayPolicies || displayPolicies.length === 0) return;
+
+      const desiredMap: Record<string, boolean> = {
+        "browser.chrome.incognito": presetCfg.blockChromeIncognito,
+        "browser.chrome.guest": presetCfg.blockChromeGuest,
+        "browser.password_manager": presetCfg.blockChromePasswordManager,
+        "browser.developer_tools": presetId === "kiosk" || presetCfg.blockChromeExtensions,
+        "personalization.wallpaper": presetCfg.blockWallpaper,
+        "personalization.sounds": presetCfg.blockSoundScheme,
+        "personalization.mouse_pointers": presetCfg.blockMousePointers,
+        "system.disable_cmd": presetCfg.blockCmd,
+        "system.disable_regedit": presetCfg.blockRegedit,
+        "system.restrict_control_panel": !presetCfg.allowLocalAccountManagement,
+        "storage.usb_write_protect": presetCfg.blockUsbWrite,
+        "apps.disable_microsoft_store": presetCfg.blockStoreApps
+      };
+
+      const nextPending: Record<string, boolean> = {};
+      for (const policy of displayPolicies) {
+        if (desiredMap[policy.id] !== undefined) {
+          const desired = desiredMap[policy.id];
+          if (desired !== isPolicyCurrentlyEnabled(policy)) {
+            nextPending[policy.id] = desired;
+          }
+        }
+      }
+      setPendingPolicies(nextPending);
+      const count = Object.keys(nextPending).length;
+      setFeedback({
+        tone: "success",
+        message:
+          count > 0
+            ? `Perfil "${presetCfg.profileName}" preparado com ${count} alteração(ões) na barra de pendências. Nenhuma política foi aplicada ainda.`
+            : `O computador já corresponde às políticas ativas do perfil "${presetCfg.profileName}".`
+      });
+    },
+    [displayPolicies, setConfig]
   );
 
   const effectiveNetworkPlan: NetworkSharePlan = useMemo(() => {
@@ -905,156 +1143,86 @@ export function DesktopControlCenter({
     [effectiveNetworkPlan]
   );
 
-  const applyPresetToPending = useCallback(
-    (presetId: PresetId) => {
-      const presetCfg = getPreset(presetId);
-      setConfig(presetCfg);
-      if (!displayPolicies || displayPolicies.length === 0) return;
+  const searchResults = useMemo(() => {
+    const q = globalSearch.trim().toLowerCase();
+    if (!q) return [];
+    return GLOBAL_SEARCH_CATALOG.filter((item) =>
+      `${item.label} ${item.description} ${item.keywords}`.toLowerCase().includes(q)
+    ).slice(0, 8);
+  }, [globalSearch]);
 
-      const desiredMap: Record<string, boolean> = {
-        "browser.chrome.incognito": presetCfg.blockChromeIncognito,
-        "browser.chrome.guest": presetCfg.blockChromeGuest,
-        "browser.password_manager": presetCfg.blockChromePasswordManager,
-        "browser.developer_tools": presetId === "kiosk" || presetCfg.blockChromeExtensions,
-        "personalization.wallpaper": presetCfg.blockWallpaper,
-        "personalization.sounds": presetCfg.blockSoundScheme,
-        "personalization.mouse_pointers": presetCfg.blockMousePointers,
-        "system.disable_cmd": presetCfg.blockCmd,
-        "system.disable_regedit": presetCfg.blockRegedit,
-        "system.restrict_control_panel": !presetCfg.allowLocalAccountManagement,
-        "storage.usb_write_protect": presetCfg.blockUsbWrite,
-        "apps.disable_microsoft_store": presetCfg.blockStoreApps
-      };
-
-      const nextPending: Record<string, boolean> = {};
-      for (const policy of displayPolicies) {
-        if (desiredMap[policy.id] !== undefined) {
-          const desired = desiredMap[policy.id];
-          if (desired !== isPolicyCurrentlyEnabled(policy)) {
-            nextPending[policy.id] = desired;
-          }
-        }
-      }
-      setPendingPolicies(nextPending);
-      const count = Object.keys(nextPending).length;
-      setFeedback({
-        tone: "success",
-        message:
-          count > 0
-            ? `Perfil "${presetCfg.profileName}" carregado com ${count} alteração(ões) pronta(s) para revisão.`
-            : `O computador já corresponde às políticas ativas do perfil "${presetCfg.profileName}".`
-      });
-    },
-    [displayPolicies, setConfig]
+  const wizardTransport: DesktopIpcTransport = useMemo(
+    () => ({
+      isRunning: true,
+      mode: mode === "Real" ? "Native IPC" : "Demo IPC",
+      handleRequest: <T,>(envelope: IpcEnvelope) => sendIpc<T>(envelope.action, envelope.payload)
+    }),
+    [mode, sendIpc]
   );
 
-  const sectionTitle = NAVIGATION_ITEMS.find((item) => item.id === section)?.label ?? "Início";
+  const sectionMeta =
+    DESKTOP_NAVIGATION_ITEMS.find((item) => item.id === section) ?? DESKTOP_NAVIGATION_ITEMS[0];
+  const helpContent = SECTION_HELP_CONTENT[section];
 
-  // Contagens reais derivadas exclusivamente dos dados consultados
   const adminUsersCount = inventory?.localUsers.filter((u) => u.enabled && u.isAdmin).length ?? 0;
   const standardUsersCount = nonAdminUsers.length;
-  const appliedPoliciesCount = (displayPolicies ?? []).filter((p) => isPolicyCurrentlyEnabled(p)).length;
+  const appliedPoliciesCount = (displayPolicies ?? []).filter((p) =>
+    isPolicyCurrentlyEnabled(p)
+  ).length;
   const totalPoliciesCount = displayPolicies?.length ?? 0;
   const systemDisk = inventory?.disks?.[0] ?? null;
   const latestCommittedTx = transactionHistory.find((t) => t.status === "Committed") ?? null;
 
-  function renderUserSelectorBar() {
-    return (
-      <div className="wl-user-selector">
-        <div className="wl-user-selector-info">
-          <label htmlFor="wl-target-user-select">Conta comum alvo para políticas por usuário</label>
-          <small>
-            {nonAdminUsers.length > 0
-              ? "Contas administrativas ficam ocultas desta lista e possuem imunidade contra restrições."
-              : "Nenhuma conta comum ativa encontrada. Crie uma conta comum em Contas e permissões."}
-          </small>
-        </div>
-        <div className="wl-user-selector-controls">
-          <select
-            id="wl-target-user-select"
-            value={selectedUserSid || ""}
-            onChange={(e) => void handleUserSwitch(e.target.value)}
-            disabled={busy || nonAdminUsers.length === 0}
-          >
-            <option value="">Selecione um usuário...</option>
-            {nonAdminUsers.map((user) => (
-              <option key={user.sid} value={user.sid}>
-                {user.name} ({user.sid})
-              </option>
-            ))}
-          </select>
-          {hasInconclusiveUserPolicies && native && mode === "Real" && (
-            <button
-              type="button"
-              className="wl-button secondary"
-              onClick={() => void handleQueryOfflineProfile()}
-              disabled={busy}
-            >
-              Consultar perfil offline (Admin)
-            </button>
-          )}
-        </div>
-      </div>
-    );
-  }
+  const normalizedInvSearch = inventorySearch.trim().toLowerCase();
+  const filteredInstalledApps = (inventory?.installedApps ?? []).filter(
+    (app) =>
+      !normalizedInvSearch ||
+      `${app.displayName} ${app.publisher}`.toLowerCase().includes(normalizedInvSearch)
+  );
 
-  function renderPolicyCategorySection(sec: Section) {
-    const items = policiesBySection[sec];
-    const containsUserScoped = items.some((p) => p.scope === "User");
-
-    return (
-      <div className="wl-section-content">
-        {containsUserScoped && renderUserSelectorBar()}
-        <div className="wl-section-header">
-          <h2>{sectionTitle}</h2>
-          <span className="wl-policy-count">{items.length} política(s)</span>
-        </div>
-        {items.length === 0 ? (
-          <div className="wl-empty-state">
-            Nenhuma política disponível nesta categoria no momento.
-          </div>
-        ) : (
-          <div className="wl-settings-list">
-            {items.map((policy) => (
-              <PolicySetting
-                key={policy.id}
-                policy={policy}
-                pendingPolicies={pendingPolicies}
-                isApplying={busy}
-                hasSelectedStandardUser={selectedUser !== null}
-                onToggle={handleTogglePolicy}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    );
+  function toggleReducedMotionPref(next: boolean) {
+    setReducedMotionPref(next);
+    try {
+      window.localStorage.setItem("winlab:desktop:reduced-motion:v1", next ? "true" : "false");
+    } catch {
+      // Ignora
+    }
   }
 
   return (
-    <div className="wl-shell">
+    <div
+      className="wl-shell"
+      data-reduced-motion={reducedMotionPref ? "true" : "false"}
+    >
       <aside className="wl-side">
         <div className="wl-logo">
           <span>W</span>
           <div>
             <strong>WinLab</strong>
-            <small>Painel Desktop</small>
+            <small>Controle do Windows</small>
           </div>
         </div>
 
-        <div className="wl-side-label">GERENCIAMENTO</div>
+        <div className="wl-side-label">NAVEGAÇÃO</div>
         <nav aria-label="Menu principal">
-          {NAVIGATION_ITEMS.map((item) => (
+          {DESKTOP_NAVIGATION_ITEMS.map((item) => (
             <button
               type="button"
               key={item.id}
+              aria-current={section === item.id ? "page" : undefined}
               onClick={() => setSection(item.id)}
               className={`wl-nav ${section === item.id ? "current" : ""}`}
             >
               <span className="wl-nav-icon">
                 <SectionIcon id={item.id} />
               </span>
-              {item.label}
+              <span className="wl-nav-label">{item.label}</span>
+              {item.id === "permissions" && pendingCount > 0 && (
+                <span className="wl-nav-badge">{pendingCount}</span>
+              )}
+              {item.id === "history" && transactionHistory.length > 0 && (
+                <span className="wl-nav-badge neutral">{transactionHistory.length}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -1085,11 +1253,72 @@ export function DesktopControlCenter({
 
       <div className="wl-main">
         <header className="wl-header">
-          <div>
-            <span className="wl-overline">WINLAB DESKTOP</span>
-            <h1>{sectionTitle}</h1>
+          <div className="wl-header-title">
+            <span className="wl-overline">
+              WINLAB DESKTOP · {realConnected ? "COMPUTADOR REAL" : "MODO DEMONSTRAÇÃO"}
+            </span>
+            <h1>{sectionMeta.label}</h1>
           </div>
+
           <div className="wl-head-actions">
+            <div className="wl-global-search-wrap">
+              <input
+                ref={searchInputRef}
+                type="search"
+                className="wl-global-search"
+                aria-label="Pesquisar configurações, permissões e seções"
+                placeholder="Pesquisar configurações... (/)"
+                value={globalSearch}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setGlobalSearch(val);
+                  if (section === "permissions") {
+                    setPermSearch(val);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setGlobalSearch("");
+                  }
+                }}
+              />
+              {searchResults.length > 0 && (
+                <div className="wl-search-results" role="listbox" aria-label="Resultados da pesquisa">
+                  {searchResults.map((result) => (
+                    <button
+                      key={result.id}
+                      type="button"
+                      role="option"
+                      aria-selected={false}
+                      className="wl-search-item"
+                      onClick={() => {
+                        setSection(result.section);
+                        if (result.section === "permissions") {
+                          setSelectedPermGroup(result.group ?? "all");
+                          setPermSearch(
+                            result.id.startsWith("perm:") ? result.label : ""
+                          );
+                        }
+                        setGlobalSearch("");
+                      }}
+                    >
+                      <strong>{result.label}</strong>
+                      <small>{result.description}</small>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button
+              type="button"
+              className="wl-button secondary"
+              aria-expanded={showContextHelp}
+              onClick={() => setShowContextHelp((prev) => !prev)}
+            >
+              {showContextHelp ? "Ocultar ajuda" : "Ajuda contextual"}
+            </button>
+
             <span
               className={`wl-state ${
                 realConnected ? "online" : mode === "Demo" ? "demo" : "offline"
@@ -1098,12 +1327,18 @@ export function DesktopControlCenter({
               {realConnected
                 ? "Computador Real Conectado"
                 : mode === "Demo"
-                  ? "Modo Demonstração (Simulação)"
+                  ? "Modo Demonstração"
                   : "Aguardando Conexão"}
             </span>
 
             {pendingCount > 0 && (
-              <span className="wl-pending-badge">{pendingCount} alteração(ões) pendente(s)</span>
+              <button
+                type="button"
+                className="wl-pending-badge"
+                onClick={() => setShowReviewDrawer(true)}
+              >
+                {pendingCount} pendência(s)
+              </button>
             )}
 
             {native && mode === "Demo" && (
@@ -1129,22 +1364,54 @@ export function DesktopControlCenter({
           </div>
         </header>
 
+        {showContextHelp && (
+          <section className="wl-help-panel" aria-label="Ajuda contextual desta seção">
+            <div className="wl-help-head">
+              <strong>{helpContent.title}</strong>
+              <button
+                type="button"
+                className="wl-button-link"
+                onClick={() => setShowContextHelp(false)}
+              >
+                Fechar ajuda
+              </button>
+            </div>
+            <p>{helpContent.summary}</p>
+            <ul>
+              {helpContent.tips.map((tip) => (
+                <li key={tip}>{tip}</li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         {feedback && (
           <div
             role={feedback.tone === "error" ? "alert" : "status"}
-            className={`wl-feedback ${feedback.tone === "error" ? "error" : feedback.tone === "warning" ? "warning" : ""}`}
+            className={`wl-feedback ${
+              feedback.tone === "error" ? "error" : feedback.tone === "warning" ? "warning" : ""
+            }`}
           >
             <span>{feedback.message}</span>
-            {latestCommittedTx && feedback.tone !== "error" && (
+            <div className="wl-head-actions">
+              {latestCommittedTx && feedback.tone !== "error" && (
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => void handleRollbackTransaction(latestCommittedTx)}
+                  disabled={busy}
+                >
+                  Desfazer última aplicação
+                </button>
+              )}
               <button
                 type="button"
-                className="wl-button secondary"
-                onClick={() => void handleRollbackTransaction(latestCommittedTx)}
-                disabled={busy}
+                className="wl-button-link"
+                onClick={() => setFeedback(null)}
               >
-                Desfazer última aplicação
+                Dispensar
               </button>
-            )}
+            </div>
           </div>
         )}
 
@@ -1158,28 +1425,28 @@ export function DesktopControlCenter({
           <div role="alert" className="wl-feedback warning" data-testid="drift-warning-banner">
             <span>
               Configuração modificada fora do WinLab: {driftSummary.driftedPolicies.length} política(s) diverge(m) do padrão esperado (
-              {driftSummary.driftedPolicies.map((p) => p.title).join(", ")}). Revise e reaplique para restaurar o padrão.
+              {driftSummary.driftedPolicies.map((p) => p.title).join(", ")}). Revise a prévia para restaurar o padrão.
             </span>
             <button
               type="button"
               className="wl-button primary"
               onClick={() => {
                 setPendingPolicies((prev) => ({ ...prev, ...driftSummary.remediationPending }));
-                setShowReviewModal(true);
+                setShowReviewDrawer(true);
               }}
               disabled={busy}
             >
-              Preparar restauração do padrão
+              Revisar restauração
             </button>
           </div>
         )}
 
         {mode === "Demo" && (
-          <div className="wl-connect">
+          <div className="wl-connect" role="status">
             <div>
-              <strong>Modo Demonstração ativo</strong>
+              <strong>Modo Demonstração ativo — Dados simulados (LAB-MICROLINS-01)</strong>
               <p>
-                Você pode testar seleção de contas, revisão, aplicação e reversão com segurança em memória. Nenhuma chave de registro ou conta do Windows real será modificada neste modo.
+                Você está testando em ambiente simulado em memória. Nenhuma chave de registro ou conta do Windows real será modificada neste modo.
               </p>
             </div>
             {native && (
@@ -1195,291 +1462,473 @@ export function DesktopControlCenter({
           </div>
         )}
 
-        {/* SEÇÃO 1: INÍCIO */}
-        {section === "home" && (
-          <div className="wl-section-content">
+        {showWizardModal && (
+          <FirstRunWizard
+            transport={wizardTransport}
+            isWebView2Available={native}
+            initialMode={mode}
+            onComplete={({ mode: newMode, config: newConfig }) => {
+              setConfig(newConfig);
+              setShowWizardModal(false);
+              if (newMode !== mode) {
+                void onChangeMode(newMode);
+              } else {
+                void onRefresh();
+              }
+            }}
+            onCancel={() => setShowWizardModal(false)}
+          />
+        )}
+
+        {/* 1. VISAO GERAL */}
+        {section === "overview" && (
+          <div className="wl-section-content wl-page-enter" key="page-overview">
             <section className="wl-welcome">
               <div>
-                <span className="wl-overline">ADMINISTRAÇÃO LOCAL SEGURA</span>
+                <span className="wl-overline">PAINEL CENTRAL DA ESTAÇÃO</span>
                 <h2>
                   {inventory?.computerName
                     ? `Estação ${inventory.computerName}`
                     : "Painel de Controle do Computador"}
                 </h2>
                 <p>
-                  Consulte o estado atual do Windows, escolha a conta comum que receberá as políticas, revise o impacto antes de confirmar e reverta alterações com um clique quando precisar.
+                  Consulte o resumo do computador, selecione a conta comum de laboratório, ajuste permissões com prévia completa antes de gravar e reverta quando necessário.
                 </p>
               </div>
-              {latestCommittedTx && (
+              <div className="wl-head-actions">
+                <button
+                  type="button"
+                  className="wl-button primary"
+                  onClick={() => setSection("permissions")}
+                >
+                  Configurar permissões
+                </button>
+                {latestCommittedTx && (
+                  <button
+                    type="button"
+                    className="wl-button secondary"
+                    onClick={() => void handleRollbackTransaction(latestCommittedTx)}
+                    disabled={busy}
+                  >
+                    Desfazer última aplicação
+                  </button>
+                )}
+              </div>
+            </section>
+
+            {isScanning && !inventory ? (
+              <div className="wl-stats" aria-label="Carregando resumo da máquina">
+                {[1, 2, 3, 4].map((item) => (
+                  <div key={item} className="wl-skeleton-card">
+                    <div className="wl-skeleton wl-skeleton-line short" />
+                    <div className="wl-skeleton wl-skeleton-title" />
+                    <div className="wl-skeleton wl-skeleton-line" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="wl-stats">
+                <div>
+                  <span>Máquina</span>
+                  <strong>{inventory?.windows.caption || "Não consultado"}</strong>
+                  <small>
+                    {inventory?.windows.buildNumber
+                      ? `${inventory.computerName} · Build ${inventory.windows.buildNumber} (${inventory.windows.architecture})`
+                      : "Aguardando leitura do inventário"}
+                    {systemDisk ? ` · Disco ${systemDisk.device} ${systemDisk.freeGb} GB livres` : ""}
+                  </small>
+                </div>
+                <div>
+                  <span>Contas</span>
+                  <strong>
+                    {inventory ? `${standardUsersCount} aluno(s) · ${adminUsersCount} admin` : "—"}
+                  </strong>
+                  <small>
+                    {selectedUser
+                      ? `Alvo ativo: ${selectedUser.name}`
+                      : "Nenhuma conta comum selecionada"}
+                  </small>
+                </div>
+                <div>
+                  <span>Políticas</span>
+                  <strong>
+                    {displayPolicies ? `${appliedPoliciesCount} de ${totalPoliciesCount} ativas` : "—"}
+                  </strong>
+                  <small>
+                    {driftSummary.hasDrift
+                      ? `${driftSummary.driftedPolicies.length} divergência(s) detectada(s)`
+                      : preflightData?.readinessMessage || "Estados verificados diretamente no sistema"}
+                  </small>
+                </div>
+                <div>
+                  <span>Pendências</span>
+                  <strong>{pendingCount} selecionada(s)</strong>
+                  <small>
+                    {pendingCount > 0
+                      ? "Aguardando revisão no painel de prévia"
+                      : "Nenhuma alteração pendente para aplicar"}
+                  </small>
+                </div>
+              </div>
+            )}
+
+            <div className="wl-user-selector">
+              <div className="wl-user-selector-info">
+                <label htmlFor="wl-overview-user-select">Conta comum alvo ativa</label>
+                <small>
+                  Políticas por usuário atingem apenas esta conta comum. Administradores são imunes.
+                </small>
+              </div>
+              <div className="wl-user-selector-controls">
+                <select
+                  id="wl-overview-user-select"
+                  value={selectedUserSid || ""}
+                  onChange={(e) => void handleUserSwitch(e.target.value)}
+                  disabled={busy || nonAdminUsers.length === 0}
+                >
+                  <option value="">Selecione um usuário...</option>
+                  {nonAdminUsers.map((user) => (
+                    <option key={user.sid} value={user.sid}>
+                      {user.name} ({user.sid})
+                    </option>
+                  ))}
+                </select>
                 <button
                   type="button"
                   className="wl-button secondary"
-                  onClick={() => void handleRollbackTransaction(latestCommittedTx)}
-                  disabled={busy}
+                  onClick={() => setSection("accounts")}
                 >
-                  Desfazer última aplicação
+                  Gerenciar contas
                 </button>
-              )}
-            </section>
-
-            <div className="wl-stats">
-              <div>
-                <span>Sistema Operacional</span>
-                <strong>{inventory?.windows.caption || "Não consultado"}</strong>
-                <small>
-                  {inventory?.windows.buildNumber
-                    ? `Build ${inventory.windows.buildNumber} · ${inventory.windows.architecture}`
-                    : "Aguardando leitura do inventário"}
-                </small>
-              </div>
-              <div>
-                <span>Contas Locais Ativas</span>
-                <strong>
-                  {inventory ? `${standardUsersCount} comum(ns) · ${adminUsersCount} admin` : "—"}
-                </strong>
-                <small>
-                  {selectedUser
-                    ? `Alvo atual: ${selectedUser.name}`
-                    : "Selecione ou crie uma conta comum"}
-                </small>
-              </div>
-              <div>
-                <span>Políticas Verificadas</span>
-                <strong>
-                  {displayPolicies ? `${appliedPoliciesCount} de ${totalPoliciesCount} ativas` : "—"}
-                </strong>
-                <small>
-                  {pendingCount > 0
-                    ? `${pendingCount} alteração(ões) aguardando revisão`
-                    : "Nenhuma alteração pendente"}
-                </small>
-              </div>
-              <div>
-                <span>Armazenamento & Prontidão</span>
-                <strong>
-                  {systemDisk
-                    ? `${systemDisk.freeGb} GB livres (${systemDisk.freePercent}%)`
-                    : preflightData?.status || "—"}
-                </strong>
-                <small>
-                  {preflightData?.readinessMessage || "Leitura sem privilégios administrativos contínuos"}
-                </small>
               </div>
             </div>
-
-            {renderUserSelectorBar()}
 
             <div className="wl-card">
               <div className="wl-card-title">
                 <div>
                   <h2>Ações rápidas</h2>
-                  <p>Acesse diretamente a área que deseja configurar neste computador.</p>
+                  <p>Atalhos organizados para as rotinas principais de administração do laboratório.</p>
                 </div>
               </div>
               <div className="wl-shortcuts">
+                <button type="button" onClick={() => setSection("permissions")}>
+                  <strong>Central de permissões</strong>
+                  <span>Ajustar Sistema, Personalização, Aplicativos, Internet e Dispositivos</span>
+                </button>
                 <button type="button" onClick={() => setSection("accounts")}>
-                  <strong>Gerenciar contas locais</strong>
-                  <span>Criar conta de aluno ou professor e escolher conta-alvo</span>
+                  <strong>Contas e usuários</strong>
+                  <span>Criar conta de aluno ou Superadmin e definir conta-alvo</span>
                 </button>
-                <button type="button" onClick={() => setSection("internet")}>
-                  <strong>Proteger navegadores</strong>
-                  <span>Bloquear janela anônima e modo visitante no Chrome e Edge</span>
+                <button type="button" onClick={() => setSection("profiles")}>
+                  <strong>Perfis de laboratório</strong>
+                  <span>Aplicar preset Microlins/Escola ou comparar perfis salvos</span>
                 </button>
-                <button type="button" onClick={() => setSection("system")}>
-                  <strong>Restringir personalização e sistema</strong>
-                  <span>Fixar papel de parede, sons e cursores na conta comum</span>
+                <button type="button" onClick={() => setSection("history")}>
+                  <strong>Histórico e recuperação</strong>
+                  <span>Criar ponto de restauração (Baseline) e desfazer alterações</span>
                 </button>
                 <button type="button" onClick={() => setSection("diagnostics")}>
                   <strong>Relatório de diagnóstico</strong>
-                  <span>Inspecionar compatibilidade e exportar relatório JSON</span>
+                  <span>Inspecionar prontidão pré-voo, softwares e exportar JSON</span>
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* SEÇÃO 2: CONTAS E PERMISSÕES */}
+        {/* 2. CONTAS E USUARIOS */}
         {section === "accounts" && (
-          <div className="wl-section-content">
-            {renderUserSelectorBar()}
+          <div className="wl-page-enter" key="page-accounts">
+            <AccountsSectionView
+              localUsers={inventory?.localUsers}
+              adminAccountsData={adminAccountsData}
+              adminCapabilities={adminCapabilities}
+              canOperateAgent={canOperateAgent}
+              isScanning={isScanning}
+              busy={busy}
+              selectedUserSid={selectedUserSid ?? null}
+              onSelectUser={handleUserSwitch}
+              onOpenPermissionsForUser={(sid) => {
+                void handleUserSwitch(sid);
+                setSection("permissions");
+              }}
+              accountRole={accountRole}
+              onAccountRoleChange={setAccountRole}
+              accountName={accountName}
+              onAccountNameChange={setAccountName}
+              accountPassword={accountPassword}
+              onAccountPasswordChange={setAccountPassword}
+              repeatPassword={repeatPassword}
+              onRepeatPasswordChange={setRepeatPassword}
+              onCreateLegacyAccount={handleCreateAccount}
+              onRefreshAccounts={async () => {
+                await onRefresh();
+                await refreshAdminCapabilitiesData();
+              }}
+              onNotify={setFeedback}
+              sendIpc={sendIpc}
+            />
+          </div>
+        )}
 
+        {/* 3. PERMISSOES */}
+        {section === "permissions" && (
+          <div className="wl-page-enter" key="page-permissions">
+            {adminPermPreview && (
+              <div className="wl-card" role="region" aria-label="Prévia administrativa">
+                <div className="wl-card-title">
+                  <div>
+                    <h2>Prévia da permissão administrativa</h2>
+                    <p>
+                      Permissão: <strong>{adminPermPreview.permissionId}</strong> · Intenção:{" "}
+                      <strong>{adminPermPreview.intent}</strong>
+                    </p>
+                  </div>
+                </div>
+                <div className="wl-expansion-diff">
+                  <div className="wl-diff-card">
+                    <strong>Antes</strong>
+                    <span>{adminPermPreview.before.effectiveState}</span>
+                  </div>
+                  <div className="wl-diff-card">
+                    <strong>Depois</strong>
+                    <span>{adminPermPreview.after.effectiveState}</span>
+                  </div>
+                </div>
+                {adminPermPreview.limitations.length > 0 && (
+                  <p className="wl-requires-action">{adminPermPreview.limitations.join(" ")}</p>
+                )}
+                <div className="wl-expansion-actions">
+                  <button
+                    type="button"
+                    className="wl-button secondary"
+                    onClick={() => setAdminPermPreview(null)}
+                    disabled={busy}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    className="wl-button primary"
+                    onClick={() => void handleConfirmAdminPermPreview()}
+                    disabled={busy || !adminPermPreview.canApply}
+                  >
+                    Confirmar operação
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <PermissionsCenterView
+              cards={permissionCards}
+              searchQuery={permSearch}
+              onSearchChange={setPermSearch}
+              selectedGroup={selectedPermGroup}
+              onSelectGroup={setSelectedPermGroup}
+              scopeFilter={permScopeFilter}
+              onScopeFilterChange={setPermScopeFilter}
+              statusFilter={permStatusFilter}
+              onStatusFilterChange={setPermStatusFilter}
+              nonAdminUsers={nonAdminUsers}
+              selectedUserSid={selectedUserSid ?? null}
+              selectedUser={selectedUser}
+              onUserSwitch={handleUserSwitch}
+              hasInconclusiveUserPolicies={hasInconclusiveUserPolicies}
+              onQueryOfflineProfile={handleQueryOfflineProfile}
+              onTogglePolicy={handleTogglePolicyCard}
+              adminPermissionsEnabled={adminCapabilities.permissions}
+              adminPermissions={adminPermissionsData?.permissions ?? null}
+              onSelectAdminIntent={handleSelectAdminIntent}
+              realExpansionActive={native && mode === "Real"}
+              detectedApps={inventory?.detectedApps ?? []}
+              busy={busy}
+              isLoadingPolicies={isScanning && !displayPolicies}
+              sendIpc={sendIpc}
+            />
+          </div>
+        )}
+
+        {/* 4. PERFIS DE LABORATORIO */}
+        {section === "profiles" && (
+          <div className="wl-section-content wl-page-enter" key="page-profiles">
             <div className="wl-card">
               <div className="wl-card-title">
                 <div>
-                  <h2>Contas encontradas neste computador</h2>
+                  <h2>Presets rápidos de sala de aula</h2>
                   <p>
-                    Contas administrativas possuem imunidade automática no WinLab para evitar bloqueio acidental do administrador.
+                    Carregue um perfil pré-configurado para preparar as diferenças na barra de pendências. Nenhuma política é aplicada automaticamente.
                   </p>
                 </div>
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => setShowWizardModal(true)}
+                >
+                  Abrir Assistente Inicial
+                </button>
               </div>
-
-              {inventory && inventory.localUsers.length > 0 ? (
-                <div className="wl-account-list">
-                  {inventory.localUsers.map((user) => (
-                    <div key={user.sid || user.name} className="wl-account">
-                      <div className="wl-avatar">{user.name.slice(0, 1).toUpperCase()}</div>
-                      <div>
-                        <strong>{user.name}</strong>
-                        <small>
-                          {user.enabled ? "Conta ativa" : "Conta desativada"} · SID: {user.sid || "Local"}
-                        </small>
-                      </div>
-                      {!user.enabled && <span className="wl-pill disabled">Desativada</span>}
-                      <span className={`wl-pill ${user.isAdmin ? "admin" : ""}`}>
-                        {user.isAdmin ? "Administrador (Protegido)" : "Conta comum"}
-                      </span>
-                      {!user.isAdmin && user.enabled && user.sid && (
-                        <button
-                          type="button"
-                          className={`wl-button ${selectedUserSid === user.sid ? "primary" : "secondary"}`}
-                          onClick={() => void handleUserSwitch(user.sid!)}
-                          disabled={busy || selectedUserSid === user.sid}
-                        >
-                          {selectedUserSid === user.sid ? "Alvo selecionado" : "Selecionar como alvo"}
-                        </button>
-                      )}
-                    </div>
-                  ))}
+              <div className="wl-shortcuts">
+                {presets.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => applyPresetToPending(preset.id)}
+                  >
+                    <strong>{preset.name}</strong>
+                    <span>{preset.description}</span>
+                  </button>
+                ))}
+              </div>
+              {pendingCount > 0 && (
+                <div className="wl-head-actions" style={{ marginTop: 14 }}>
+                  <button
+                    type="button"
+                    className="wl-button primary"
+                    onClick={() => setShowReviewDrawer(true)}
+                  >
+                    Revisar {pendingCount} alteração(ões) preparada(s)
+                  </button>
                 </div>
-              ) : (
-                <p className="wl-muted">Nenhuma conta local carregada ainda.</p>
               )}
             </div>
 
             <div className="wl-card">
               <div className="wl-card-title">
                 <div>
-                  <h2>Criar nova conta local no Windows</h2>
+                  <h2>Perfis salvos localmente e comparação com a estação</h2>
                   <p>
-                    A senha é enviada apenas no momento da criação para a API nativa do Windows e nunca fica gravada em arquivos ou histórico.
+                    Salve combinações de políticas deste computador para reaproveitar e comparar antes de aplicar. Nenhuma senha é armazenada.
                   </p>
                 </div>
               </div>
-              <form className="wl-account-form" onSubmit={(e) => void handleCreateAccount(e)}>
-                <div className="wl-role-choice">
-                  <button
-                    type="button"
-                    className={accountRole === "standard" ? "chosen" : ""}
-                    onClick={() => setAccountRole("standard")}
-                  >
-                    <span>Conta comum (Recomendado para alunos)</span>
-                    <small>Não instala programas do sistema e pode receber políticas por usuário.</small>
-                  </button>
-                  <button
-                    type="button"
-                    className={accountRole === "admin" ? "chosen" : ""}
-                    onClick={() => setAccountRole("admin")}
-                  >
-                    <span>Conta de Administrador (Suporte / TI)</span>
-                    <small>Controle total da máquina e imunidade contra restrições de laboratório.</small>
-                  </button>
-                </div>
-                <div className="wl-fields">
-                  <label>
-                    Nome da conta
+              <div className="wl-fields" style={{ marginBottom: 12 }}>
+                <label style={{ gridColumn: "1 / -1" }}>
+                  Nome do perfil personalizado
+                  <div className="wl-inline-input-row">
                     <input
                       type="text"
-                      maxLength={20}
-                      placeholder="Ex.: Aluno01"
-                      value={accountName}
-                      onChange={(e) => setAccountName(e.target.value)}
-                      disabled={busy}
+                      placeholder="Ex.: Laboratório Noite — Design"
+                      value={newProfileName}
+                      onChange={(e) => setNewProfileName(e.target.value)}
                     />
-                  </label>
-                  <label>
-                    Senha inicial (mínimo 8 caracteres)
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      value={accountPassword}
-                      onChange={(e) => setAccountPassword(e.target.value)}
-                      disabled={busy}
-                    />
-                  </label>
-                  <label>
-                    Confirmar senha
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      value={repeatPassword}
-                      onChange={(e) => setRepeatPassword(e.target.value)}
-                      disabled={busy}
-                    />
-                  </label>
+                    <button
+                      type="button"
+                      className="wl-button primary"
+                      onClick={handleSaveCurrentProfile}
+                      disabled={busy || !displayPolicies || displayPolicies.length === 0}
+                    >
+                      Salvar estado atual
+                    </button>
+                  </div>
+                </label>
+              </div>
+              {savedProfiles.length === 0 ? (
+                <p className="wl-muted">Nenhum perfil personalizado salvo neste computador ainda.</p>
+              ) : (
+                <div className="wl-tx-list">
+                  {savedProfiles.map((prof) => {
+                    const diff = computeSavedProfileDiff(prof.policies, displayPolicies);
+                    const totalDiff = diff.toEnable.length + diff.toDisable.length;
+                    return (
+                      <div key={prof.id} className="wl-tx-item">
+                        <div>
+                          <strong>{prof.name}</strong>
+                          <small>
+                            {totalDiff === 0
+                              ? `Idêntico à estação atual (${diff.unchangedCount} política(s) alinhada(s))`
+                              : `Diferenças para a estação: +${diff.toEnable.length} bloquear · -${diff.toDisable.length} herdar · ${diff.unchangedCount} iguais`}
+                          </small>
+                        </div>
+                        <div className="wl-head-actions">
+                          <button
+                            type="button"
+                            className="wl-button secondary"
+                            onClick={() => handleStageSavedProfile(prof)}
+                            disabled={busy}
+                          >
+                            {totalDiff === 0 ? "Alinhado" : "Preparar diferenças"}
+                          </button>
+                          <button
+                            type="button"
+                            className="wl-button secondary"
+                            onClick={() => handleDeleteSavedProfile(prof.id)}
+                            disabled={busy}
+                          >
+                            Remover
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div>
-                  <button type="submit" className="wl-button primary" disabled={busy || !canOperateAgent}>
-                    {busy ? "Criando conta..." : "Criar conta local"}
-                  </button>
-                </div>
-              </form>
+              )}
             </div>
-
-            {policiesBySection.accounts.length > 0 && renderPolicyCategorySection("accounts")}
-          </div>
-        )}
-
-        {/* SEÇÃO 3: APLICATIVOS */}
-        {section === "apps" && (
-          <div className="wl-section-content">
-            {native && mode === "Real" && renderUserSelectorBar()}
-            <PolicyExpansionPanel key={selectedUserSid || "no-user"} target="apps" real={native && mode === "Real"}
-              sid={selectedUserSid} detectedApps={inventory?.detectedApps} sendIpc={sendIpc} />
-            {policiesBySection.apps.length > 0 && renderPolicyCategorySection("apps")}
 
             <div className="wl-card">
               <div className="wl-card-title">
                 <div>
-                  <h2>Programas detectados nesta estação</h2>
-                  <p>Leitura local dos aplicativos de sala de aula e softwares instalados no Windows.</p>
+                  <h2>Importar ou exportar perfil JSON</h2>
+                  <p>
+                    Compatível com o configurador WinLab Web. Nenhuma credencial é exportada no arquivo JSON.
+                  </p>
                 </div>
+                <span className="wl-status-badge neutral">Sincronização em rede: Indisponível</span>
               </div>
-              {inventory && inventory.detectedApps.length > 0 ? (
-                <div className="wl-account-list">
-                  {inventory.detectedApps.map((app) => (
-                    <div key={app.id} className="wl-account">
-                      <div>
-                        <strong>{app.name}</strong>
-                        <small>{app.path}</small>
-                      </div>
-                      <span className={`wl-status-badge ${app.detected ? "active" : "inactive"}`}>
-                        {app.detected ? "Instalado" : "Não encontrado"}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="wl-muted">Nenhum aplicativo catalogado retornado na leitura atual.</p>
-              )}
+              <div className="wl-head-actions">
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => {
+                    const blob = new Blob([serializeConfig(config)], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `winlab-perfil-${config.profileName.toLowerCase().replace(/\s+/g, "-")}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                >
+                  Exportar perfil (.json)
+                </button>
+                <label className="wl-button secondary" style={{ display: "inline-flex", alignItems: "center" }}>
+                  Importar perfil (.json)
+                  <input
+                    type="file"
+                    accept="application/json,.json"
+                    style={{ display: "none" }}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      try {
+                        const imported = parseConfigJson(await file.text());
+                        setConfig(imported);
+                        setFeedback({
+                          tone: "success",
+                          message: `Perfil "${imported.profileName}" importado com sucesso.`
+                        });
+                      } catch (err) {
+                        setFeedback({
+                          tone: "error",
+                          message: `Arquivo JSON inválido: ${(err as Error).message}`
+                        });
+                      }
+                    }}
+                  />
+                </label>
+              </div>
             </div>
           </div>
         )}
 
-        {/* SEÇÃO 4: INTERNET E NAVEGADORES */}
-        {section === "internet" && (
-          <div className="wl-section-content">
-            <BrowserExpansion real={native && mode === "Real"} sendIpc={sendIpc} />
-            {renderPolicyCategorySection("internet")}
-          </div>
-        )}
-
-        {/* SEÇÃO 5: SISTEMA WINDOWS */}
-        {section === "system" && (
-          <div className="wl-section-content">
-            <PolicyExpansionPanel target="usb" real={native && mode === "Real"} sendIpc={sendIpc} />
-            {renderPolicyCategorySection("system")}
-          </div>
-        )}
-
-        {/* SEÇÃO 6: REDE E COMPARTILHAMENTO */}
+        {/* 5. REDE E ARQUIVOS */}
         {section === "network" && (
-          <div className="wl-section-content">
+          <div className="wl-section-content wl-page-enter" key="page-network">
             <div className="wl-card">
               <div className="wl-card-title">
                 <div>
                   <h2>Estado atual de rede SMB nesta estação</h2>
                   <p>
-                    Leitura não-elevada das unidades de rede mapeadas, compartilhamentos locais publicados e protocolo SMBv1.
+                    Leitura não-elevada das unidades de rede mapeadas, compartilhamentos locais publicados e protocolo legado SMBv1.
                   </p>
                 </div>
                 <button
@@ -1557,9 +2006,12 @@ export function DesktopControlCenter({
                 <div>
                   <h2>Pasta compartilhada de laboratório (SMB)</h2>
                   <p>
-                    Gere scripts administrativos seguros (sem compartilhamento anônimo nem SMBv1) para configurar o servidor e mapear a unidade nas estações de aula.
+                    Gere scripts administrativos seguros (sem compartilhamento anônimo nem SMBv1) para configurar o servidor e mapear a unidade nas estações.
                   </p>
                 </div>
+                <span className="wl-status-badge neutral">
+                  Implantação remota em lote: Indisponível
+                </span>
               </div>
               <div className="wl-role-choice" style={{ marginBottom: 16 }}>
                 <button
@@ -1670,96 +2122,250 @@ export function DesktopControlCenter({
                 </div>
               </div>
             </div>
-          </div>
-        )}
 
-        {/* SEÇÃO 7: DIAGNÓSTICO */}
-        {section === "diagnostics" && (
-          <div className="wl-card">
-            <DiagnosticReport
-              mode={mode}
-              inventory={inventory}
-              policySummary={
-                policySummary ??
-                (displayPolicies
-                  ? {
-                      totalPolicies: displayPolicies.length,
-                      appliedCount: appliedPoliciesCount,
-                      notConfiguredCount: displayPolicies.filter(
-                        (p) => p.currentState === "NotConfigured"
-                      ).length,
-                      pendingCount: displayPolicies.filter((p) =>
-                        ["PendingLogoff", "PendingReboot", "PendingAppRestart", "PendingFirstLogon"].includes(
-                          p.effectiveState ?? p.currentState
-                        )
-                      ).length,
-                      items: displayPolicies
-                    }
-                  : null)
-              }
-              preflightData={preflightData ?? null}
-              isScanning={isScanning}
-              scanError={scanError}
-            />
-          </div>
-        )}
-
-        {/* SEÇÃO 8: CONFIGURAÇÕES DO WINLAB */}
-        {section === "settings" && (
-          <div className="wl-section-content">
             <div className="wl-card">
               <div className="wl-card-title">
                 <div>
-                  <h2>Versão, instalador e canal de atualizações</h2>
+                  <h2>Transferência por discos removíveis (USB)</h2>
                   <p>
-                    O WinLab Desktop baixa atualizações estáveis em segundo plano e aplica apenas no próximo início, sem interromper aulas em andamento.
+                    As políticas de leitura, execução e gravação em pendrives USB ficam centralizadas em Permissões → Dispositivos.
                   </p>
                 </div>
                 <button
                   type="button"
                   className="wl-button secondary"
-                  onClick={() => void refreshSystemDiagnostics()}
-                  disabled={busy || !canOperateAgent}
+                  onClick={() => {
+                    setSelectedPermGroup("Dispositivos");
+                    setSection("permissions");
+                  }}
                 >
-                  Verificar estado
+                  Abrir permissões de Dispositivos →
                 </button>
               </div>
-              {updateStatus ? (
+            </div>
+          </div>
+        )}
+
+        {/* 6. SEGURANCA */}
+        {section === "security" && (
+          <div className="wl-section-content wl-page-enter" key="page-security">
+            <div className="wl-stats">
+              <div>
+                <span>Interface Gráfica</span>
+                <strong>Não elevada (asInvoker)</strong>
+                <small>Sem privilégios administrativos contínuos na janela WebView2.</small>
+              </div>
+              <div>
+                <span>Executor Privilegiado</span>
+                <strong>Sob demanda (UAC + SHA-256)</strong>
+                <small>Named Pipe com DACL restrita e verificação do processo pai.</small>
+              </div>
+              <div>
+                <span>Hardware de Plataforma</span>
+                <strong>
+                  {inventory?.windows.tpmPresent === true
+                    ? `TPM ${inventory.windows.tpmVersion ?? "Ativo"}`
+                    : inventory?.windows.tpmPresent === false
+                      ? "TPM ausente"
+                      : "Não informado"}
+                </strong>
+                <small>
+                  Secure Boot:{" "}
+                  {inventory?.windows.secureBootEnabled === true
+                    ? "Ativado"
+                    : inventory?.windows.secureBootEnabled === false
+                      ? "Desativado"
+                      : "Indisponível"}
+                </small>
+              </div>
+              <div>
+                <span>Imunidade Administrativa</span>
+                <strong>{adminUsersCount} conta(s) protegida(s)</strong>
+                <small>Administradores locais nunca recebem restrições de usuário.</small>
+              </div>
+            </div>
+
+            {adminDiagnosticsData && (
+              <div className="wl-card">
+                <div className="wl-card-title">
+                  <div>
+                    <h2>Sinais de gerenciamento e origem das políticas</h2>
+                    <p>
+                      Domínio: {adminDiagnosticsData.management.domain} · Entra ID:{" "}
+                      {adminDiagnosticsData.management.entra} · MDM:{" "}
+                      {adminDiagnosticsData.management.mdm}
+                    </p>
+                  </div>
+                </div>
+                {adminDiagnosticsData.signals.length > 0 && (
+                  <div className="wl-account-list">
+                    {adminDiagnosticsData.signals.map((sig) => (
+                      <div key={sig.id} className="wl-account">
+                        <div>
+                          <strong>{sig.name}</strong>
+                          <small>{sig.detail}</small>
+                        </div>
+                        <span className="wl-scope-tag">Origem: {sig.origin}</span>
+                        <span className="wl-status-badge neutral">{sig.effectiveState}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Controles de segurança fora do escopo automático do piloto</h2>
+                  <p>
+                    Os itens abaixo permanecem protegidos ou indisponíveis nesta versão para evitar bloqueio irreversível do sistema operacional.
+                  </p>
+                </div>
+              </div>
+              <div className="wl-account-list">
+                <div className="wl-account">
+                  <div>
+                    <strong>Microsoft Defender e Firewall do Windows</strong>
+                    <small>Não modificados automaticamente pelo motor do piloto.</small>
+                  </div>
+                  <span className="wl-status-badge neutral">Indisponível nesta versão</span>
+                </div>
+                <div className="wl-account">
+                  <div>
+                    <strong>WinRE, Boot e Políticas de Senha do Domínio/Sistema</strong>
+                    <small>Mantidos intactos para preservar recuperação do Windows.</small>
+                  </div>
+                  <span className="wl-status-badge neutral">Indisponível nesta versão</span>
+                </div>
+                <div className="wl-account">
+                  <div>
+                    <strong>AppLocker em modo Enforce (Bloqueio rígido)</strong>
+                    <small>O piloto Desktop opera exclusivamente em modo AuditOnly.</small>
+                  </div>
+                  <span className="wl-status-badge neutral">Indisponível nesta versão</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 7. DIAGNOSTICO */}
+        {section === "diagnostics" && (
+          <div className="wl-section-content wl-page-enter" key="page-diagnostics">
+            <div className="wl-card">
+              <DiagnosticReport
+                mode={mode}
+                inventory={inventory}
+                policySummary={
+                  policySummary ??
+                  (displayPolicies
+                    ? {
+                        totalPolicies: displayPolicies.length,
+                        appliedCount: appliedPoliciesCount,
+                        notConfiguredCount: displayPolicies.filter(
+                          (p) => p.currentState === "NotConfigured"
+                        ).length,
+                        pendingCount: displayPolicies.filter((p) =>
+                          [
+                            "PendingLogoff",
+                            "PendingReboot",
+                            "PendingAppRestart",
+                            "PendingFirstLogon"
+                          ].includes(p.effectiveState ?? p.currentState)
+                        ).length,
+                        items: displayPolicies
+                      }
+                    : null)
+                }
+                preflightData={preflightData ?? null}
+                isScanning={isScanning}
+                scanError={scanError}
+              />
+            </div>
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Programas detectados e inventário instalado</h2>
+                  <p>Consulta somente leitura da estação atual.</p>
+                </div>
+                <input
+                  type="search"
+                  className="wl-inline-search"
+                  placeholder="Filtrar programas instalados..."
+                  aria-label="Filtrar programas instalados"
+                  value={inventorySearch}
+                  onChange={(e) => setInventorySearch(e.target.value)}
+                />
+              </div>
+
+              {inventory ? (
                 <div className="wl-account-list">
-                  <div className="wl-account">
-                    <div>
-                      <strong>
-                        WinLab Desktop v{updateStatus.currentVersion} · Canal {updateStatus.installChannel}
-                      </strong>
-                      <small>{updateStatus.channelSummary}</small>
+                  {inventory.detectedApps.map((app) => (
+                    <div key={app.id} className="wl-account">
+                      <div>
+                        <strong>{app.name}</strong>
+                        <small>{app.path}</small>
+                      </div>
+                      <span className={`wl-status-badge ${app.detected ? "active" : "inactive"}`}>
+                        {app.detected ? "Catálogo detectado" : "Não encontrado"}
+                      </span>
                     </div>
-                    <span
-                      className={`wl-status-badge ${
-                        updateStatus.coexistingLegacyInstallDetected
-                          ? "warning"
-                          : updateStatus.autoUpdateSupported
-                            ? "active"
-                            : "inactive"
-                      }`}
-                    >
-                      {updateStatus.pendingVersion
-                        ? `v${updateStatus.pendingVersion} pronta no próximo início`
-                        : updateStatus.autoUpdateSupported
-                          ? "Auto-atualizável"
-                          : "Canal fixo / manual"}
-                    </span>
-                  </div>
-                  <div className="wl-account">
-                    <div>
-                      <strong>Repositório de releases estáveis</strong>
-                      <small>{updateStatus.feedUrl}</small>
+                  ))}
+                  {filteredInstalledApps.slice(0, 30).map((app) => (
+                    <div key={`${app.displayName}-${app.displayVersion}`} className="wl-account">
+                      <div>
+                        <strong>{app.displayName}</strong>
+                        <small>
+                          {app.publisher || "Publicador não informado"} · v{app.displayVersion || "—"}
+                        </small>
+                      </div>
+                      <span className="wl-scope-tag">{app.isAppx ? "Store / AppX" : "Desktop"}</span>
                     </div>
-                    <span className="wl-scope-tag">Estado: {updateStatus.lastCheckState}</span>
-                  </div>
+                  ))}
+                </div>
+              ) : isScanning ? (
+                <div className="wl-skeleton-stack">
+                  <div className="wl-skeleton wl-skeleton-line" />
+                  <div className="wl-skeleton wl-skeleton-line short" />
+                </div>
+              ) : (
+                <p className="wl-muted">Inventário ainda não carregado.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 8. HISTORICO E RECUPERACAO */}
+        {section === "history" && (
+          <div className="wl-section-content wl-page-enter" key="page-history">
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Ponto de restauração manual (Baseline)</h2>
+                  <p>
+                    Captura o estado prévio do registro e das políticas AppLocker em <code>C:\ProgramData\WinLab\Backups</code>.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="wl-button primary"
+                  onClick={() => void handleCreateBaseline()}
+                  disabled={busy || !canOperateAgent}
+                >
+                  {busy ? "Gravando..." : "Criar ponto de base (Baseline)"}
+                </button>
+              </div>
+              {latestBaseline ? (
+                <div className="wl-notice-box info">
+                  <strong>Baseline registrado ({latestBaseline.transactionId.slice(0, 8)}):</strong>{" "}
+                  Registro em <code>{latestBaseline.registryBaselinePath}</code> · AppLocker em{" "}
+                  <code>{latestBaseline.appLockerBaselinePath}</code>
                 </div>
               ) : (
                 <p className="wl-muted">
-                  WinLab Desktop v0.9.1 (Pré-lançamento de piloto · sem publicação estável 1.0).
+                  Toda aplicação de política também grava automaticamente um snapshot de reversão antes da primeira escrita.
                 </p>
               )}
             </div>
@@ -1767,160 +2373,14 @@ export function DesktopControlCenter({
             <div className="wl-card">
               <div className="wl-card-title">
                 <div>
-                  <h2>Perfis salvos localmente e comparação com a estação</h2>
+                  <h2>Histórico de transações desta sessão e reversão (Rollback)</h2>
                   <p>
-                    Salve combinações personalizadas de políticas para reaproveitar e comparar diferenças antes de aplicar. Nenhuma senha é armazenada.
+                    Permite desfazer alterações confirmadas restaurando exatamente os valores anteriores gravados no snapshot.
                   </p>
                 </div>
-              </div>
-              <div className="wl-fields" style={{ marginBottom: 12 }}>
-                <label style={{ gridColumn: "1 / -1" }}>
-                  Nome do perfil personalizado
-                  <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-                    <input
-                      type="text"
-                      placeholder="Ex.: Laboratório Noite — Design"
-                      value={newProfileName}
-                      onChange={(e) => setNewProfileName(e.target.value)}
-                      style={{ flex: 1 }}
-                    />
-                    <button
-                      type="button"
-                      className="wl-button primary"
-                      onClick={handleSaveCurrentProfile}
-                      disabled={busy || !displayPolicies || displayPolicies.length === 0}
-                    >
-                      Salvar estado atual
-                    </button>
-                  </div>
-                </label>
-              </div>
-              {savedProfiles.length === 0 ? (
-                <p className="wl-muted">Nenhum perfil personalizado salvo neste computador ainda.</p>
-              ) : (
-                <div className="wl-tx-list">
-                  {savedProfiles.map((prof) => {
-                    const diff = computeSavedProfileDiff(prof.policies, displayPolicies);
-                    const totalDiff = diff.toEnable.length + diff.toDisable.length;
-                    return (
-                      <div key={prof.id} className="wl-tx-item">
-                        <div>
-                          <strong>{prof.name}</strong>
-                          <small>
-                            {totalDiff === 0
-                              ? `Idêntico à estação atual (${diff.unchangedCount} política(s) alinhada(s))`
-                              : `Diferenças para a estação: +${diff.toEnable.length} ativar · -${diff.toDisable.length} desativar · ${diff.unchangedCount} iguais`}
-                          </small>
-                        </div>
-                        <div className="wl-head-actions">
-                          <button
-                            type="button"
-                            className="wl-button secondary"
-                            onClick={() => handleStageSavedProfile(prof)}
-                            disabled={busy}
-                          >
-                            {totalDiff === 0 ? "Alinhado" : "Carregar diferenças"}
-                          </button>
-                          <button
-                            type="button"
-                            className="wl-button secondary"
-                            onClick={() => handleDeleteSavedProfile(prof.id)}
-                            disabled={busy}
-                          >
-                            Remover
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            <div className="wl-card">
-              <div className="wl-card-title">
-                <div>
-                  <h2>Perfis rápidos de sala de aula</h2>
-                  <p>
-                    Carregue um perfil pré-configurado para selecionar automaticamente as restrições recomendadas e revisá-las antes de aplicar.
-                  </p>
-                </div>
-              </div>
-              <div className="wl-shortcuts">
-                {presets.map((preset) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => applyPresetToPending(preset.id)}
-                  >
-                    <strong>{preset.name}</strong>
-                    <span>{preset.description}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="wl-card">
-              <div className="wl-card-title">
-                <div>
-                  <h2>Importar ou exportar perfil JSON</h2>
-                  <p>
-                    Compatível com o configurador WinLab Web. Nenhuma senha é exportada no arquivo JSON.
-                  </p>
-                </div>
-              </div>
-              <div className="wl-head-actions">
-                <button
-                  type="button"
-                  className="wl-button secondary"
-                  onClick={() => {
-                    const blob = new Blob([serializeConfig(config)], { type: "application/json" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = `winlab-perfil-${config.profileName.toLowerCase().replace(/\s+/g, "-")}.json`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  }}
-                >
-                  Exportar perfil (.json)
-                </button>
-                <label className="wl-button secondary" style={{ display: "inline-flex", alignItems: "center" }}>
-                  Importar perfil (.json)
-                  <input
-                    type="file"
-                    accept="application/json,.json"
-                    style={{ display: "none" }}
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      try {
-                        const imported = parseConfigJson(await file.text());
-                        setConfig(imported);
-                        setFeedback({
-                          tone: "success",
-                          message: `Perfil "${imported.profileName}" importado com sucesso.`
-                        });
-                      } catch (err) {
-                        setFeedback({
-                          tone: "error",
-                          message: `Arquivo JSON inválido: ${(err as Error).message}`
-                        });
-                      }
-                    }}
-                  />
-                </label>
-              </div>
-            </div>
-
-            <div className="wl-card">
-              <div className="wl-card-title">
-                <div>
-                  <h2>Histórico de aplicações nesta sessão</h2>
-                  <p>
-                    Cada aplicação cria um snapshot prévio dos valores originais e permite desfazer as alterações com restauração verificada.
-                  </p>
-                </div>
+                <span className="wl-status-badge neutral">
+                  Histórico entre reinícios: Indisponível na UI atual
+                </span>
               </div>
               {transactionHistory.length === 0 ? (
                 <p className="wl-muted">Nenhuma aplicação registrada nesta sessão ainda.</p>
@@ -1964,17 +2424,154 @@ export function DesktopControlCenter({
           </div>
         )}
 
-        {/* BARRA DE AÇÃO FIXA DE ALTERAÇÕES PENDENTES */}
-        {pendingCount > 0 && canOperateAgent && (
-          <div className="wl-action-bar">
+        {/* 9. CONFIGURACOES */}
+        {section === "settings" && (
+          <div className="wl-section-content wl-page-enter" key="page-settings">
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Modo de operação e canal de atualizações</h2>
+                  <p>
+                    Controle se o painel opera em simulação (Demonstração) ou conectado ao host local do Windows, além do canal de atualização Velopack/Inno.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => void refreshSystemDiagnostics()}
+                  disabled={busy || !canOperateAgent}
+                >
+                  Verificar atualizações
+                </button>
+              </div>
+              {updateStatus ? (
+                <div className="wl-account-list">
+                  <div className="wl-account">
+                    <div>
+                      <strong>
+                        WinLab Desktop v{updateStatus.currentVersion} · Canal {updateStatus.installChannel}
+                      </strong>
+                      <small>{updateStatus.channelSummary}</small>
+                    </div>
+                    <span
+                      className={`wl-status-badge ${
+                        updateStatus.coexistingLegacyInstallDetected
+                          ? "warning"
+                          : updateStatus.autoUpdateSupported
+                            ? "active"
+                            : "inactive"
+                      }`}
+                    >
+                      {updateStatus.pendingVersion
+                        ? `v${updateStatus.pendingVersion} pronta no próximo início`
+                        : updateStatus.autoUpdateSupported
+                          ? "Auto-atualizável"
+                          : "Canal fixo / manual"}
+                    </span>
+                  </div>
+                  <div className="wl-account">
+                    <div>
+                      <strong>Origem de releases</strong>
+                      <small>{updateStatus.feedUrl}</small>
+                    </div>
+                    <span className="wl-scope-tag">Estado: {updateStatus.lastCheckState}</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="wl-muted">
+                  WinLab Desktop v0.9.1 (Pré-lançamento de piloto · sem publicação estável 1.0).
+                </p>
+              )}
+            </div>
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Acessibilidade, movimento e atalhos</h2>
+                  <p>
+                    O WinLab respeita automaticamente <code>prefers-reduced-motion</code> do sistema operacional e oferece ajuste manual abaixo.
+                  </p>
+                </div>
+              </div>
+              <div className="wl-setting">
+                <div className="wl-setting-info">
+                  <div className="wl-setting-header">
+                    <strong>Reduzir animações na interface</strong>
+                    <span className="wl-scope-tag">Preferência local da UI</span>
+                  </div>
+                  <p className="wl-setting-description">
+                    Desativa transições de página, deslize de gaveta e efeito shimmer nos esqueletos de carregamento.
+                  </p>
+                </div>
+                <div className="wl-setting-controls">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label="Reduzir animações na interface"
+                    aria-checked={reducedMotionPref}
+                    className={`wl-switch ${reducedMotionPref ? "selected" : ""}`}
+                    onClick={() => toggleReducedMotionPref(!reducedMotionPref)}
+                  >
+                    <span />
+                  </button>
+                </div>
+              </div>
+              <p className="wl-compat-hint" style={{ marginTop: 10 }}>
+                Atalhos por teclado: <code>/</code> foca a pesquisa global · <code>Esc</code> fecha a prévia lateral · <code>Tab</code> / <code>Enter</code> operam todos os controles.
+              </p>
+            </div>
+
+            <div className="wl-card">
+              <div className="wl-card-title">
+                <div>
+                  <h2>Ferramentas do aplicativo</h2>
+                  <p>Acesso ao assistente inicial, logs IPC e versão web de referência.</p>
+                </div>
+              </div>
+              <div className="wl-head-actions">
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() => setShowWizardModal(true)}
+                >
+                  Assistente Inicial
+                </button>
+                {onAdvanced && (
+                  <button type="button" className="wl-button secondary" onClick={onAdvanced}>
+                    Inspeção técnica e logs IPC
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="wl-button secondary"
+                  onClick={() =>
+                    window.open("https://winlab-krrozino-s-projects.vercel.app/", "_blank", "noopener,noreferrer")
+                  }
+                >
+                  Abrir versão web no navegador ↗
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* BARRA FIXA DE ALTERACOES PENDENTES */}
+        {(pendingCount > 0 || busy) && canOperateAgent && (
+          <div className="wl-action-bar" role="region" aria-label="Alterações pendentes">
             <div className="wl-action-info">
-              <strong>{pendingCount} alteração(ões) selecionada(s) para revisão</strong>
+              <strong>
+                {busy
+                  ? "Operação em processamento no executor..."
+                  : `${pendingCount} alteração(ões) pendente(s) para revisão`}
+              </strong>
               <span>
-                {hasUserScopedPending && !selectedUser
-                  ? "Selecione uma conta comum válida antes de revisar e aplicar."
-                  : selectedUser && hasUserScopedPending
-                    ? `Alvo das políticas de usuário: ${selectedUser.name}`
-                    : "Políticas globais do computador prontas para revisão."}
+                {busy
+                  ? "Aguardando resposta real do Windows e releitura pós-aplicação."
+                  : hasUserScopedPending && !selectedUser
+                    ? "Selecione uma conta comum válida antes de revisar e aplicar."
+                    : selectedUser && hasUserScopedPending
+                      ? `Alvo das políticas por usuário: ${selectedUser.name}`
+                      : "Políticas globais de máquina prontas para prévia."}
               </span>
             </div>
             <div className="wl-action-buttons">
@@ -1989,93 +2586,37 @@ export function DesktopControlCenter({
               <button
                 type="button"
                 className="wl-button primary"
-                onClick={() => setShowReviewModal(true)}
-                disabled={busy || !canApply}
-                title={!canApply ? "Selecione um usuário comum válido para políticas por usuário" : undefined}
+                onClick={() => {
+                  setDrawerBatchResult(null);
+                  setShowReviewDrawer(true);
+                }}
+                disabled={busy || pendingCount === 0}
               >
-                {busy ? "Aplicando..." : "Revisar e aplicar"}
+                {busy ? "Processando..." : `Revisar prévia (${pendingCount})`}
               </button>
             </div>
           </div>
         )}
 
-        {/* MODAL DE REVISÃO E CONFIRMAÇÃO */}
-        {showReviewModal && (
-          <div className="wl-modal-overlay" onClick={() => setShowReviewModal(false)}>
-            <div
-              className="wl-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="wl-review-modal-title"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h2 id="wl-review-modal-title">Revisar Alterações</h2>
-              <p className="wl-modal-sub">
-                {mode === "Real"
-                  ? "O WinLab salvará um ponto de restauração dos valores atuais antes de aplicar. O Windows solicitará confirmação administrativa (UAC)."
-                  : "Simulação em Modo Demonstração: nenhuma alteração será gravada no Windows real."}
-              </p>
-
-              <div className="wl-review-target">
-                <strong>
-                  {hasUserScopedPending && selectedUser
-                    ? `Conta-alvo de usuário: ${selectedUser.name}`
-                    : "Escopo: Todo o computador"}
-                </strong>
-                {hasUserScopedPending && selectedUser?.sid && (
-                  <span className="wl-muted">SID verificado: {selectedUser.sid}</span>
-                )}
-              </div>
-
-              <div className="wl-review-list">
-                {Object.entries(pendingPolicies).map(([policyId, enabled]) => {
-                  const policy = displayPolicies?.find((p) => p.id === policyId);
-                  return (
-                    <div key={policyId} className="wl-review-item">
-                      <strong>{policy?.title || policyId}</strong>
-                      <span>
-                        {enabled
-                          ? "Estado atual → Ativar restrição (Blocked)"
-                          : "Estado atual → Remover restrição (NotConfigured)"}
-                      </span>
-                      {policy && (
-                        <small>
-                          {policy.scope === "User" ? "Aplica-se somente à conta selecionada · " : "Aplica-se ao computador · "}
-                          {policy.requiresRestart
-                            ? "Requer reiniciar o computador"
-                            : policy.requiresLogoff
-                              ? "Requer encerrar sessão (logoff)"
-                              : policy.requiresAppRestart
-                                ? "Requer fechar e reabrir o navegador"
-                                : "Efeito imediato após verificação"}
-                        </small>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="wl-modal-actions">
-                <button
-                  type="button"
-                  className="wl-button secondary"
-                  onClick={() => setShowReviewModal(false)}
-                  disabled={busy}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  className="wl-button primary"
-                  onClick={() => void applyPendingChanges()}
-                  disabled={busy || !canApply}
-                >
-                  {busy ? "Aplicando..." : "Confirmar e aplicar"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* PAINEL LATERAL DE PREVIA E CONFIRMACAO */}
+        <ReviewDrawer
+          open={showReviewDrawer}
+          mode={mode}
+          busy={busy}
+          items={reviewDrawerItems}
+          selectedUser={selectedUser}
+          validationError={transactionValidation && !transactionValidation.valid ? transactionValidation.error ?? "Seleção inválida." : null}
+          canConfirm={canApply && Boolean(transactionValidation?.valid)}
+          outcomes={executionOutcomes}
+          batchResult={drawerBatchResult}
+          onRemoveItem={handleRemovePendingItem}
+          onDiscardAll={discardPendingChanges}
+          onCancel={() => {
+            setShowReviewDrawer(false);
+            setDrawerBatchResult(null);
+          }}
+          onConfirm={applyPendingChanges}
+        />
       </div>
     </div>
   );

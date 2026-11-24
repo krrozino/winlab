@@ -505,11 +505,15 @@ test("DesktopControlCenter renders cleanly in Demo and Real modes with Portugues
     })
   );
 
-  assert.match(html, /Contas e permissões/);
-  assert.match(html, /Internet e navegadores/);
-  assert.match(html, /Sistema Windows/);
-  assert.match(html, /Rede e compartilhamento/);
-  assert.match(html, /Configurações do WinLab/);
+  assert.match(html, /Visão geral/);
+  assert.match(html, /Contas e usuários/);
+  assert.match(html, /Permissões/);
+  assert.match(html, /Perfis de laboratório/);
+  assert.match(html, /Rede e arquivos/);
+  assert.match(html, /Segurança/);
+  assert.match(html, /Diagnóstico/);
+  assert.match(html, /Histórico e recuperação/);
+  assert.match(html, /Configurações/);
   assert.match(html, /LAB-SALA-01/);
   assert.match(html, /Computador Real/);
 });
