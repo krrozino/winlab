@@ -82,17 +82,28 @@ internal sealed class LocalAccountProvisioner(IRegistryService registry, Windows
     {
         EnsureAdministrator();
         uint flags = GetVerifiedFlags(account);
-        flags = enabled ? flags & ~UfAccountDisabled : flags | UfAccountDisabled;
+        uint desired = enabled ? flags & ~UfAccountDisabled : flags | UfAccountDisabled;
+        if (desired == flags) return;
         EnsureSameAccount(account);
-        CheckResult(NetUserSetInfo(null, account.Name, 1008, ref flags, out _), "alterar o estado da conta");
+        CheckResult(NetUserSetInfo(null, account.Name, 1008, ref desired, out _), "alterar o estado da conta");
     }
 
-    public void RemoveCreatedAccount(AdminAccountDto account)
+    public void SetStudentEnabled(AdminAccountDto account, bool enabled)
     {
-        // Uma criação interrompida antes da limpeza continua desabilitada.
+        var inventory = reader.Read();
+        var current = inventory.Accounts.SingleOrDefault(candidate => candidate.Sid == account.Sid);
+        if (!inventory.Complete || current == null || !AdminAccountService.IsManagedStudent(current) ||
+            current.Enabled != account.Enabled || (!enabled && !AdminAccountService.HasObservedRecovery(inventory)))
+            throw new InvalidOperationException("A identidade, os privilégios ou a recuperação mudaram. Atualize o inventário.");
+        SetEnabled(current, enabled);
+    }
+
+    public void QuarantineCreatedAccount(AdminAccountDto account)
+    {
+        // As APIs de remoção operam por nome. O executor preserva a conta desabilitada para revisão.
         SetEnabled(account, false);
-        EnsureSameAccount(account);
-        CheckResult(NetUserDel(null, account.Name), "remover a conta recém-criada e incompleta");
+        if ((GetVerifiedFlags(account) & UfAccountDisabled) == 0)
+            throw new InvalidOperationException("O Windows não confirmou que a conta incompleta está desabilitada.");
         registry.DeleteValue(RegistryHiveType.LocalMachine, WindowsAdminAccountStore.RegistryPath, account.Sid!);
     }
 
@@ -198,9 +209,6 @@ internal sealed class LocalAccountProvisioner(IRegistryService registry, Windows
 
     [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     private static extern int NetUserSetInfo(string? server, string name, uint level, ref uint flags, out uint parameterError);
-
-    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
-    private static extern int NetUserDel(string? server, string name);
 
     [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
     private static extern int NetLocalGroupAddMembers(string? server, string group, uint level, ref IntPtr member, uint count);

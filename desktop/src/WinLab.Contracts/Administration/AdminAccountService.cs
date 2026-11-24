@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text.Json;
 
 namespace WinLab.Contracts.Administration;
@@ -21,7 +22,8 @@ public interface IAdminAccountWriter
     AdminAccountDto CreateDisabled(string name, string password);
     void AddGroup(AdminAccountDto account, string groupSid);
     void SetEnabled(AdminAccountDto account, bool enabled);
-    void RemoveCreatedAccount(AdminAccountDto account);
+    void SetStudentEnabled(AdminAccountDto account, bool enabled);
+    void QuarantineCreatedAccount(AdminAccountDto account);
     bool VerifyLocalLogon(AdminAccountDto account, string password);
     void RecordRecovery(string sid);
     void RecordRole(string sid, string role);
@@ -91,6 +93,11 @@ public sealed class AdminAccountService(IAdminAccountStore store, Func<AdminMana
                 before = Find(inventory, plan.Sid) ?? throw new ArgumentException("Selecione uma conta local existente por SID.");
                 after = before with { Enabled = plan.Enabled ?? throw new ArgumentException("Informe o estado da conta.") };
                 canApply &= IsManagedStudent(before) && before.Enabled != after.Enabled;
+                if (!after.Enabled && !HasObservedRecovery(inventory))
+                {
+                    canApply = false;
+                    notes.Add("A desativação exige uma conta administrativa de recuperação habilitada e com associação confirmada.");
+                }
                 break;
             default:
                 throw new ArgumentException("Operação de conta desconhecida.");
@@ -110,10 +117,14 @@ public sealed class AdminAccountService(IAdminAccountStore store, Func<AdminMana
 
         if (plan.Operation == "SetEnabled")
         {
-            writer.SetEnabled(preview.Before!, preview.After.Enabled);
+            writer.SetStudentEnabled(preview.Before!, preview.After.Enabled);
             var updated = Find(store.Read(), plan.Sid);
             if (updated == null || updated.Enabled != preview.After.Enabled || !IsManagedStudent(updated))
+            {
+                if (updated is { Enabled: false } && preview.Before!.Enabled)
+                    writer.SetEnabled(updated, true);
                 throw new InvalidOperationException("O Windows não confirmou o novo estado da conta.");
+            }
             return new(updated, "Estado da conta de aluno verificado no Windows.");
         }
 
@@ -150,24 +161,28 @@ public sealed class AdminAccountService(IAdminAccountStore store, Func<AdminMana
         }
         catch (Exception ex) when (IsAccountFailure(ex))
         {
-            try { writer.RemoveCreatedAccount(created); }
+            try { writer.QuarantineCreatedAccount(created); }
             catch (Exception cleanup) when (IsAccountFailure(cleanup))
             {
                 throw new InvalidOperationException("Falha parcial na criação. Confira o estado da nova conta no gerenciamento de usuários do Windows.");
             }
-            throw new InvalidOperationException("O Windows não confirmou o provisionamento. A conta incompleta foi removida.");
+            throw new InvalidOperationException("O Windows não confirmou o provisionamento. A conta incompleta permanece desabilitada para revisão pelo operador.");
         }
     }
 
     private static bool IsAccountFailure(Exception ex) => ex is InvalidOperationException or System.IO.IOException or
-        UnauthorizedAccessException or System.Security.SecurityException or System.ComponentModel.Win32Exception or ArgumentException;
+        UnauthorizedAccessException or System.Security.SecurityException or System.ComponentModel.Win32Exception or ArgumentException
+        or IdentityNotMappedException;
 
-    private static bool IsManagedStudent(AdminAccountDto account) => !account.Protected && account.Role == "Student" &&
+    public static bool IsManagedStudent(AdminAccountDto account) => !account.Protected && account.Role == "Student" &&
         account.PrivilegeClassification == "StandardUser" && account.GroupSids.Contains(UsersGroupSid) &&
         !account.GroupSids.Contains(AdministratorsGroupSid);
 
     private static bool IsRecovery(AdminAccountDto? account) => account is { Enabled: true, PrivilegeClassification: "Administrator" }
         && account.GroupSids.Contains(AdministratorsGroupSid) && account.Role != "Superadmin";
+
+    public static bool HasObservedRecovery(AdminAccountInventory inventory) => inventory.Complete &&
+        inventory.RecoverySid != null && IsRecovery(Find(inventory, inventory.RecoverySid));
 
     private static bool MatchesNewAccount(AdminAccountDto? account, AdminAccountDto proposal) => account != null &&
         account.PrivilegeClassification == proposal.PrivilegeClassification &&

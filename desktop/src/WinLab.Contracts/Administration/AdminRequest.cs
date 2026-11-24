@@ -12,6 +12,7 @@ public sealed class AdminRequest
     public AdminPermissionPlan? PermissionPlan { get; private init; }
     public string? TargetUserSid { get; private init; }
     public string? Revision { get; private init; }
+    public bool ElevatedRead { get; private init; }
     public JsonElement Credential { private get; init; }
 
     public string? ReadCredential() => Credential.ValueKind == JsonValueKind.String ? Credential.GetString() : null;
@@ -62,10 +63,10 @@ public sealed class AdminRequest
             }
             case AdminActions.DiagnosticsQuery:
             case AdminActions.PermissionsQuery:
-                Fields(payload, [], ["targetUserSid"]);
-                return new() { TargetUserSid = OptionalSid(payload) };
+                Fields(payload, [], ["targetUserSid", "elevatedRead"]);
+                return new() { TargetUserSid = OptionalSid(payload), ElevatedRead = ReadElevation(payload) };
             case AdminActions.PermissionsPreview:
-                return new() { PermissionPlan = ParsePermissionPlan(payload) };
+                return new() { PermissionPlan = ParsePermissionPlan(payload, preview: true), ElevatedRead = ReadElevation(payload) };
             case AdminActions.PermissionsApply:
                 Fields(payload, ["plan", "revision"]);
                 return new() { PermissionPlan = ParsePermissionPlan(payload.GetProperty("plan")), Revision = ParseRevision(payload) };
@@ -119,9 +120,9 @@ public sealed class AdminRequest
         return new("SetEnabled", Sid: ParseSid(Text(plan, "sid")), Enabled: Flag(plan, "enabled"));
     }
 
-    private static AdminPermissionPlan ParsePermissionPlan(JsonElement plan)
+    private static AdminPermissionPlan ParsePermissionPlan(JsonElement plan, bool preview = false)
     {
-        Fields(plan, ["permissionId", "intent"], ["targetUserSid"]);
+        Fields(plan, ["permissionId", "intent"], preview ? ["targetUserSid", "elevatedRead"] : ["targetUserSid"]);
         string id = Text(plan, "permissionId");
         string intent = Text(plan, "intent");
         if (id.Length is < 1 or > 80 || id.Any(character => !(char.IsAsciiLetterLower(character) ||
@@ -172,6 +173,9 @@ public sealed class AdminRequest
 
     private static string? OptionalSid(JsonElement payload) =>
         payload.TryGetProperty("targetUserSid", out _) ? ParseSid(Text(payload, "targetUserSid")) : null;
+
+    private static bool ReadElevation(JsonElement payload) =>
+        payload.TryGetProperty("elevatedRead", out _) && Flag(payload, "elevatedRead");
 
     private static string ParseSid(string sid) => IsLocalSid(sid) ? sid : throw Invalid();
 

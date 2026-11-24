@@ -37,4 +37,28 @@ public class AdminCenterContractTests
         Assert.Equal(64, json.GetProperty("revision").GetString()?.Length);
         Assert.False(json.TryGetProperty("password", out _));
     }
+
+    [Theory]
+    [InlineData("""{"operation":"Create","name":"aluno","role":"Student","password":"fixture"}""")]
+    [InlineData("""{"operation":"SetEnabled","sid":"S-1-5-21-1-2-3-1001","enabled":true,"enabled":false}""")]
+    [InlineData("""{"operation":"SetEnabled","sid":"S-1-5-21-1-2-3-4294967296","enabled":false}""")]
+    public void AccountPreviewRejectsCredentialsDuplicateFieldsAndInvalidSids(string payload)
+    {
+        using var document = JsonDocument.Parse($$"""{"type":"query","payload":{{payload}}}""");
+
+        Assert.Throws<ArgumentException>(() => AdminRequest.Parse(AdminActions.AccountsPreview, document.RootElement));
+    }
+
+    [Fact]
+    public void PermissionPreviewCanRequestElevatedReadsWithoutChangingTheMutationPlan()
+    {
+        using var document = JsonDocument.Parse("""
+            {"type":"query","payload":{"permissionId":"system.task_manager","intent":"Block",
+             "targetUserSid":"S-1-5-21-1-2-3-1001","elevatedRead":true}}
+            """);
+        var request = AdminRequest.Parse(AdminActions.PermissionsPreview, document.RootElement);
+
+        Assert.True(request.ElevatedRead);
+        Assert.Equal("S-1-5-21-1-2-3-1001", request.PermissionPlan?.TargetUserSid);
+    }
 }

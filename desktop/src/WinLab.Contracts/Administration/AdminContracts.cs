@@ -29,7 +29,7 @@ public sealed record AdminAccountPreviewDto(string Revision, string Scope, Admin
 
 public sealed record AdminAccountResultDto(AdminAccountDto Account, string Message);
 
-public sealed record AdminManagementDto(string Status, string Domain, string Entra, string Mdm);
+public sealed record AdminManagementDto(string Status, string Domain, string Entra, string Mdm, string? EntraScope = null);
 
 public sealed record AdminDiagnosticSignalDto(string Id, string Name, string Scope, string ObservedState,
     string Origin, string EffectiveState, string Detail);

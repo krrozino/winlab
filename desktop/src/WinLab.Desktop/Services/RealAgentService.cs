@@ -57,10 +57,9 @@ namespace WinLab.Desktop.Services
                 ? @"C:\ProgramData\WinLab\Transactions"
                 : Path.Combine(Path.GetTempPath(), "WinLab_Transactions_Dev"));
             _localEngine = new TransactionEngine(_catalog, _registry, _hiveManager, txDir);
-            _expansion = new ExpansionIpc(_registry, _scanner);
+            _expansion = new ExpansionIpc(_registry, _scanner, protectExternal: true);
             var accountStore = new WindowsAdminAccountStore(_registry, ExecutorInstallTrust.IsAdministrationStoreProtected);
-            _administration = new(new AdminAccountService(accountStore, WindowsAdminDiagnostics.QueryManagement),
-                new WindowsAdminDiagnostics(_registry), WindowsAdminDiagnostics.QueryManagement);
+            _administration = AdminIpc.ForWindows(accountStore, _registry, _hiveManager, _scanner);
         }
 
         public async Task<IpcResponse<object>> HandleRequestAsync(string rawJson)
@@ -115,12 +114,16 @@ namespace WinLab.Desktop.Services
                 if (ExpansionRequest.IsAction(action))
                 {
                     bool trusted = _isWindows && ExecutorInstallTrust.FindInstalledExecutor() != null
-                        && ExecutorInstallTrust.IsPolicyStoreProtected();
+                        && ExecutorInstallTrust.IsPolicyStoreProtected()
+                        && WindowsAdminDiagnostics.QueryManagement().Status == "NotDetected";
                     return await _expansion.HandleAsync(id, action, root, trusted, async () =>
                     {
                         if (!trusted)
                             return IpcResponse<object>.Fail(id, ExecutorInstallTrust.ReadOnlyMessage, "TRUSTED_EXECUTOR_REQUIRED");
-                        return EnsureReplyToId(await _executorClient.HandleRequestAsync(rawJson), id);
+                        var response = _executorClient is ElevatedExecutorClient executor
+                            ? await executor.HandleRequestAsync(rawJson, freshElevation: true)
+                            : await _executorClient.HandleRequestAsync(rawJson);
+                        return EnsureReplyToId(response, id);
                     });
                 }
 

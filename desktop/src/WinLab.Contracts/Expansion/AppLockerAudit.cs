@@ -64,7 +64,8 @@ public sealed class AppLockerAudit(IRegistryService registry, IAppLockerAuditBac
                 }).ToArray()
             },
             "Coleções AppLocker por máquina, com regras para o SID escolhido e recuperação administrativa. AuditOnly registra o que seria bloqueado.",
-            false, false);
+            false, false, TargetUserSid: plan.Sid,
+            Limitations: ["AppLocker em AuditOnly registra eventos de auditoria. A reação do Windows a cada aplicativo deve ser confirmada na estação."]);
     }
 
     public async Task<ExpansionStatus> ApplyAsync(ExpansionPlan plan, string revision, CancellationToken ct)

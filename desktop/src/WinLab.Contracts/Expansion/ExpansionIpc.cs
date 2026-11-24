@@ -12,9 +12,10 @@ public sealed class ExpansionIpc(
     IRegistryService registry,
     IWindowsScanner scanner,
     Func<string, (bool Supported, string Detail)>? capability = null,
-    IAppLockerAuditBackend? appLocker = null)
+    IAppLockerAuditBackend? appLocker = null,
+    bool protectExternal = false)
 {
-    private readonly ExpansionEngine _registryPolicies = new(registry, capability ?? WindowsPolicyCapabilities.Query);
+    private readonly ExpansionEngine _registryPolicies = new(registry, capability ?? WindowsPolicyCapabilities.Query, protectExternal);
     private readonly AppLockerAudit _audit = new(registry, appLocker ?? new WindowsAppLocker(scanner));
 
     public async Task<IpcResponse<object>> HandleAsync(string id, string action, JsonElement root, bool canWrite,
@@ -57,6 +58,8 @@ public sealed class ExpansionIpc(
 
             if (result is ExpansionStatus status)
                 result = status with { CanWrite = canWrite };
+            if (result is ExpansionPreview preview)
+                result = preview with { CanApply = canWrite && preview.CanApply };
             return IpcResponse<object>.Ok(id, JsonSerializer.SerializeToElement(result, ExpansionEngine.Json));
         }
         catch (ArgumentException ex)

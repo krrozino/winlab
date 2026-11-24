@@ -433,6 +433,7 @@ export interface AdminManagementDto {
   domain: ManagementEvidence;
   entra: ManagementEvidence;
   mdm: ManagementEvidence;
+  entraScope?: "User" | "Machine" | null;
 }
 
 export type AdminPolicyOrigin = "WinLab" | "ExternalLocal" | "InstitutionalPossible" | "Inconclusive" | "None";
@@ -488,6 +489,8 @@ export interface AdminPermissionDto {
 
 export interface AdminTargetQueryPayload {
   targetUserSid?: string;
+  /** Request a read of the loaded account profile through the trusted UAC executor. */
+  elevatedRead?: boolean;
 }
 
 export interface AdminPermissionsDto {
@@ -497,9 +500,14 @@ export interface AdminPermissionsDto {
   canWrite: boolean;
 }
 
-export interface AdminPermissionPlan extends AdminTargetQueryPayload {
+export interface AdminPermissionPlan {
   permissionId: string;
   intent: AdminPermissionIntent;
+  targetUserSid?: string;
+}
+
+export interface AdminPermissionPreviewPayload extends AdminPermissionPlan {
+  elevatedRead?: boolean;
 }
 
 export interface AdminPermissionPreviewDto {
@@ -523,6 +531,20 @@ export interface AdminPermissionResultDto {
   permission: AdminPermissionDto;
   transactionId: string | null;
   message: string;
+}
+
+/** Additional fields returned by policy.expansion_preview for the administration center. */
+export interface AdminExpansionPreviewDto {
+  revision: string;
+  scope: "Machine";
+  targetUserSid: string | null;
+  before: unknown;
+  after: unknown;
+  detail: string;
+  canApply: boolean;
+  requiresAppRestart: boolean;
+  requiresRestart: boolean;
+  limitations: string[];
 }
 
 declare global {

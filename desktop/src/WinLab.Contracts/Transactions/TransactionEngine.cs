@@ -17,21 +17,25 @@ namespace WinLab.Contracts.Transactions
         private readonly IUserHiveManager _hiveManager;
         private readonly BaselineSnapshotManager _snapshotManager;
         private readonly string _transactionDir;
+        private readonly Func<string, FileMode, Stream>? _protectedRecordWriter;
         private readonly SemaphoreSlim _lock = new(1, 1);
 
         public TransactionEngine(
             IPolicyCatalog catalog,
             IRegistryService registry,
             IUserHiveManager hiveManager,
-            string? transactionDirectory = null)
+            string? transactionDirectory = null,
+            bool createDirectory = true,
+            Func<string, FileMode, Stream>? protectedRecordWriter = null)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             _registry = registry ?? throw new ArgumentNullException(nameof(registry));
             _hiveManager = hiveManager ?? throw new ArgumentNullException(nameof(hiveManager));
             _snapshotManager = new BaselineSnapshotManager(_registry, _hiveManager);
             _transactionDir = ResolveTransactionDirectory(transactionDirectory);
+            _protectedRecordWriter = protectedRecordWriter;
 
-            if (!Directory.Exists(_transactionDir))
+            if (createDirectory && !Directory.Exists(_transactionDir))
             {
                 try
                 {
@@ -176,7 +180,8 @@ namespace WinLab.Contracts.Transactions
 
         public async Task<ApplyTransactionResultDto> ApplyTransactionAsync(
             ApplyTransactionRequestDto request,
-            CancellationToken ct = default)
+            CancellationToken ct = default,
+            Func<BaselineSnapshotDto, bool>? confirmBaseline = null)
         {
             await _lock.WaitAsync(ct);
             try
@@ -384,6 +389,8 @@ namespace WinLab.Contracts.Transactions
                     (baseline, rollbackPlan) = _snapshotManager.CaptureBaseline(
                         handlers.Select(h => h.Handler),
                         request.TargetUserSid);
+                    if (confirmBaseline != null && !confirmBaseline(baseline))
+                        throw new InvalidOperationException("O registro mudou desde a prévia. Nenhuma política foi alterada.");
                 }
                 catch (Exception ex)
                 {
@@ -469,7 +476,7 @@ namespace WinLab.Contracts.Transactions
                     }
                     else
                     {
-                        bool singleValueAbsent = handler is not RegistryDWordPolicyHandler || probeResult.LiveValue == null;
+                        bool singleValueAbsent = handler is not RegistryValuePolicyHandler || probeResult.LiveValue == null;
                         probeMatches = !probeResult.IsActive &&
                                        probeResult.EffectiveState == PolicyEffectiveState.NotConfigured &&
                                        singleValueAbsent;
@@ -578,7 +585,9 @@ namespace WinLab.Contracts.Transactions
 
         public async Task<RollbackResultDto> RollbackTransactionAsync(
             RollbackTransactionRequestDto request,
-            CancellationToken ct = default)
+            CancellationToken ct = default,
+            Func<TransactionDto, bool>? confirmCurrent = null,
+            string? policyId = null)
         {
             await _lock.WaitAsync(ct);
             try
@@ -594,6 +603,15 @@ namespace WinLab.Contracts.Transactions
                         Error = $"Transação '{request.TransactionId}' não foi encontrada nos registros de persistência."
                     };
                 }
+
+                if (confirmCurrent != null && !confirmCurrent(tx))
+                    return new RollbackResultDto
+                    {
+                        TransactionId = tx.TransactionId,
+                        Status = tx.Status,
+                        Success = false,
+                        Error = "O registro ou baseline mudou desde a prévia. Nenhuma política foi restaurada."
+                    };
 
                 // Idempotency: if already rolled back, return clean success
                 if (tx.Status == TransactionStatus.RolledBack)
@@ -626,7 +644,17 @@ namespace WinLab.Contracts.Transactions
                 tx.Status = TransactionStatus.RollingBack;
                 await SaveTransactionAsync(tx, ct);
 
-                var (restored, rollbackFailures, rollbackErrors) = await ExecuteRollbackPlanAsync(tx, null, ct, null);
+                HashSet<string>? filter = null;
+                if (policyId != null)
+                    filter = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { policyId };
+                else if (tx.Actions.Any(action => action.Status == "RolledBackAndVerified"))
+                {
+                    var alreadyRestored = tx.Actions.Where(action => action.Status == "RolledBackAndVerified")
+                        .Select(action => action.PolicyId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    filter = tx.RollbackPlan.Select(step => step.PolicyId).Where(id => !alreadyRestored.Contains(id))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                }
+                var (restored, rollbackFailures, rollbackErrors) = await ExecuteRollbackPlanAsync(tx, filter, ct, null);
 
                 if (rollbackFailures > 0)
                 {
@@ -647,14 +675,19 @@ namespace WinLab.Contracts.Transactions
                     };
                 }
 
-                tx.Status = TransactionStatus.RolledBack;
+                if (policyId != null)
+                    foreach (var action in tx.Actions.Where(action => string.Equals(action.PolicyId, policyId, StringComparison.OrdinalIgnoreCase)))
+                        action.Status = "RolledBackAndVerified";
+
+                tx.Status = policyId == null || tx.Actions.All(action => action.Status == "RolledBackAndVerified")
+                    ? TransactionStatus.RolledBack : TransactionStatus.Committed;
                 tx.UpdatedAt = DateTime.UtcNow;
                 await SaveTransactionAsync(tx, ct);
 
                 return new RollbackResultDto
                 {
                     TransactionId = request.TransactionId,
-                    Status = TransactionStatus.RolledBack,
+                    Status = tx.Status,
                     Success = true,
                     RestoredCount = restored,
                     Message = $"Transação '{request.TransactionId}' revertida com sucesso. {restored} item(ns) restaurados."
@@ -900,9 +933,9 @@ namespace WinLab.Contracts.Transactions
                 return step.RelativeSubKey.Trim('\\');
             }
 
-            if (_catalog.GetPolicy(step.PolicyId) is RegistryDWordPolicyHandler dwordHandler)
+            if (_catalog.GetPolicy(step.PolicyId) is RegistryValuePolicyHandler valueHandler)
             {
-                return dwordHandler.RelativeSubKeyPath.Trim('\\');
+                return valueHandler.RelativeSubKeyPath.Trim('\\');
             }
 
             string subKey = (step.SubKey ?? string.Empty).Trim('\\');
@@ -1307,7 +1340,8 @@ namespace WinLab.Contracts.Transactions
 
             string json = JsonSerializer.Serialize(tx, new JsonSerializerOptions { WriteIndented = true });
 
-            await using (var stream = new FileStream(finalPath, mode, FileAccess.Write, FileShare.None))
+            await using (var stream = _protectedRecordWriter?.Invoke(finalPath, mode)
+                ?? new FileStream(finalPath, mode, FileAccess.Write, FileShare.None))
             await using (var writer = new StreamWriter(stream))
             {
                 await writer.WriteAsync(json.AsMemory(), ct);
@@ -1317,6 +1351,20 @@ namespace WinLab.Contracts.Transactions
 
         private async Task SaveTransactionAsync(TransactionDto tx, CancellationToken ct)
         {
+            if (_protectedRecordWriter != null)
+            {
+                if (!TryResolveTransactionFilePath(tx.TransactionId, out string protectedPath))
+                    throw new IOException("O caminho de persistência da transação não é confiável.");
+                string replacement = $"{protectedPath}.{Guid.NewGuid():N}.tmp";
+                try
+                {
+                    await WriteTransactionRecordAsync(tx, replacement, FileMode.CreateNew, ct);
+                    File.Move(replacement, protectedPath, overwrite: true);
+                }
+                finally { File.Delete(replacement); }
+                return;
+            }
+
             try
             {
                 if (!Directory.Exists(_transactionDir))

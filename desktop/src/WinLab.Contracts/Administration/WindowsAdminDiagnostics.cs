@@ -20,12 +20,12 @@ public sealed class WindowsAdminDiagnostics(IRegistryService registry)
             return new("Inconclusive", "Inconclusive", "Inconclusive", "Inconclusive");
 
         string domain = GetDomainEvidence();
-        string entra = GetEntraEvidence();
+        var (entra, entraScope) = GetEntraEvidence();
         string mdm = GetMdmEvidence();
-        string status = domain == "Detected" || entra == "Detected" || mdm == "Detected" ? "Detected"
+        string status = domain == "Detected" || entraScope == "Machine" || mdm == "Detected" ? "Detected"
             : domain == "NotDetected" && entra == "NotDetected" && mdm == "NotDetected" ? "NotDetected"
             : "Inconclusive";
-        return new(status, domain, entra, mdm);
+        return new(status, domain, entra, mdm, entraScope);
     }
 
     public IReadOnlyList<AdminDiagnosticSignalDto> QuerySignals(AdminManagementDto management)
@@ -59,8 +59,12 @@ public sealed class WindowsAdminDiagnostics(IRegistryService registry)
         return [smartScreen, smartAppControl, Signature(directory, "Desktop"), Signature(directory, "Executor")];
     }
 
-    internal static string ExternalOrigin(AdminManagementDto management) =>
-        management.Status == "NotDetected" ? "ExternalLocal" : "InstitutionalPossible";
+    internal static string ExternalOrigin(AdminManagementDto management) => management.Status switch
+    {
+        "NotDetected" => "ExternalLocal",
+        "Detected" => "InstitutionalPossible",
+        _ => "Inconclusive"
+    };
 
     private static AdminDiagnosticSignalDto Signature(string? directory, string component)
     {
@@ -87,20 +91,25 @@ public sealed class WindowsAdminDiagnostics(IRegistryService registry)
         catch (Exception ex) when (MissingApi(ex)) { return "Inconclusive"; }
     }
 
-    private static string GetEntraEvidence()
+    private static (string State, string? Scope) GetEntraEvidence()
     {
         try
         {
             int result = NetGetAadJoinInformation(null, out var info);
             try
             {
-                if (result != 0) return "Inconclusive";
-                if (info == IntPtr.Zero) return "NotDetected";
-                return Marshal.ReadInt32(info) is 1 or 2 ? "Detected" : "Inconclusive";
+                if (result != 0) return ("Inconclusive", null);
+                if (info == IntPtr.Zero) return ("NotDetected", null);
+                return Marshal.ReadInt32(info) switch
+                {
+                    1 => ("Detected", "Machine"),
+                    2 => ("Detected", "User"),
+                    _ => ("Inconclusive", null)
+                };
             }
             finally { if (info != IntPtr.Zero) NetFreeAadJoinInformation(info); }
         }
-        catch (Exception ex) when (MissingApi(ex)) { return "Inconclusive"; }
+        catch (Exception ex) when (MissingApi(ex)) { return ("Inconclusive", null); }
     }
 
     private static string GetMdmEvidence()

@@ -59,11 +59,10 @@ namespace WinLab.Executor
             _registry = registry ?? (OperatingSystem.IsWindows() ? new Services.WindowsRegistryService() : new InMemoryRegistryService());
             _hiveManager = hiveManager ?? (OperatingSystem.IsWindows() ? new Services.WindowsUserHiveManager() : new MockUserHiveManager());
             _engine = engine ?? new TransactionEngine(_catalog, _registry, _hiveManager);
-            _expansion = new ExpansionIpc(_registry, _scanner);
+            _expansion = new ExpansionIpc(_registry, _scanner, protectExternal: true);
             var accountStore = new WindowsAdminAccountStore(_registry, ExecutorInstallTrust.IsAdministrationStoreProtected);
             var provisioner = new Services.LocalAccountProvisioner(_registry, accountStore);
-            _administration = new(new AdminAccountService(provisioner, WindowsAdminDiagnostics.QueryManagement),
-                new WindowsAdminDiagnostics(_registry), WindowsAdminDiagnostics.QueryManagement);
+            _administration = AdminIpc.ForWindows(provisioner, _registry, _hiveManager, _scanner);
         }
 
         public async Task<int> RunAsync(CancellationToken cancellationToken = default)
@@ -208,7 +207,8 @@ namespace WinLab.Executor
                     {
                         using var identity = WindowsIdentity.GetCurrent();
                         canWrite = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)
-                            && ExecutorInstallTrust.IsPolicyStoreProtected();
+                            && ExecutorInstallTrust.IsPolicyStoreProtected()
+                            && WindowsAdminDiagnostics.QueryManagement().Status == "NotDetected";
                     }
                     return JsonSerializer.Serialize(await _expansion.HandleAsync(id, action, root,
                         canWrite, ct: cancellationToken));

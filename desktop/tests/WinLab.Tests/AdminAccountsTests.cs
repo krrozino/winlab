@@ -51,7 +51,7 @@ public class AdminAccountsTests
     }
 
     [Fact]
-    public void NewAccountIsRemovedWhenMembershipCannotBeVerified()
+    public void NewAccountRemainsDisabledWhenMembershipCannotBeVerified()
     {
         var store = new AccountStore { ConfirmGroups = false };
         var service = Service(store);
@@ -59,7 +59,7 @@ public class AdminAccountsTests
 
         var preview = service.Preview(plan, true);
         Assert.Throws<InvalidOperationException>(() => service.Apply(plan, preview.Revision, Credential));
-        Assert.Single(store.Accounts);
+        Assert.False(Assert.Single(store.Accounts, account => account.Sid == StudentSid).Enabled);
         Assert.False(store.EnabledNewAccount);
     }
 
@@ -102,6 +102,18 @@ public class AdminAccountsTests
         Assert.Throws<InvalidOperationException>(() => service.Apply(plan, "", Credential));
     }
 
+    [Fact]
+    public void StudentCannotBeDisabledWhenRecoveryIsUnavailable()
+    {
+        var store = new AccountStore();
+        store.Accounts.Add(new("aluno", StudentSid, true, "Student", "StandardUser", false, [AdminAccountService.UsersGroupSid]));
+        var service = Service(store);
+        var plan = new AdminAccountPlan("SetEnabled", Sid: StudentSid, Enabled: false);
+
+        Assert.False(service.Preview(plan, true).CanApply);
+        Assert.True(store.Accounts[1].Enabled);
+    }
+
     private static AdminAccountService Service(AccountStore store) => new(store, () => Standalone);
 
     private sealed class AccountStore : IAdminAccountStore, IAdminAccountWriter
@@ -135,7 +147,10 @@ public class AdminAccountsTests
             Update(account, old => old with { Enabled = enabled });
         }
 
-        public void RemoveCreatedAccount(AdminAccountDto account) => Accounts.RemoveAll(x => x.Sid == account.Sid);
+        public void SetStudentEnabled(AdminAccountDto account, bool enabled) => SetEnabled(account, enabled);
+
+        public void QuarantineCreatedAccount(AdminAccountDto account) =>
+            Update(account, old => old with { Enabled = false, Role = "Unmanaged", Protected = true });
         public bool VerifyLocalLogon(AdminAccountDto account, string password) => CanLogOn;
         public void RecordRecovery(string sid)
         {

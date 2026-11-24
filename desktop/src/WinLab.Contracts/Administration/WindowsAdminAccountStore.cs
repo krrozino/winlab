@@ -47,7 +47,7 @@ public sealed class WindowsAdminAccountStore(IRegistryService registry, Func<boo
             string? registered = trusted && sid != null
                 ? registry.GetValue(RegistryHiveType.LocalMachine, RegistryPath, sid) as string : null;
             string role = sid != null && sid == recoverySid ? "Recovery" : registered is "Student" or "Superadmin" ? registered : "Unmanaged";
-            bool protectedAccount = privilege != "StandardUser" || role != "Student" || sid == null ||
+            bool protectedAccount = privilege != "StandardUser" || role is "Superadmin" or "Recovery" || sid == null ||
                 !uint.TryParse(sid[(sid.LastIndexOf('-') + 1)..], out var rid) || rid < 1000;
             accounts.Add(new(user.Name, sid, user.Enabled, role, privilege, protectedAccount, direct));
         }
