@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WinLab.Contracts;
+using WinLab.Contracts.Expansion;
 
 #pragma warning disable CA1416 // Validated by OperatingSystem.IsWindows() check
 
@@ -33,11 +34,14 @@ namespace WinLab.Desktop.Services
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetNamedPipeClientProcessId(SafeHandle Pipe, out uint ClientProcessId);
 
-        public async Task<IpcResponse<object>> HandleRequestAsync(string rawJson)
+        public Task<IpcResponse<object>> HandleRequestAsync(string rawJson) => HandleRequestAsync(rawJson, freshElevation: false);
+
+        public async Task<IpcResponse<object>> HandleRequestAsync(string rawJson, bool freshElevation)
         {
             await _lock.WaitAsync();
             try
             {
+                if (freshElevation) Disconnect();
                 var connectionResult = await EnsureConnectedAsync();
                 if (!connectionResult.Success)
                 {
@@ -56,6 +60,7 @@ namespace WinLab.Desktop.Services
             }
             finally
             {
+                if (freshElevation) Disconnect();
                 _lock.Release();
             }
         }
@@ -68,6 +73,10 @@ namespace WinLab.Desktop.Services
             }
 
             Disconnect();
+
+            string? exePath = ExecutorInstallTrust.FindInstalledExecutor();
+            if (exePath == null)
+                return (false, ExecutorInstallTrust.ReadOnlyMessage, "TRUSTED_EXECUTOR_REQUIRED");
 
             string pipeId = Guid.NewGuid().ToString("N");
             string pipeName = $"WinLab_Exec_{pipeId}";
@@ -91,18 +100,11 @@ namespace WinLab.Desktop.Services
                     PipeOptions.Asynchronous
                 );
 
-                string exePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "WinLab.Executor.exe");
-                if (!File.Exists(exePath))
-                {
-                    // Fallback para desenvolvimento / testes
-                    string altPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "WinLab.Executor", "WinLab.Executor.exe");
-                    if (File.Exists(altPath)) exePath = altPath;
-                }
-
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = exePath,
                     Arguments = $"--pipe \"{pipeName}\" --token \"{sessionToken}\" --parent-pid {Environment.ProcessId}",
+                    WorkingDirectory = Path.GetDirectoryName(exePath)!,
                     UseShellExecute = true,
                     Verb = OperatingSystem.IsWindows() ? "runas" : string.Empty,
                     WindowStyle = ProcessWindowStyle.Hidden,
@@ -136,17 +138,11 @@ namespace WinLab.Desktop.Services
 
                 await _serverStream.WaitForConnectionAsync(linkedCts.Token);
 
-                // Mutual PID check via kernel API on Windows
-                if (OperatingSystem.IsWindows())
+                if (!GetNamedPipeClientProcessId(_serverStream.SafePipeHandle, out uint clientPid) ||
+                    clientPid != (uint)_executorProcess.Id)
                 {
-                    if (GetNamedPipeClientProcessId(_serverStream.SafePipeHandle, out uint clientPid))
-                    {
-                        if (clientPid != (uint)_executorProcess.Id)
-                        {
-                            Disconnect();
-                            return (false, $"Incompatibilidade de PID no canal nomeado (esperado: {_executorProcess.Id}, recebido: {clientPid}). Abortando por segurança.", "AUTH_FAILED_PID_MISMATCH");
-                        }
-                    }
+                    Disconnect();
+                    return (false, "Não foi possível autenticar o PID do executor.", "AUTH_FAILED_PID_MISMATCH");
                 }
 
                 // Handshake authentication

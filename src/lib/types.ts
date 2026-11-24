@@ -45,6 +45,8 @@ export type Config = {
   blockChromeNewProfiles: boolean;
   blockChromeIncognito: boolean;
   blockChromePasswordManager: boolean;
+  chromeAllowedExtensionIds?: string[];
+  edgeAllowedExtensionIds?: string[];
 
   browserUrlMode: BrowserUrlMode;
   blockedUrls: string[];

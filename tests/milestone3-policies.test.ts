@@ -5,22 +5,29 @@ import { IPC_CONSTANTS, IpcEnvelope } from "../src/desktop/contracts";
 import { MockDesktopAgent } from "../src/desktop/mock-agent";
 import { MILESTONE_3_POLICIES, getPolicyDefinition } from "../src/lib/policies";
 
-test("Milestone 3 Policy Catalog defines exactly 5 core policies with full metadata", () => {
-  assert.equal(MILESTONE_3_POLICIES.length, 5);
+test("Milestone 3 Policy Catalog defines 12 real reversible policies with full metadata", () => {
+  assert.equal(MILESTONE_3_POLICIES.length, 12);
 
   const expectedIds = [
     "personalization.wallpaper",
     "personalization.sounds",
     "personalization.mouse_pointers",
     "browser.chrome.incognito",
-    "browser.chrome.guest"
+    "browser.chrome.guest",
+    "browser.password_manager",
+    "browser.developer_tools",
+    "system.disable_cmd",
+    "system.disable_regedit",
+    "system.restrict_control_panel",
+    "storage.usb_write_protect",
+    "apps.disable_microsoft_store"
   ];
 
   for (const id of expectedIds) {
     const policy = getPolicyDefinition(id);
     assert.ok(policy, `Policy ${id} must exist in catalog`);
     assert.equal(policy.id, id);
-    assert.equal(policy.riskLevel, "Low");
+    assert.ok(policy.riskLevel === "Low" || policy.riskLevel === "Medium");
     assert.equal(policy.reversible, true);
     assert.ok(policy.name.length > 0);
     assert.ok(policy.description.length > 0);
@@ -69,9 +76,22 @@ test("Milestone 3 Policy Catalog defines exactly 5 core policies with full metad
   assert.ok(guest.counterpartProbe);
   assert.equal(guest.counterpartProbe.valueName, "BrowserGuestModeEnabled");
   assert.equal(guest.counterpartProbe.expectedValue, 0);
+
+  // USB write protect (Machine-scoped)
+  const usb = getPolicyDefinition("storage.usb_write_protect")!;
+  assert.equal(usb.scope, "Machine");
+  assert.equal(usb.primaryProbe.hive, "HKLM");
+  assert.equal(usb.primaryProbe.valueName, "WriteProtect");
+  assert.equal(usb.primaryProbe.expectedValue, 1);
+
+  // DevTools lock (Machine-scoped, Chrome + Edge = 2)
+  const devtools = getPolicyDefinition("browser.developer_tools")!;
+  assert.equal(devtools.scope, "Machine");
+  assert.equal(devtools.primaryProbe.expectedValue, 2);
+  assert.equal(devtools.counterpartProbe?.expectedValue, 2);
 });
 
-test("MockDesktopAgent responds to policy.query_catalog with 5 policies", async () => {
+test("MockDesktopAgent responds to policy.query_catalog with 12 policies", async () => {
   const agent = new MockDesktopAgent();
   const envelope: IpcEnvelope = {
     id: "req-cat-1",
@@ -86,9 +106,11 @@ test("MockDesktopAgent responds to policy.query_catalog with 5 policies", async 
   assert.equal(res.replyToId, "req-cat-1");
 
   const catalog = res.data as any[];
-  assert.equal(catalog.length, 5);
+  assert.equal(catalog.length, 12);
   assert.ok(catalog.some((p) => p.id === "personalization.wallpaper"));
   assert.ok(catalog.some((p) => p.id === "browser.chrome.incognito"));
+  assert.ok(catalog.some((p) => p.id === "storage.usb_write_protect"));
+  assert.ok(catalog.some((p) => p.id === "system.disable_regedit"));
 });
 
 test("MockDesktopAgent responds to policy.query_states with initial NotConfigured states", async () => {
@@ -105,11 +127,11 @@ test("MockDesktopAgent responds to policy.query_states with initial NotConfigure
   assert.equal(res.success, true);
 
   const summary = res.data as any;
-  assert.equal(summary.totalPolicies, 5);
+  assert.equal(summary.totalPolicies, 12);
   assert.equal(summary.appliedCount, 0);
-  assert.equal(summary.notConfiguredCount, 5);
+  assert.equal(summary.notConfiguredCount, 12);
   assert.equal(summary.pendingCount, 0);
-  assert.equal(summary.items.length, 5);
+  assert.equal(summary.items.length, 12);
 });
 
 test("MockDesktopAgent executes apply_transaction and rollback_transaction cycle", async () => {
@@ -153,7 +175,7 @@ test("MockDesktopAgent executes apply_transaction and rollback_transaction cycle
   const statesRes = await agent.handleRequest(queryEnvelope);
   const statesData = statesRes.data as any;
   assert.equal(statesData.appliedCount, 2);
-  assert.equal(statesData.notConfiguredCount, 3);
+  assert.equal(statesData.notConfiguredCount, MILESTONE_3_POLICIES.length - 2);
 
   // 3. Query transaction status
   const statusEnvelope: IpcEnvelope = {
@@ -190,7 +212,7 @@ test("MockDesktopAgent executes apply_transaction and rollback_transaction cycle
   const afterRollbackStates = await agent.handleRequest(queryEnvelope);
   const afterData = afterRollbackStates.data as any;
   assert.equal(afterData.appliedCount, 0);
-  assert.equal(afterData.notConfiguredCount, 5);
+  assert.equal(afterData.notConfiguredCount, MILESTONE_3_POLICIES.length);
 });
 
 test("MockDesktopAgent enforces Administrator Immunity Guard on apply_transaction", async () => {

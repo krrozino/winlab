@@ -18,8 +18,9 @@ import { Config, OperatingMode, PresetId } from "@/lib/types";
 import { DemoBanner } from "@/desktop/DemoBanner";
 import { DiagnosticReport } from "@/desktop/DiagnosticReport";
 import { FirstRunWizard } from "@/desktop/FirstRunWizard";
-import { ControlCenter } from "@/desktop/ControlCenter";
+import { DesktopControlCenter } from "@/desktop/DesktopControlCenter";
 import { ConnectionHandshakeState, MachineDataSession, PreflightSnapshotWithMessage, createProcessingCounter } from "@/desktop/machine-data-session";
+import "@/desktop/control-center.css";
 
 interface IpcLogEntry {
   id: string;
@@ -45,6 +46,7 @@ export default function DesktopPage() {
   const [inventory, setInventory] = useState<MachineInventoryDto | null>(null);
   const [policySummary, setPolicySummary] = useState<PolicyStateSummaryDto | null>(null);
   const [preflightData, setPreflightData] = useState<PreflightSnapshotWithMessage | null>(null);
+  const [selectedUserSid, setSelectedUserSid] = useState<string | null>(null);
 
   // Estado da configuração ativa
   const [config, setConfig] = useState<Config>(defaultConfig);
@@ -122,7 +124,8 @@ export default function DesktopPage() {
       onPolicySummary: setPolicySummary,
       onPreflight: setPreflightData,
       onScanError: setScanError,
-      onScanning: setIsScanning
+      onScanning: setIsScanning,
+      onSelectedUserSidChange: setSelectedUserSid
     });
     sessionRef.current = session;
     // No executável nativo, o computador real é o padrão. No navegador, mantém a demonstração.
@@ -214,10 +217,18 @@ export default function DesktopPage() {
 
   if (!showAdvanced) {
     return (
-      <ControlCenter
+      <DesktopControlCenter
         mode={mode}
         native={isNativeWebView2}
         inventory={inventory}
+        policySummary={policySummary}
+        policyStates={policySummary?.items || null}
+        preflightData={preflightData}
+        selectedUserSid={selectedUserSid}
+        onSelectUser={(sid) => sessionRef.current?.queryPoliciesForUser(sid)}
+        onQueryOfflineProfile={(sid) =>
+          sessionRef.current?.queryPoliciesForUser(sid, { allowElevation: true })
+        }
         config={config}
         setConfig={setConfig}
         scanError={scanError}

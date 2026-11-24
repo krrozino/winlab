@@ -26,5 +26,10 @@ namespace WinLab.Contracts.RegistryServices
         bool IsUserLoggedOn(string? userSid);
         string? GetUserProfilePath(string? userSid);
         bool IsUserAdministrator(string? userSid);
+
+        AccountPrivilegeClassification ClassifyAccountPrivilege(string? userSidOrName)
+            => IsUserAdministrator(userSidOrName)
+                ? AccountPrivilegeClassification.Administrator
+                : AccountPrivilegeClassification.StandardUser;
     }
 }

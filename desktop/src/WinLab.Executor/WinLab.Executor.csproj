@@ -7,7 +7,10 @@
     <LangVersion>12</LangVersion>
     <RootNamespace>WinLab.Executor</RootNamespace>
     <AssemblyName>WinLab.Executor</AssemblyName>
+    <Version>0.9.2</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <StartupHookSupport>false</StartupHookSupport>
+    <DebuggerSupport>false</DebuggerSupport>
   </PropertyGroup>
 
   <ItemGroup>

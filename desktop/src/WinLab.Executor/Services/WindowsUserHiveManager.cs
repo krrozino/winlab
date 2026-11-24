@@ -4,7 +4,9 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using Microsoft.Win32;
+using WinLab.Contracts;
 using WinLab.Contracts.RegistryServices;
+using WinLab.Contracts.Scanning;
 
 #pragma warning disable CA1416 // Validated by OperatingSystem.IsWindows() check
 
@@ -51,6 +53,12 @@ namespace WinLab.Executor.Services
     public class WindowsUserHiveManager : IUserHiveManager
     {
         private static readonly IntPtr HKEY_USERS = new(unchecked((int)0x80000003));
+        private readonly Func<string, AccountPrivilegeClassification>? _privilegeProbe;
+
+        public WindowsUserHiveManager(Func<string, AccountPrivilegeClassification>? privilegeProbe = null)
+        {
+            _privilegeProbe = privilegeProbe;
+        }
 
         [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         private static extern int RegLoadKey(IntPtr hKey, string lpSubKey, string lpFile);
@@ -99,38 +107,14 @@ namespace WinLab.Executor.Services
             return null;
         }
 
+        public AccountPrivilegeClassification ClassifyAccountPrivilege(string? userSidOrName)
+        {
+            return WindowsAccountPrivilegeHelper.ClassifyAccountPrivilege(userSidOrName, _privilegeProbe);
+        }
+
         public bool IsUserAdministrator(string? userSid)
         {
-            if (string.IsNullOrWhiteSpace(userSid)) return false;
-
-            string trimmed = userSid.Trim();
-
-            // Inviolable checks
-            if (string.Equals(trimmed, "S-1-5-32-544", StringComparison.OrdinalIgnoreCase)) return true;
-            if (trimmed.EndsWith("-500", StringComparison.OrdinalIgnoreCase)) return true;
-            if (string.Equals(trimmed, "Administrador", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(trimmed, "Administrator", StringComparison.OrdinalIgnoreCase)) return true;
-
-            if (!OperatingSystem.IsWindows()) return false;
-
-            try
-            {
-                var sid = new SecurityIdentifier(trimmed);
-                // Check if account resolves to an administrator
-                var adminSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-                if (sid.Equals(adminSid)) return true;
-
-                // Check local admin membership
-                var account = sid.Translate(typeof(NTAccount));
-                using var identity = new WindowsIdentity(account.Value);
-                var principal = new WindowsPrincipal(identity);
-                return principal.IsInRole(WindowsBuiltInRole.Administrator);
-            }
-            catch
-            {
-                // If translation fails, safely check well-known patterns
-                return trimmed.EndsWith("-500", StringComparison.OrdinalIgnoreCase);
-            }
+            return ClassifyAccountPrivilege(userSid) == AccountPrivilegeClassification.Administrator;
         }
 
         public IUserHiveScope OpenUserHive(string? userSid)

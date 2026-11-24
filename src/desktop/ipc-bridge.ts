@@ -1,8 +1,10 @@
 import {
   DesktopIpcTransport,
+  IPC_CONSTANTS,
   IpcEnvelope,
   IpcResponse
 } from "./contracts";
+import { isMutationIpcAction } from "./admin-contracts-compat";
 import { MockDesktopAgent } from "./mock-agent";
 
 /**
@@ -68,8 +70,21 @@ export class WebViewIpcBridge implements DesktopIpcTransport {
     }
 
     const messageId = envelope.id || crypto.randomUUID();
+    const extendedQueryActions: ReadonlySet<string> = new Set([
+      IPC_CONSTANTS.ACTION_EXPANSION_QUERY,
+      IPC_CONSTANTS.ACTION_EXPANSION_PREVIEW,
+      IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_QUERY,
+      IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_PREVIEW,
+      IPC_CONSTANTS.ACTION_ADMIN_DIAGNOSTICS_QUERY,
+      IPC_CONSTANTS.ACTION_ADMIN_PERMISSIONS_QUERY,
+      IPC_CONSTANTS.ACTION_ADMIN_PERMISSIONS_PREVIEW
+    ]);
+    const isLongMutation = isMutationIpcAction(envelope.action);
+    const isExtendedQuery = extendedQueryActions.has(envelope.action);
+    const timeoutMs = Math.max(this.timeoutMs, isLongMutation ? 150_000 : isExtendedQuery ? 30_000 : 0);
     const finalEnvelope: IpcEnvelope = {
       ...envelope,
+      type: isLongMutation ? "command" : envelope.type,
       id: messageId
     };
 
@@ -81,11 +96,11 @@ export class WebViewIpcBridge implements DesktopIpcTransport {
             id: crypto.randomUUID(),
             replyToId: messageId,
             success: false,
-            error: `Tempo limite esgotado (${this.timeoutMs}ms) aguardando resposta da ação '${envelope.action}' do host C#.`,
+            error: `Tempo limite esgotado (${timeoutMs}ms) aguardando resposta da ação '${envelope.action}' do host C#.`,
             errorCode: "IPC_TIMEOUT"
           });
         }
-      }, this.timeoutMs);
+      }, timeoutMs);
 
       this.pendingRequests.set(messageId, { resolve, reject, timer });
 

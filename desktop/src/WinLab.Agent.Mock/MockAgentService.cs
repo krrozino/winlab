@@ -1,20 +1,50 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using WinLab.Contracts;
+using WinLab.Contracts.Policies;
+using WinLab.Contracts.RegistryServices;
+using WinLab.Contracts.Transactions;
 
 namespace WinLab.Agent.Mock
 {
     /// <summary>
     /// Serviço de desenvolvimento e testes simulando o agente Windows em memória.
-    /// Opera com inventário somente leitura, catálogo de políticas e recusa operações privilegiadas.
-    /// Não instala serviços nem altera o registro ou contas do sistema operacional.
+    /// Opera com inventário em memória, catálogo de políticas e motor transacional isolado em memória.
+    /// Não instala serviços nem altera o registro ou contas do sistema operacional real.
     /// </summary>
     public class MockAgentService : IAgentService
     {
         public bool IsRunning { get; private set; } = true;
         public string ExecutionMode => "Unprivileged Mock (In-Memory Development)";
+
+        private readonly PolicyCatalog _catalog = new PolicyCatalog();
+        private readonly InMemoryRegistryService _registry = new InMemoryRegistryService();
+        private readonly MockUserHiveManager _hiveManager = new MockUserHiveManager();
+        private readonly TransactionEngine _engine;
+        private readonly List<LocalUserDto> _localUsers = new List<LocalUserDto>
+        {
+            new LocalUserDto { Name = "Administrador", Enabled = true, IsAdmin = true, Sid = "S-1-5-21-1000-500" },
+            new LocalUserDto { Name = "AdminLocal", Enabled = true, IsAdmin = true, Sid = "S-1-5-21-1000-1001" },
+            new LocalUserDto { Name = "Aluno", Enabled = true, IsAdmin = false, Sid = "S-1-5-21-1000-1002" },
+            new LocalUserDto { Name = "TurmaNoite", Enabled = true, IsAdmin = false, Sid = "S-1-5-21-1000-1003" }
+        };
+        private int _nextRid = 1004;
+
+        public MockAgentService()
+        {
+            _hiveManager.AddAdministratorSid("S-1-5-21-1000-500");
+            _hiveManager.AddAdministratorSid("S-1-5-21-1000-1001");
+            _hiveManager.SetUserLoggedOn("S-1-5-21-1000-1002", true);
+            _hiveManager.SetProfilePath("S-1-5-21-1000-1002", @"C:\Users\Aluno");
+            _hiveManager.SetProfilePath("S-1-5-21-1000-1003", @"C:\Users\TurmaNoite");
+
+            string mockTxDir = Path.Combine(Path.GetTempPath(), $"WinLab_MockTransactions_{Guid.NewGuid():N}");
+            _engine = new TransactionEngine(_catalog, _registry, _hiveManager, mockTxDir);
+        }
 
         public async Task<IpcResponse<object>> HandleRequestAsync(string rawJson)
         {
@@ -50,50 +80,242 @@ namespace WinLab.Agent.Mock
                 string action = root.GetProperty("action").GetString()!;
 
                 switch (action)
-            {
-                case IpcConstants.ActionQueryInventory:
-                    return IpcResponse<object>.Ok(id, GetMockInventory());
+                {
+                    case IpcConstants.ActionQueryInventory:
+                        return IpcResponse<object>.Ok(id, GetMockInventory());
 
-                case IpcConstants.ActionQueryPolicyState:
-                    return IpcResponse<object>.Ok(id, GetMockPolicyState());
+                    case IpcConstants.ActionQueryPolicyState:
+                        return IpcResponse<object>.Ok(id, GetMockPolicyState());
 
-                case IpcConstants.ActionQueryPreflight:
-                    return IpcResponse<object>.Ok(id, GetMockPreflight());
+                    case IpcConstants.ActionQueryPolicyCatalog:
+                        return IpcResponse<object>.Ok(id, _catalog.GetCatalogDefinitions());
 
-                case IpcConstants.ActionListPresets:
-                    return IpcResponse<object>.Ok(id, GetMockPresets());
-
-                case IpcConstants.ActionPreviewPolicyDiff:
-                    return IpcResponse<object>.Ok(id, new
+                    case IpcConstants.ActionQueryPolicyStates:
                     {
-                        previewOnly = true,
-                        willModifyRegistry = false,
-                        willModifyAppLocker = false,
-                        description = "Simulação segura de diff. Nenhuma alteração aplicada ao sistema nesta etapa."
-                    });
+                        string? targetUserSid = null;
+                        if (root.TryGetProperty("payload", out var payloadProp) &&
+                            payloadProp.ValueKind == JsonValueKind.Object &&
+                            payloadProp.TryGetProperty("targetUserSid", out var sidProp) &&
+                            sidProp.ValueKind == JsonValueKind.String)
+                        {
+                            targetUserSid = sidProp.GetString();
+                        }
 
-                case IpcConstants.ActionCreateBaseline:
-                    return IpcResponse<object>.Ok(id, new
+                        var outcome = PolicyQueryCoordinator.QueryStates(
+                            _catalog,
+                            _registry,
+                            _hiveManager,
+                            targetUserSid,
+                            _localUsers);
+
+                        if (!outcome.Success)
+                        {
+                            return IpcResponse<object>.Fail(id, outcome.Error!, outcome.ErrorCode!);
+                        }
+
+                        return IpcResponse<object>.Ok(id, outcome.Summary!);
+                    }
+
+                    case IpcConstants.ActionApplyTransaction:
                     {
-                        transactionId = Guid.NewGuid().ToString(),
-                        timestamp = DateTime.UtcNow.ToString("o"),
-                        registryBaselinePath = @"C:\ProgramData\WinLab\Backups\Registry-Baseline-Mock",
-                        appLockerBaselinePath = @"C:\ProgramData\WinLab\Backups\AppLocker-Baseline-Mock.xml",
-                        success = true,
-                        message = "Baseline inicial capturado e registrado com sucesso em ambiente de simulação."
-                    });
+                        if (!root.TryGetProperty("payload", out var payloadProp) || payloadProp.ValueKind != JsonValueKind.Object)
+                        {
+                            return IpcResponse<object>.Fail(id, "Payload de transação inválido.", "INVALID_TRANSACTION_PAYLOAD");
+                        }
 
-                case IpcConstants.ActionGetEnvironment:
-                    return IpcResponse<object>.Ok(id, new
+                        var req = JsonSerializer.Deserialize<ApplyTransactionRequestDto>(payloadProp.GetRawText());
+                        if (req == null)
+                        {
+                            return IpcResponse<object>.Fail(id, "Payload de transação nulo.", "INVALID_TRANSACTION_PAYLOAD");
+                        }
+
+                        var res = await _engine.ApplyTransactionAsync(req);
+                        return res.Success
+                            ? IpcResponse<object>.Ok(id, res)
+                            : IpcResponse<object>.Fail(id, res.Message, "TRANSACTION_ROLLED_BACK", res);
+                    }
+
+                    case IpcConstants.ActionRollbackTransaction:
                     {
-                        environment = "MockAgent",
-                        isElevated = false,
-                        platform = "Simulated Windows"
-                    });
+                        if (!root.TryGetProperty("payload", out var payloadProp) || payloadProp.ValueKind != JsonValueKind.Object)
+                        {
+                            return IpcResponse<object>.Fail(id, "Payload de reversão inválido.", "INVALID_ROLLBACK_PAYLOAD");
+                        }
 
-                default:
-                    return IpcResponse<object>.Fail(id, $"Unhandled action: {action}", "UNHANDLED_ACTION");
-            }
+                        var req = JsonSerializer.Deserialize<RollbackTransactionRequestDto>(payloadProp.GetRawText());
+                        if (req == null || string.IsNullOrWhiteSpace(req.TransactionId))
+                        {
+                            return IpcResponse<object>.Fail(id, "TransactionId obrigatório.", "INVALID_TRANSACTION_ID");
+                        }
+
+                        var res = await _engine.RollbackTransactionAsync(req);
+                        return res.Success
+                            ? IpcResponse<object>.Ok(id, res)
+                            : IpcResponse<object>.Fail(id, res.Error ?? res.Message, "ROLLBACK_FAILED", res);
+                    }
+
+                    case IpcConstants.ActionQueryTransactionStatus:
+                    {
+                        string? txId = null;
+                        if (root.TryGetProperty("payload", out var payloadProp) &&
+                            payloadProp.ValueKind == JsonValueKind.Object &&
+                            payloadProp.TryGetProperty("transactionId", out var txProp) &&
+                            txProp.ValueKind == JsonValueKind.String)
+                        {
+                            txId = txProp.GetString();
+                        }
+
+                        var tx = await _engine.GetTransactionAsync(txId ?? string.Empty);
+                        return tx != null
+                            ? IpcResponse<object>.Ok(id, tx)
+                            : IpcResponse<object>.Fail(id, "Transação não encontrada.", "TRANSACTION_NOT_FOUND");
+                    }
+
+                    case IpcConstants.ActionCreateLocalAccount:
+                    {
+                        if (!root.TryGetProperty("payload", out var accountPayload) ||
+                            accountPayload.ValueKind != JsonValueKind.Object ||
+                            !accountPayload.TryGetProperty("name", out var nameElement) ||
+                            nameElement.ValueKind != JsonValueKind.String ||
+                            !accountPayload.TryGetProperty("password", out var passwordElement) ||
+                            passwordElement.ValueKind != JsonValueKind.String ||
+                            !accountPayload.TryGetProperty("isAdmin", out var roleElement) ||
+                            (roleElement.ValueKind != JsonValueKind.True && roleElement.ValueKind != JsonValueKind.False))
+                        {
+                            return IpcResponse<object>.Fail(id, "Informe nome, senha e tipo de conta válidos.", "INVALID_ACCOUNT_REQUEST");
+                        }
+
+                        string name = (nameElement.GetString() ?? string.Empty).Trim();
+                        string password = passwordElement.GetString() ?? string.Empty;
+                        bool isAdmin = roleElement.GetBoolean();
+
+                        if (string.IsNullOrWhiteSpace(name) || name.Length > 20)
+                        {
+                            return IpcResponse<object>.Fail(id, "O nome da conta deve ter entre 1 e 20 caracteres.", "ACCOUNT_CREATE_FAILED");
+                        }
+
+                        if (password.Length < 8)
+                        {
+                            return IpcResponse<object>.Fail(id, "Use uma senha com pelo menos 8 caracteres.", "ACCOUNT_CREATE_FAILED");
+                        }
+
+                        if (_localUsers.Any(u => string.Equals(u.Name, name, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            return IpcResponse<object>.Fail(id, $"A conta '{name}' já existe no ambiente de demonstração.", "ACCOUNT_CREATE_FAILED");
+                        }
+
+                        // Nunca persiste nem registra a senha em memória após a validação
+                        string newSid = $"S-1-5-21-1000-{_nextRid++}";
+                        _localUsers.Add(new LocalUserDto
+                        {
+                            Name = name,
+                            Enabled = true,
+                            IsAdmin = isAdmin,
+                            Sid = newSid
+                        });
+                        if (isAdmin)
+                        {
+                            _hiveManager.AddAdministratorSid(newSid);
+                        }
+                        else
+                        {
+                            _hiveManager.SetUserUninitialized(newSid);
+                        }
+
+                        return IpcResponse<object>.Ok(id, new
+                        {
+                            name,
+                            sid = newSid,
+                            role = isAdmin ? "Administrator" : "Standard",
+                            message = $"Conta simulada '{name}' criada em memória (nenhuma alteração feita no Windows real)."
+                        });
+                    }
+
+                    case IpcConstants.ActionValidateConfig:
+                        return IpcResponse<object>.Ok(id, new
+                        {
+                            valid = true,
+                            message = "Configuração validada com sucesso em modo de demonstração."
+                        });
+
+                    case IpcConstants.ActionQueryPreflight:
+                        return IpcResponse<object>.Ok(id, GetMockPreflight());
+
+                    case IpcConstants.ActionListPresets:
+                        return IpcResponse<object>.Ok(id, GetMockPresets());
+
+                    case IpcConstants.ActionPreviewPolicyDiff:
+                        return IpcResponse<object>.Ok(id, new
+                        {
+                            previewOnly = true,
+                            willModifyRegistry = false,
+                            willModifyAppLocker = false,
+                            description = "Simulação segura de diff. Nenhuma alteração aplicada ao sistema nesta etapa."
+                        });
+
+                    case IpcConstants.ActionCreateBaseline:
+                        return IpcResponse<object>.Ok(id, new
+                        {
+                            transactionId = Guid.NewGuid().ToString(),
+                            timestamp = DateTime.UtcNow.ToString("o"),
+                            registryBaselinePath = @"C:\ProgramData\WinLab\Backups\Registry-Baseline-Mock",
+                            appLockerBaselinePath = @"C:\ProgramData\WinLab\Backups\AppLocker-Baseline-Mock.xml",
+                            success = true,
+                            message = "Baseline inicial capturado e registrado com sucesso em ambiente de simulação."
+                        });
+
+                    case IpcConstants.ActionGetEnvironment:
+                        return IpcResponse<object>.Ok(id, new
+                        {
+                            environment = "MockAgent",
+                            isElevated = false,
+                            platform = "Simulated Windows"
+                        });
+
+                    case IpcConstants.ActionQueryUpdateStatus:
+                        return IpcResponse<object>.Ok(id, new UpdateStatusDto
+                        {
+                            CurrentVersion = WinLab.Contracts.Scanning.UpdateChannelInspector.FallbackVersion,
+                            InstallChannel = "Velopack",
+                            AutoUpdateSupported = true,
+                            FeedUrl = "https://github.com/krrozino/winlab",
+                            LastCheckedAt = DateTime.UtcNow.ToString("o"),
+                            LastCheckState = "UpToDate",
+                            PendingVersion = null,
+                            CoexistingLegacyInstallDetected = false,
+                            ChannelSummary = "Simulação: canal auto-atualizável (Velopack) verificado e atualizado."
+                        });
+
+                    case IpcConstants.ActionQueryNetworkShares:
+                        return IpcResponse<object>.Ok(id, new NetworkShareEnvironmentDto
+                        {
+                            ScannedAt = DateTime.UtcNow.ToString("o"),
+                            IsMock = true,
+                            Smb1Enabled = false,
+                            MappedDrives = new List<MappedDriveDto>
+                            {
+                                new MappedDriveDto
+                                {
+                                    DriveLetter = "M",
+                                    RemotePath = @"\\SERVIDOR-LAB\Alunos",
+                                    Persistent = true,
+                                    Status = "Simulada (Modo Demonstração)"
+                                }
+                            },
+                            LocalShares = new List<LocalSmbShareDto>
+                            {
+                                new LocalSmbShareDto
+                                {
+                                    Name = "MaterialAula",
+                                    LocalPath = @"C:\WinLabShare\MaterialAula",
+                                    Remark = "Material didático somente leitura (Simulação)"
+                                }
+                            }
+                        });
+
+                    default:
+                        return IpcResponse<object>.Fail(id, $"Unhandled action: {action}", "UNHANDLED_ACTION");
+                }
             }
         }
 
@@ -131,12 +353,13 @@ namespace WinLab.Agent.Mock
                     new InstalledAppDto { DisplayName = "Microsoft 365 Apps for enterprise", DisplayVersion = "16.0.17932.20162", Publisher = "Microsoft Corporation" },
                     new InstalledAppDto { DisplayName = "Microsoft Power BI Desktop", DisplayVersion = "2.138.1004.0", Publisher = "Microsoft Corporation" }
                 },
-                LocalUsers = new List<LocalUserDto>
+                LocalUsers = _localUsers.Select(u => new LocalUserDto
                 {
-                    new LocalUserDto { Name = "Administrador", Enabled = true, IsAdmin = true, Sid = "S-1-5-21-1000-500" },
-                    new LocalUserDto { Name = "AdminLocal", Enabled = true, IsAdmin = true, Sid = "S-1-5-21-1000-1001" },
-                    new LocalUserDto { Name = "Aluno", Enabled = true, IsAdmin = false, Sid = "S-1-5-21-1000-1002" }
-                },
+                    Name = u.Name,
+                    Enabled = u.Enabled,
+                    IsAdmin = u.IsAdmin,
+                    Sid = u.Sid
+                }).ToList(),
                 Disks = new List<DiskInfoDto>
                 {
                     new DiskInfoDto { Device = "C:", TotalGb = 237.5, FreeGb = 142.1, FreePercent = 59.8 }

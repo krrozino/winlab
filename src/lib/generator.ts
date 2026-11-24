@@ -1,42 +1,113 @@
 import { APP_CATALOG } from "./apps";
+import { isBrowserExtensionId, normalizeBrowserSiteFilter } from "./browser-policy";
 import { serializeConfig } from "./config-io";
+import { psArray, psBool, psBoundedInt, psCommentText, psEnum, psString, withPsUtf8Bom } from "./powershell";
+import { customExecutablePathError } from "./security";
 import { Config } from "./types";
 
-function psBool(value: boolean) {
-  return value ? "$true" : "$false";
-}
-
-function psString(value: string) {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-function psArray(values: string[]) {
-  if (!values.length) return "@()";
-  return `@(
-${values.map((value) => `    ${psString(value)}`).join(",\n")}
-)`;
-}
-
 function getAllowedPaths(config: Config) {
-  return [
+  const paths = [
     ...config.allowedApps.flatMap((app) => APP_CATALOG[app].paths),
-    ...config.customAllowedPaths.map((path) => path.trim()).filter(Boolean)
+    ...config.customAllowedPaths.map((path) => path.trim()).filter((path) => !customExecutablePathError(path))
   ];
+  // AppLocker uses one variable for both Program Files trees.
+  return [...new Set(paths.map((path) => path.replace(/^%programfiles\(x86\)%/i, "%PROGRAMFILES%")))];
 }
+
+type ScriptOptions = { confirmApply?: boolean };
+
+function confirmStandaloneApply(action: string, indent: string): string {
+  return `${indent}if ((Read-Host "${action} Digite S para confirmar") -ne "S") {
+${indent}    Write-Host "Operação cancelada. Nenhuma alteração foi aplicada."
+${indent}    return
+${indent}}
+
+`;
+}
+
+const clearBrowserPolicies = `function Clear-WinLabBrowserPolicies {
+    param([string]$Sid)
+
+    $chrome = "Registry::HKEY_USERS\\$Sid\\Software\\Policies\\Google\\Chrome"
+    $edge = "Registry::HKEY_USERS\\$Sid\\Software\\Policies\\Microsoft\\Edge"
+    Remove-ItemProperty -Path $chrome -Name BrowserAddPersonEnabled, IncognitoModeAvailability -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $edge -Name BrowserAddProfileEnabled, InPrivateModeAvailability -ErrorAction SilentlyContinue
+    foreach ($base in @($chrome, $edge)) {
+        Remove-ItemProperty -Path $base -Name BrowserGuestModeEnabled, PasswordManagerEnabled -ErrorAction SilentlyContinue
+        foreach ($name in @("ExtensionInstallBlocklist", "ExtensionInstallAllowlist", "URLBlocklist", "URLAllowlist")) {
+            Remove-Item -Path (Join-Path $base $name) -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+`;
+
+const appLockerCoexistence = `function Test-WinLabDesktopAppLockerState {
+    $machine = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $key = $machine.OpenSubKey("SOFTWARE\\WinLab\\PolicyExpansion")
+        if (-not $key) { return $false }
+        try { return $key.GetValueNames() -contains "apps" }
+        finally { $key.Dispose() }
+    }
+    finally { $machine.Dispose() }
+}
+
+function Enter-WinLabAppLockerOperation {
+    $gate = [Threading.Semaphore]::new(1, 1, "Global\\WinLab.PolicyExpansion")
+    if (-not $gate.WaitOne(0)) {
+        $gate.Dispose()
+        throw "Outra operação de política WinLab está em andamento. Tente novamente após sua conclusão."
+    }
+
+    try {
+        if (Test-WinLabDesktopAppLockerState) {
+            throw "O Desktop gerencia o AppLocker ou possui uma restauração pendente. Restaure a linha de base no Desktop antes de usar este pacote."
+        }
+        return $gate
+    }
+    catch {
+        [void]$gate.Release()
+        $gate.Dispose()
+        throw
+    }
+}
+`;
+
+const machinePolicyNotice = `function Write-WinLabMachinePolicyNotice {
+    $roots = @(
+        "Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Google\\Chrome",
+        "Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Edge",
+        "Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\RemovableStorageDevices"
+    )
+    foreach ($root in $roots) {
+        if (Test-Path -LiteralPath $root) {
+            $key = Get-Item -LiteralPath $root
+            try {
+                if ($key.ValueCount -gt 0 -or $key.SubKeyCount -gt 0) {
+                    Write-Warning "Política de máquina encontrada em $root. Ela pode prevalecer sobre o perfil por usuário. Confira a política efetiva no navegador ou no Windows."
+                }
+            }
+            finally { $key.Dispose() }
+        }
+    }
+}
+`;
 
 function commonHeader(config: Config, title: string, parameterBlock = "") {
   const renderedParameters = parameterBlock ? `${parameterBlock}\n\n` : "";
 
-  return `#requires -version 5.1
+  return withPsUtf8Bom(`#requires -version 5.1
 <#
 ${title}
 Gerado por WinLab Configurator
-Perfil: ${config.profileName}
+Perfil: ${psCommentText(config.profileName)}
 
 Teste primeiro em uma máquina piloto.
 Nenhuma senha é armazenada neste arquivo.
 #>
 ${renderedParameters}$ErrorActionPreference = "Stop"
+$ProfileName = ${psString(config.profileName)}
 $Aluno = ${psString(config.studentUser)}
 $Admin = ${psString(config.adminUser)}
 
@@ -143,15 +214,19 @@ function Invoke-WithUserHive {
         }
     }
 }
-`;
+`);
 }
 
-export function generateSetupScript(config: Config): string {
+export function generateSetupScript(config: Config, options: ScriptOptions = {}): string {
   const allowedPaths = getAllowedPaths(config);
-  const enforcement = config.enforcementMode;
+  const enforcement = psEnum(config.enforcementMode, ["AuditOnly", "Enabled"] as const, "enforcementMode");
+  const browserUrlMode = psEnum(
+    config.browserUrlMode,
+    ["Unrestricted", "BlockList", "AllowListOnly"] as const,
+    "browserUrlMode"
+  );
 
   return `${commonHeader(config, "SETUP", `[CmdletBinding()]\nparam([switch]$Apply, [switch]$UserPoliciesOnly)`)}
-$ProfileName = ${psString(config.profileName)}
 $CreateAccounts = ${psBool(config.createAccounts)}
 $BlockInstallers = ${psBool(config.blockInstallers)}
 $BlockStoreApps = ${psBool(config.blockStoreApps)}
@@ -165,10 +240,12 @@ $BlockChromeGuest = ${psBool(config.blockChromeGuest)}
 $BlockChromeNewProfiles = ${psBool(config.blockChromeNewProfiles)}
 $BlockChromeIncognito = ${psBool(config.blockChromeIncognito)}
 $BlockChromePasswordManager = ${psBool(config.blockChromePasswordManager)}
+$ChromeAllowedExtensionIds = ${psArray([...new Set((config.chromeAllowedExtensionIds ?? []).filter(isBrowserExtensionId))])}
+$EdgeAllowedExtensionIds = ${psArray([...new Set((config.edgeAllowedExtensionIds ?? []).filter(isBrowserExtensionId))])}
 
-$BrowserUrlMode = "${config.browserUrlMode}"
-$BlockedUrls = ${psArray(config.blockedUrls)}
-$AllowedUrls = ${psArray(config.allowedUrls)}
+$BrowserUrlMode = "${browserUrlMode}"
+$BlockedUrls = ${psArray([...new Set(config.blockedUrls.map(normalizeBrowserSiteFilter))])}
+$AllowedUrls = ${psArray([...new Set(config.allowedUrls.map(normalizeBrowserSiteFilter))])}
 
 $BlockUsbRead = ${psBool(config.blockUsbRead)}
 $BlockUsbWrite = ${psBool(config.blockUsbWrite)}
@@ -341,67 +418,41 @@ function Set-PolicyStringList {
     }
 }
 
-function Set-StudentChromePolicies {
-    Invoke-WithUserHive -UserName $Aluno -Action {
-        param($sid)
-        $base = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"
-        New-Item -Path $base -Force | Out-Null
-
-        if ($BlockChromeGuest) {
-            New-ItemProperty -Path $base -Name BrowserGuestModeEnabled -PropertyType DWord -Value 0 -Force | Out-Null
-        }
-
-        if ($BlockChromeNewProfiles) {
-            New-ItemProperty -Path $base -Name BrowserAddPersonEnabled -PropertyType DWord -Value 0 -Force | Out-Null
-        }
-
-        if ($BlockChromeIncognito) {
-            New-ItemProperty -Path $base -Name IncognitoModeAvailability -PropertyType DWord -Value 1 -Force | Out-Null
-        }
-
-        if ($BlockChromePasswordManager) {
-            New-ItemProperty -Path $base -Name PasswordManagerEnabled -PropertyType DWord -Value 0 -Force | Out-Null
-        }
-
-        if ($BlockChromeExtensions) {
-            $extensions = Join-Path $base "ExtensionInstallBlocklist"
-            New-Item -Path $extensions -Force | Out-Null
-            New-ItemProperty -Path $extensions -Name "1" -PropertyType String -Value "*" -Force | Out-Null
-        }
-
-        if ($BrowserUrlMode -eq "Unrestricted") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @()
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values @()
-        }
-        elseif ($BrowserUrlMode -eq "BlockList") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $BlockedUrls
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
-        }
-        elseif ($BrowserUrlMode -eq "AllowListOnly") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @("*")
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
-        }
-    }
-}
-
-function Set-StudentEdgePolicies {
+${clearBrowserPolicies}
+function Set-StudentBrowserPolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
 
-        $base = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
-        New-Item -Path $base -Force | Out-Null
+        Clear-WinLabBrowserPolicies -Sid $sid
+        $browsers = @(
+            @{ Key = "Google\\Chrome"; Profile = "BrowserAddPersonEnabled"; Private = "IncognitoModeAvailability"; Extensions = $ChromeAllowedExtensionIds },
+            @{ Key = "Microsoft\\Edge"; Profile = "BrowserAddProfileEnabled"; Private = "InPrivateModeAvailability"; Extensions = $EdgeAllowedExtensionIds }
+        )
+        foreach ($browser in $browsers) {
+            $base = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\$($browser.Key)"
+            New-Item -Path $base -Force | Out-Null
 
-        if ($BrowserUrlMode -eq "Unrestricted") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @()
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values @()
-        }
-        elseif ($BrowserUrlMode -eq "BlockList") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $BlockedUrls
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
-        }
-        elseif ($BrowserUrlMode -eq "AllowListOnly") {
-            Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values @("*")
-            Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+            if ($BlockChromeGuest) {
+                New-ItemProperty -Path $base -Name BrowserGuestModeEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+            }
+            if ($BlockChromeNewProfiles) {
+                New-ItemProperty -Path $base -Name $browser.Profile -PropertyType DWord -Value 0 -Force | Out-Null
+            }
+            if ($BlockChromeIncognito) {
+                New-ItemProperty -Path $base -Name $browser.Private -PropertyType DWord -Value 1 -Force | Out-Null
+            }
+            if ($BlockChromePasswordManager) {
+                New-ItemProperty -Path $base -Name PasswordManagerEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+            }
+            if ($BlockChromeExtensions) {
+                Set-PolicyStringList -BasePath $base -Name "ExtensionInstallBlocklist" -Values @("*")
+                Set-PolicyStringList -BasePath $base -Name "ExtensionInstallAllowlist" -Values $browser.Extensions
+            }
+            if ($BrowserUrlMode -ne "Unrestricted") {
+                $sitesToBlock = if ($BrowserUrlMode -eq "AllowListOnly") { @("*") } else { $BlockedUrls }
+                Set-PolicyStringList -BasePath $base -Name "URLBlocklist" -Values $sitesToBlock
+                Set-PolicyStringList -BasePath $base -Name "URLAllowlist" -Values $AllowedUrls
+            }
         }
     }
 }
@@ -481,8 +532,7 @@ function Test-StudentProfileReady {
 }
 
 function Apply-StudentPolicies {
-    Set-StudentChromePolicies
-    Set-StudentEdgePolicies
+    Set-StudentBrowserPolicies
     Set-StudentUsbPolicies
     Set-StudentAccountPolicies
     Set-StudentPersonalizationPolicies
@@ -680,18 +730,7 @@ function Remove-StudentWinLabPoliciesForRecovery {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid, $context)
 
-        $chrome = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"
-        Remove-ItemProperty -Path $chrome -Name BrowserGuestModeEnabled -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name BrowserAddPersonEnabled -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name IncognitoModeAvailability -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name PasswordManagerEnabled -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "ExtensionInstallBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
-
-        $edge = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
-        Remove-Item -Path (Join-Path $edge "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $edge "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
+        Clear-WinLabBrowserPolicies -Sid $sid
 
         $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
         Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
@@ -794,22 +833,23 @@ function New-WinLabAppLockerXml {
     if ($BlockCmd) {
         $denyRules += @"
     <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear CMD" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%WINDIR%\\System32\\cmd.exe" /></Conditions>
+      <Conditions><FilePathCondition Path="%SYSTEM32%\\cmd.exe" /></Conditions>
     </FilePathRule>
 "@
     }
 
     if ($BlockPowerShell) {
-        $denyRules += @"
-    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear Windows PowerShell" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%WINDIR%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" /></Conditions>
+        foreach ($path in @(
+            "%SYSTEM32%\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "%SYSTEM32%\\WindowsPowerShell\\v1.0\\powershell_ise.exe",
+            "%PROGRAMFILES%\\PowerShell\\7\\pwsh.exe"
+        )) {
+            $denyRules += @"
+    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear PowerShell: $path" Description="" UserOrGroupSid="$studentSid" Action="Deny">
+      <Conditions><FilePathCondition Path="$path" /></Conditions>
     </FilePathRule>
 "@
-        $denyRules += @"
-    <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear Windows PowerShell 32-bit" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%WINDIR%\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe" /></Conditions>
-    </FilePathRule>
-"@
+        }
     }
 
     if ($BlockUsbExecute) {
@@ -826,15 +866,34 @@ function New-WinLabAppLockerXml {
     }
 
     if ($BlockRegedit) {
-        $denyRules += @"
+        foreach ($path in @("%WINDIR%\\regedit.exe", "%SYSTEM32%\\regedit.exe")) {
+            $denyRules += @"
     <FilePathRule Id="$([guid]::NewGuid().ToString("B").ToUpper())" Name="Bloquear Regedit" Description="" UserOrGroupSid="$studentSid" Action="Deny">
-      <Conditions><FilePathCondition Path="%WINDIR%\\regedit.exe" /></Conditions>
+      <Conditions><FilePathCondition Path="$path" /></Conditions>
     </FilePathRule>
 "@
+        }
     }
 
     $msiMode = if ($BlockInstallers) { $EnforcementMode } else { "NotConfigured" }
-    $appxMode = if ($BlockStoreApps) { $EnforcementMode } else { "NotConfigured" }
+    $msiRules = if ($BlockInstallers) {
+@"
+    <FilePathRule Id="{B2222222-2222-2222-2222-222222222221}" Name="Administradores - todos MSI" Description="" UserOrGroupSid="$adminsSid" Action="Allow">
+      <Conditions><FilePathCondition Path="*" /></Conditions>
+    </FilePathRule>
+"@
+    }
+    $storeDenyRule = if ($BlockStoreApps) {
+@"
+    <FilePublisherRule Id="{D4444444-4444-4444-4444-444444444442}" Name="Bloquear Microsoft Store" Description="" UserOrGroupSid="$studentSid" Action="Deny">
+      <Conditions>
+        <FilePublisherCondition PublisherName="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" ProductName="Microsoft.WindowsStore" BinaryName="*">
+          <BinaryVersionRange LowSection="0.0.0.0" HighSection="*" />
+        </FilePublisherCondition>
+      </Conditions>
+    </FilePublisherRule>
+"@
+    }
 
 @"
 <AppLockerPolicy Version="1">
@@ -852,9 +911,7 @@ $denyRules
   </RuleCollection>
 
   <RuleCollection Type="Msi" EnforcementMode="$msiMode">
-    <FilePathRule Id="{B2222222-2222-2222-2222-222222222221}" Name="Administradores - todos MSI" Description="" UserOrGroupSid="$adminsSid" Action="Allow">
-      <Conditions><FilePathCondition Path="*" /></Conditions>
-    </FilePathRule>
+$msiRules
   </RuleCollection>
 
   <RuleCollection Type="Script" EnforcementMode="$EnforcementMode">
@@ -863,14 +920,15 @@ $denyRules
     </FilePathRule>
   </RuleCollection>
 
-  <RuleCollection Type="Appx" EnforcementMode="$appxMode">
-    <FilePublisherRule Id="{D4444444-4444-4444-4444-444444444441}" Name="Administradores - todos apps empacotados" Description="" UserOrGroupSid="$adminsSid" Action="Allow">
+  <RuleCollection Type="Appx" EnforcementMode="$EnforcementMode">
+    <FilePublisherRule Id="{D4444444-4444-4444-4444-444444444441}" Name="Permitir apps empacotados assinados" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
       <Conditions>
         <FilePublisherCondition PublisherName="*" ProductName="*" BinaryName="*">
           <BinaryVersionRange LowSection="0.0.0.0" HighSection="*" />
         </FilePublisherCondition>
       </Conditions>
     </FilePublisherRule>
+$storeDenyRule
   </RuleCollection>
 
   <RuleCollection Type="Dll" EnforcementMode="NotConfigured" />
@@ -880,7 +938,7 @@ $denyRules
 
 function Show-WinLabPlan {
     Write-Host "=== WinLab - PREVIEW do setup ===" -ForegroundColor Cyan
-    Write-Host ("Perfil: ${config.profileName}")
+    Write-Host ("Perfil: {0}" -f $ProfileName)
     Write-Host ("Usuário restrito: {0}" -f $Aluno)
     Write-Host ("Administrador: {0}" -f $Admin)
     Write-Host ("AppLocker: {0}" -f $EnforcementMode)
@@ -895,7 +953,30 @@ function Show-WinLabPlan {
     Write-Host "Para aplicar de verdade, execute novamente com -Apply." -ForegroundColor Yellow
 }
 
+${appLockerCoexistence}
+${machinePolicyNotice}
+function Assert-WinLabAppLockerBaselineAvailable {
+    $state = Get-WinLabState
+    if ($state -and $state.baselineAppLockerBackup) { return }
+
+    $policies = @((Get-AppLockerPolicy -Local -Xml), (Get-AppLockerPolicy -Effective -Xml))
+    foreach ($policy in $policies) {
+        [xml]$document = $policy
+        if ($document.DocumentElement.Name -ne "AppLockerPolicy") {
+            throw "Não foi possível confirmar a política AppLocker antes de aplicar."
+        }
+        if ($document.SelectSingleNode("/AppLockerPolicy/*[not(self::RuleCollection) or * or (@EnforcementMode and @EnforcementMode != 'NotConfigured')]")) {
+            throw "Já existe política AppLocker local ou efetiva. A instalação WinLab preserva essa política e foi interrompida."
+        }
+    }
+}
+
 function Install-WinLabProfile {
+    if ($EnforcementMode -ne "AuditOnly") {
+        throw "Esta homologação aceita somente AppLocker AuditOnly. Selecione AuditOnly ou gere o pacote piloto."
+    }
+    Assert-WinLabAppLockerBaselineAvailable
+    Write-WinLabMachinePolicyNotice
     Ensure-Accounts
 
     $baseline = Ensure-AppLockerBaseline
@@ -964,7 +1045,14 @@ if ($Apply) {
         Complete-DeferredUserPolicies
     }
     else {
-        Install-WinLabProfile
+${options.confirmApply ? confirmStandaloneApply("Aplicar este perfil ao computador?", "        ") : ""}        $gate = Enter-WinLabAppLockerOperation
+        try {
+            Install-WinLabProfile
+        }
+        finally {
+            [void]$gate.Release()
+            $gate.Dispose()
+        }
     }
 }
 else {
@@ -973,7 +1061,7 @@ else {
 `;
 }
 
-export function generateRollbackScript(config: Config): string {
+export function generateRollbackScript(config: Config, options: ScriptOptions = {}): string {
   return `${commonHeader(config, "ROLLBACK", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 $WinLabRoot = "C:\\ProgramData\\WinLab"
 $StatePath = Join-Path $WinLabRoot "state.json"
@@ -1029,22 +1117,12 @@ function Test-StudentProfileExists {
     return [bool]($profile -and $profile.LocalPath -and (Test-Path (Join-Path $profile.LocalPath "NTUSER.DAT")))
 }
 
+${clearBrowserPolicies}
 function Remove-StudentPolicies {
     Invoke-WithUserHive -UserName $Aluno -Action {
         param($sid)
 
-        $chrome = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Google\\Chrome"
-        Remove-ItemProperty -Path $chrome -Name BrowserGuestModeEnabled -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name BrowserAddPersonEnabled -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name IncognitoModeAvailability -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $chrome -Name PasswordManagerEnabled -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "ExtensionInstallBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $chrome "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
-
-        $edge = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Edge"
-        Remove-Item -Path (Join-Path $edge "URLBlocklist") -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path (Join-Path $edge "URLAllowlist") -Recurse -Force -ErrorAction SilentlyContinue
+        Clear-WinLabBrowserPolicies -Sid $sid
 
         $usb = "Registry::HKEY_USERS\\$sid\\Software\\Policies\\Microsoft\\Windows\\RemovableStorageDevices\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"
         Remove-ItemProperty -Path $usb -Name Deny_Read -ErrorAction SilentlyContinue
@@ -1097,6 +1175,7 @@ function Restore-RegistryBaseline {
     Write-Host "Baseline de registro restaurado a partir de $baselineDir" -ForegroundColor Green
 }
 
+${appLockerCoexistence}
 function Restore-AppLockerBaseline {
     param([Parameter(Mandatory=$true)]$State)
 
@@ -1127,25 +1206,51 @@ if ($Apply) {
     Assert-WinLabPackageIntegrity
     $state = Get-WinLabRollbackState
 
-    Restore-AppLockerBaseline -State $state
+${options.confirmApply ? confirmStandaloneApply("Reverter as políticas deste computador?", "    ") : ""}    $appLockerRestored = $false
+    $userPoliciesCleared = $false
+    $registryRestored = $false
 
-    if (Test-StudentProfileExists) {
-        Remove-StudentPolicies
-        Restore-RegistryBaseline -State $state
+    $gate = Enter-WinLabAppLockerOperation
+    try {
+        Restore-AppLockerBaseline -State $state
+        $appLockerRestored = $true
+
+        if (Test-StudentProfileExists) {
+            Remove-StudentPolicies
+            $userPoliciesCleared = $true
+            Restore-RegistryBaseline -State $state
+            $registryRestored = $true
+        }
+        else {
+            Write-Host "Perfil do usuário '$Aluno' não existe; não há hive de usuário para limpar." -ForegroundColor DarkGray
+            Restore-RegistryBaseline -State $state
+            $registryRestored = $true
+        }
+
+        Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
+
+        gpupdate /force | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning ("gpupdate /force retornou codigo {0}." -f $LASTEXITCODE)
+        }
+        Archive-WinLabState -State $state
+
+        Write-Host "Rollback WinLab concluído. As contas locais foram preservadas." -ForegroundColor Green
+        Write-Host "Reinicie o computador." -ForegroundColor Yellow
     }
-    else {
-        Write-Host "Perfil do usuário '$Aluno' não existe; não há hive de usuário para limpar." -ForegroundColor DarkGray
-        Restore-RegistryBaseline -State $state
+    catch {
+        $rollbackError = $_.Exception.Message
+        if ($appLockerRestored -or $userPoliciesCleared -or $registryRestored) {
+            Write-Warning ("[ROLLBACK INCOMPLETO] A reversao foi interrompida apos alteracoes parciais (AppLocker={0}, PoliciesCleared={1}, Registry={2}). Erro: {3}" -f $appLockerRestored, $userPoliciesCleared, $registryRestored, $rollbackError)
+            exit 4
+        }
+        throw
     }
-
-    Unregister-ScheduledTask -TaskName $DeferredTaskName -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-Item -Path (Join-Path $WinLabRoot "setup-deferred.ps1") -Force -ErrorAction SilentlyContinue
-
-    gpupdate /force | Out-Null
-    Archive-WinLabState -State $state
-
-    Write-Host "Rollback WinLab concluído. As contas locais foram preservadas." -ForegroundColor Green
-    Write-Host "Reinicie o computador." -ForegroundColor Yellow
+    finally {
+        [void]$gate.Release()
+        $gate.Dispose()
+    }
 }
 else {
     Write-Host "=== WinLab - PREVIEW do rollback ===" -ForegroundColor Cyan
@@ -1257,8 +1362,8 @@ export function generateAuditScript(config: Config): string {
 Assert-Administrator
 
 Write-Host "=== WinLab - Auditoria AppLocker ===" -ForegroundColor Cyan
-Write-Host "Perfil: ${config.profileName}"
-Write-Host "Usuário restrito: $Aluno"
+Write-Host ("Perfil: {0}" -f $ProfileName)
+Write-Host ("Usuário restrito: {0}" -f $Aluno)
 Write-Host ""
 
 $logs = @(
@@ -1298,7 +1403,7 @@ export function generateVerifyScript(config: Config): string {
     )
     .join(",\n");
 
-  return `${commonHeader(config, "VERIFICAÇÃO DO PC")}
+  return `${commonHeader(config, "VERIFICAÇÃO DO PC", `[CmdletBinding()]\nparam([switch]$PostApply)`)}
 
 Assert-Administrator
 
@@ -1306,21 +1411,28 @@ $KnownApps = @(
 ${appBlocks}
 )
 $CustomAllowedPaths = ${psArray(config.customAllowedPaths)}
+$criticalFailures = 0
 
+${machinePolicyNotice}
 function Write-Check {
     param(
         [string]$Name,
         [bool]$Ok,
-        [string]$Details
+        [string]$Details,
+        [switch]$Critical
     )
 
-    $status = if ($Ok) { "OK" } else { "ATENÇÃO" }
-    $color = if ($Ok) { "Green" } else { "Yellow" }
+    if (-not $Ok -and $Critical) {
+        $script:criticalFailures++
+    }
+
+    $status = if ($Ok) { "OK" } elseif ($Critical) { "FALHA" } else { "ATENÇÃO" }
+    $color = if ($Ok) { "Green" } elseif ($Critical) { "Red" } else { "Yellow" }
     Write-Host ("[{0}] {1} - {2}" -f $status, $Name, $Details) -ForegroundColor $color
 }
 
 Write-Host "=== WinLab - Verificação da máquina ===" -ForegroundColor Cyan
-Write-Host "Perfil: ${config.profileName}"
+Write-Host ("Perfil: {0}" -f $ProfileName)
 Write-Host ""
 
 $os = Get-CimInstance Win32_OperatingSystem
@@ -1332,18 +1444,22 @@ Write-Host ("Arquitetura: {0}" -f $os.OSArchitecture)
 Write-Host ""
 
 $hasAppLocker = $null -ne (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyContinue)
-Write-Check "AppLocker" $hasAppLocker $(if ($hasAppLocker) { "cmdlets disponíveis" } else { "cmdlets não encontrados" })
+Write-Check "AppLocker" $hasAppLocker $(if ($hasAppLocker) { "cmdlets disponíveis" } else { "cmdlets não encontrados" }) -Critical
 
 $service = Get-Service AppIDSvc -ErrorAction SilentlyContinue
-Write-Check "Application Identity" ($null -ne $service) $(if ($service) { "serviço encontrado: $($service.Status)" } else { "serviço não encontrado" })
+Write-Check "Application Identity" ($null -ne $service) $(if ($service) { "serviço encontrado: $($service.Status)" } else { "serviço não encontrado" }) -Critical
 
 $student = Get-LocalUser -Name $Aluno -ErrorAction SilentlyContinue
 $admin = Get-LocalUser -Name $Admin -ErrorAction SilentlyContinue
-Write-Check "Conta restrita" ($null -ne $student -or ${psBool(config.createAccounts)}) $(if ($student) { "existe: $Aluno" } else { "será criada pelo setup: $Aluno" })
-Write-Check "Conta administrativa" ($null -ne $admin -or ${psBool(config.createAccounts)}) $(if ($admin) { "existe: $Admin" } else { "será criada pelo setup: $Admin" })
+$studentOk = ($null -ne $student) -or (-not $PostApply -and ${psBool(config.createAccounts)})
+$adminOk = ($null -ne $admin) -or (-not $PostApply -and ${psBool(config.createAccounts)})
+Write-Check "Conta restrita" $studentOk $(if ($student) { "existe: $Aluno" } elseif (-not $PostApply -and ${psBool(config.createAccounts)}) { "será criada pelo setup: $Aluno" } else { "não encontrada: $Aluno" }) -Critical
+Write-Check "Conta administrativa" $adminOk $(if ($admin) { "existe: $Admin" } elseif (-not $PostApply -and ${psBool(config.createAccounts)}) { "será criada pelo setup: $Admin" } else { "não encontrada: $Admin" }) -Critical
 
 Write-Host ""
 Write-Host "=== Safety & Recovery ===" -ForegroundColor Cyan
+
+Write-WinLabMachinePolicyNotice
 
 $winLabRoot = "C:\\ProgramData\\WinLab"
 $statePath = Join-Path $winLabRoot "state.json"
@@ -1351,28 +1467,34 @@ $statePath = Join-Path $winLabRoot "state.json"
 if (Test-Path $statePath) {
     try {
         $state = Get-Content -Path $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
-        Write-Check "state.json" $true ("status: {0}; aplicações: {1}" -f $state.status, $state.applyCount)
+        $stateHealthy = ($state.status -eq "Applied") -or (-not $PostApply -and $state.status -ne "RecoveryFailed" -and $state.status -ne "Applying")
+        Write-Check "state.json" $stateHealthy ("status: {0}; aplicações: {1}" -f $state.status, $state.applyCount) -Critical
 
-        $appLockerBaselineOk = $state.baselineAppLockerBackup -and (Test-Path ([string]$state.baselineAppLockerBackup))
-        Write-Check "Baseline AppLocker" ([bool]$appLockerBaselineOk) $(if ($appLockerBaselineOk) { [string]$state.baselineAppLockerBackup } else { "ausente ou inválido" })
+        $appLockerBaselineOk = [bool]($state.baselineAppLockerBackup -and (Test-Path ([string]$state.baselineAppLockerBackup)))
+        Write-Check "Baseline AppLocker" $appLockerBaselineOk $(if ($appLockerBaselineOk) { [string]$state.baselineAppLockerBackup } else { "ausente ou inválido" }) -Critical
 
-        $registryBaselineOk = $state.registryBaselineDir -and (Test-Path ([string]$state.registryBaselineDir))
-        Write-Check "Baseline de registro" ([bool]$registryBaselineOk) $(if ($registryBaselineOk) { [string]$state.registryBaselineDir } else { "ausente ou inválido" })
+        $registryBaselineOk = [bool]($state.registryBaselineDir -and (Test-Path ([string]$state.registryBaselineDir)))
+        Write-Check "Baseline de registro" $registryBaselineOk $(if ($registryBaselineOk) { [string]$state.registryBaselineDir } else { "ausente ou inválido" }) -Critical
 
         $task = Get-ScheduledTask -TaskName "WinLab-Apply-UserPolicies" -ErrorAction SilentlyContinue
         if ($state.userPoliciesDeferred) {
-            Write-Check "Primeiro login" ($null -ne $task) $(if ($task) { "políticas HKCU pendentes; tarefa agendada" } else { "estado indica pendência, mas a tarefa não foi encontrada" })
+            Write-Check "Primeiro login" ($null -ne $task) $(if ($task) { "políticas HKCU pendentes; tarefa agendada" } else { "estado indica pendência, mas a tarefa não foi encontrada" }) -Critical
         }
         else {
             Write-Check "Primeiro login" ($null -eq $task) $(if ($task) { "tarefa ainda existe apesar de não haver pendência" } else { "sem pendência" })
         }
     }
     catch {
-        Write-Check "state.json" $false $_.Exception.Message
+        Write-Check "state.json" $false $_.Exception.Message -Critical
     }
 }
 else {
-    Write-Check "state.json" $true "nenhuma aplicação WinLab registrada ainda"
+    if ($PostApply) {
+        Write-Check "state.json" $false "state.json ausente após execução com -Apply" -Critical
+    }
+    else {
+        Write-Check "state.json" $true "nenhuma aplicação WinLab registrada ainda"
+    }
 }
 
 Write-Host ""
@@ -1404,10 +1526,19 @@ if ($CustomAllowedPaths.Count -gt 0) {
 
 Write-Host ""
 Write-Host "Use este relatório antes de ativar o AppLocker em modo Enabled." -ForegroundColor Yellow
+
+if ($criticalFailures -gt 0) {
+    Write-Host ("Verificação final encontrou {0} falha(s) crítica(s)." -f $criticalFailures) -ForegroundColor Red
+    exit 1
+}
 `;
 }
 
 export function generateMaintenanceScript(config: Config): string {
+  const cleanupMode = psEnum(config.profileCleanupMode, ["Off", "ReportOnly", "Delete"] as const, "profileCleanupMode");
+  const days = psBoundedInt(config.profileCleanupDays, 90, 1, 3650);
+  const storageWarningFreePercent = psBoundedInt(config.storageWarningFreePercent, 15, 1, 99);
+
   return `${commonHeader(config, "MANUTENÇÃO E LIMPEZA DE PERFIS", `[CmdletBinding()]\nparam([switch]$Apply)`)}
 
 Assert-Administrator
@@ -1416,9 +1547,9 @@ if ($Apply) {
     Assert-WinLabPackageIntegrity
 }
 
-$Mode = "${config.profileCleanupMode}"
-$Days = ${config.profileCleanupDays}
-$StorageWarningFreePercent = ${config.storageWarningFreePercent}
+$Mode = "${cleanupMode}"
+$Days = ${days}
+$StorageWarningFreePercent = ${storageWarningFreePercent}
 
 function Get-WinLabLastUseTime {
     param($Value)
@@ -1590,6 +1721,14 @@ maintenance.ps1
   Mostra espaço livre e perfis inativos. No modo Delete pode remover perfis
   não carregados e antigos, preservando as contas Aluno/Admin configuradas.
 
+Configurar-Computador.cmd
+  Atalho guiado pós-formatação. Solicita elevação UAC se necessário, confere os hashes SHA-256
+  via verify-package.ps1, exibe o plano de mudanças, pede confirmação e executa setup.ps1 -Apply
+  seguido de verify.ps1 sem alterar a política global de execução do PowerShell.
+
+Reverter-Configuracao.cmd
+  Atalho guiado para restaurar os baselines anteriores (rollback.ps1 -Apply) após validação SHA-256.
+
 verify-package.ps1
   Verifica SHA-256 e tamanho de todos os arquivos listados no manifest.
 
@@ -1601,9 +1740,16 @@ config.json
   Configuração versionada usada para gerar este pacote.
   Pode ser importada novamente no WinLab.
 
-FLUXO RECOMENDADO
------------------
-1. Execute verify.ps1 como administrador e confira a máquina.
+EXECUÇÃO RÁPIDA PÓS-FORMATAÇÃO
+------------------------------
+1. Extraia TODOS os arquivos deste ZIP para uma pasta local (ex.: C:\Temp\WinLab-Setup).
+2. Clique duas vezes em Configurar-Computador.cmd e aprove a permissão de Administrador (UAC).
+3. Confira o resumo exibido na tela e digite S para confirmar a aplicação.
+4. Caso precise desfazer tudo depois, execute Reverter-Configuracao.cmd.
+
+FLUXO RECOMENDADO EM LABORATÓRIO
+--------------------------------
+1. Execute verify.ps1 como administrador e confira a máquina (ou use Configurar-Computador.cmd).
 2. Gere inicialmente em modo AUDITORIA.
 3. Execute setup.ps1 SEM -Apply para revisar o plano.
 4. Quando estiver de acordo, execute setup.ps1 -Apply como administrador.

@@ -4,10 +4,11 @@ on:
   pull_request:
     branches:
       - main
+      - 'dev/**'
       - 'feat/**'
       - 'vibe/**'
   push:
-    branches: [main]
+    branches: [main, dev/desktop-functional]
   workflow_dispatch:
 
 permissions:
@@ -136,6 +137,10 @@ jobs:
       - name: Validate Published Artifacts
         shell: pwsh
         run: |
+          $version = (Select-Xml -Path "desktop/src/WinLab.Desktop/WinLab.Desktop.csproj" -XPath "/Project/PropertyGroup/Version").Node.InnerText
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Invalid Desktop version: $version" }
+          if ((Get-Content package.json -Raw | ConvertFrom-Json).version -ne $version) { throw "Interface version mismatch" }
+          "WINLAB_CANDIDATE_VERSION=$version" >> $env:GITHUB_ENV
           $exe = "artifacts/publish/desktop/WinLab.Desktop.exe"
           $helper = "artifacts/publish/desktop/WinLab.Executor.exe"
           $entry = "artifacts/publish/desktop/wwwroot/desktop/index.html"
@@ -162,6 +167,12 @@ jobs:
           if ((Get-Item $entry).Length -le 0) {
             Write-Error "Published offline entry point is empty: $entry"
             exit 1
+          }
+          foreach ($binary in @($exe, $helper)) {
+            $built = (Get-Item -LiteralPath $binary).VersionInfo
+            if ("$($built.FileMajorPart).$($built.FileMinorPart).$($built.FileBuildPart)" -ne $version) {
+              throw "Version mismatch for $binary"
+            }
           }
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
           Set-Content -Path "$exe.sha256" -Value $hash
@@ -194,11 +205,47 @@ jobs:
             Write-Host "Installer OK: $($installer.Name) ($($installer.Length) bytes), SHA256: $hash"
           }
 
+      - name: Verify Inno Installed Payload
+        shell: pwsh
+        run: |
+          $version = $env:WINLAB_CANDIDATE_VERSION
+          $installer = Get-Item -LiteralPath "artifacts/installers/WinLabSetup-$version-x64.exe"
+          $built = $installer.VersionInfo
+          if ("$($built.FileMajorPart).$($built.FileMinorPart).$($built.FileBuildPart)" -ne $version) {
+            throw "Inno installer version mismatch"
+          }
+          $installedRoot = Join-Path $env:ProgramFiles "WinLab"
+          if (Test-Path -LiteralPath $installedRoot) { throw "WinLab is already installed on this runner" }
+          $result = Start-Process -FilePath $installer.FullName -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/NOICONS', '/NOCANCEL'
+          ) -PassThru -Wait -WindowStyle Hidden
+          if ($result.ExitCode -ne 0) { throw "Inno installation failed with code $($result.ExitCode)" }
+
+          $publishedRoot = (Resolve-Path "artifacts/publish/desktop").Path
+          $assets = @(Get-ChildItem -LiteralPath (Join-Path $publishedRoot "wwwroot") -Recurse -File)
+          if ($assets.Count -eq 0) { throw "Offline interface was not included" }
+          $expected = @(
+            (Join-Path $publishedRoot "WinLab.Desktop.exe"),
+            (Join-Path $publishedRoot "WinLab.Executor.exe")
+          ) + @($assets.FullName)
+          foreach ($file in $expected) {
+            $relative = [IO.Path]::GetRelativePath($publishedRoot, $file)
+            $installed = Join-Path $installedRoot $relative
+            if ((Get-FileHash -LiteralPath $file).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) {
+              throw "Installed payload differs from output for $relative"
+            }
+          }
+          $registered = Get-ItemPropertyValue -LiteralPath "HKLM:\SOFTWARE\WinLab\DesktopInstallation" -Name ExecutorSha256
+          if ($registered -ne (Get-FileHash -LiteralPath (Join-Path $installedRoot "WinLab.Executor.exe")).Hash) {
+            throw "Executor digest registered by the installer does not match the installed binary"
+          }
+          "WINLAB_VERIFIED_OFFLINE_FILES=$($assets.Count)" >> $env:GITHUB_ENV
+
       - name: Package Auto-Updatable Desktop
         shell: pwsh
         run: |
           dotnet tool install --tool-path .tools vpk --version 1.2.161
-          .\\.tools\\vpk.exe pack --packId WinLab.Desktop --packTitle "WinLab" --packVersion 0.9.1 --packDir artifacts/publish/desktop --mainExe WinLab.Desktop.exe --runtime win-x64 --outputDir artifacts/velopack --delta none
+          .\.tools\vpk.exe pack --packId WinLab.Desktop --packTitle "WinLab" --packVersion "$env:WINLAB_CANDIDATE_VERSION" --packDir artifacts/publish/desktop --mainExe WinLab.Desktop.exe --runtime win-x64 --outputDir artifacts/velopack --delta none
           $installer = Get-ChildItem "artifacts/velopack/*-Setup.exe" -ErrorAction SilentlyContinue
           $feed = Get-ChildItem "artifacts/velopack/releases.*.json" -ErrorAction SilentlyContinue
           $package = Get-ChildItem "artifacts/velopack/*-full.nupkg" -ErrorAction SilentlyContinue
@@ -207,6 +254,51 @@ jobs:
             exit 1
           }
           Write-Host "Auto-update package ready: $($installer[0].Name)"
+
+      - name: Record Candidate Versions and Checksums
+        shell: pwsh
+        run: |
+          $version = $env:WINLAB_CANDIDATE_VERSION
+          $portable = "artifacts/publish/desktop"
+          $velopack = @(Get-ChildItem "artifacts/velopack" -File)
+          $full = @($velopack | Where-Object { $_.Name -like "*-$version-full.nupkg" })
+          if ($full.Count -ne 1) { throw "Velopack package version mismatch" }
+          $archive = [IO.Compression.ZipFile]::OpenRead($full[0].FullName)
+          try {
+            foreach ($relative in @("WinLab.Desktop.exe", "WinLab.Executor.exe", "wwwroot/desktop/index.html")) {
+              $entries = @($archive.Entries | Where-Object { $_.FullName.EndsWith("/$relative", [StringComparison]::Ordinal) })
+              if ($entries.Count -ne 1) { throw "Missing or duplicate Velopack entry $relative" }
+              $stream = $entries[0].Open()
+              try { $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)) }
+              finally { $stream.Dispose() }
+              if ($hash -ne (Get-FileHash -LiteralPath (Join-Path $portable $relative)).Hash) {
+                throw "Velopack payload differs for $relative"
+              }
+            }
+          } finally { $archive.Dispose() }
+
+          $setup = Get-Item "artifacts/installers/WinLabSetup-$version-x64.exe"
+          $files = @(
+            (Get-Item "$portable/WinLab.Desktop.exe"),
+            (Get-Item "$portable/WinLab.Executor.exe"),
+            $setup
+          ) + @($velopack | Where-Object { $_.Extension -in @(".exe", ".zip", ".nupkg") })
+          $digests = @(foreach ($file in $files) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+            Set-Content -LiteralPath "$($file.FullName).sha256" -Value $hash -Encoding ascii
+            [ordered]@{
+              name = $file.Name
+              sha256 = $hash
+              bytes = $file.Length
+              authenticode = if ($file.Extension -eq ".exe") { (Get-AuthenticodeSignature -FilePath $file.FullName).Status.ToString() } else { $null }
+            }
+          })
+          [ordered]@{
+            version = $version
+            head = $env:GITHUB_SHA
+            verifiedInnoOfflineFiles = [int]$env:WINLAB_VERIFIED_OFFLINE_FILES
+            files = $digests
+          } | ConvertTo-Json -Depth 4 | Set-Content "$portable/candidate.json" -Encoding utf8
 
       - name: Upload Auto-Updatable Windows Installer
         uses: actions/upload-artifact@v4

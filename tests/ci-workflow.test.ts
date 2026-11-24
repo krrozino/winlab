@@ -92,10 +92,11 @@ test("the installer must package the directory where the helper is published", (
   assert.match(installerScript, /DestDir: "\{app\}"/, "published output must land in the installation root");
 });
 
-test("the helper location the Desktop probes must match the distributed location", () => {
-  assert.match(executorClient, /Path\.Combine\(AppDomain\.CurrentDomain\.BaseDirectory, "WinLab\.Executor\.exe"\)/, "the Desktop must probe the helper at the installation root");
-  const appDir = installerScript.match(/DefaultDirName=\{autopf\}\\WinLab/);
-  assert.notEqual(appDir, null, "the installer must use a fixed installation root so BaseDirectory is predictable");
+test("the per-machine installer registers the digest consumed by trusted elevation", () => {
+  assert.match(executorClient, /ExecutorInstallTrust\.FindInstalledExecutor\(\)/);
+  assert.match(installerScript, /DefaultDirName=\{autopf\}\\WinLab/);
+  assert.match(installerScript, /GetSHA256OfFile\(ExpandConstant\('\{app\}\\WinLab\.Executor\.exe'\)\)/);
+  assert.match(installerScript, /RegWriteStringValue\(HKLM64, 'SOFTWARE\\WinLab\\DesktopInstallation', 'ExecutorSha256'/);
 });
 
 test("Velopack auto-update package is built before its upload", () => {

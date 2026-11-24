@@ -23,6 +23,8 @@ namespace WinLab.Contracts
         public const string ActionCreateBaseline = "baseline.create";
         public const string ActionCreateLocalAccount = "accounts.create_local";
         public const string ActionGetEnvironment = "system.environment";
+        public const string ActionQueryUpdateStatus = "system.update_status";
+        public const string ActionQueryNetworkShares = "network.query_shares";
 
         // Ações de Política Declarativa e Transações (Milestone 3)
         public const string ActionQueryPolicyCatalog = "policy.query_catalog";
@@ -47,7 +49,20 @@ namespace WinLab.Contracts
             ActionCreateBaseline,
             ActionCreateLocalAccount,
             ActionGetEnvironment,
+            ActionQueryUpdateStatus,
+            ActionQueryNetworkShares,
             ActionQueryPolicyCatalog,
+            Expansion.ExpansionRequest.Query,
+            Expansion.ExpansionRequest.Preview,
+            Expansion.ExpansionRequest.Apply,
+            Expansion.ExpansionRequest.Rollback,
+            Administration.AdminActions.AccountsQuery,
+            Administration.AdminActions.AccountsPreview,
+            Administration.AdminActions.AccountsApply,
+            Administration.AdminActions.DiagnosticsQuery,
+            Administration.AdminActions.PermissionsQuery,
+            Administration.AdminActions.PermissionsPreview,
+            Administration.AdminActions.PermissionsApply,
             ActionQueryPolicyStates,
             ActionApplyTransaction,
             ActionRollbackTransaction,

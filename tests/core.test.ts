@@ -497,7 +497,7 @@ test("package manifest hashes every generated file except itself", async () => {
   });
 
   assert.equal(manifest.packageId, "test-package");
-  assert.equal(manifest.packageVersion, "0.9.0");
+  assert.equal(manifest.packageVersion, "0.9.2");
   assert.equal(manifest.files.length, baseFiles.length);
   assert.equal(manifest.files.some((file) => file.name === "manifest.json"), false);
 
@@ -717,7 +717,7 @@ test("pilot package is target-bound and contains checklists", async () => {
   const manifest = JSON.parse(manifestFile!.content);
   const effectiveConfig = JSON.parse(configFile!.content);
 
-  assert.equal(manifest.packageVersion, "0.9.0");
+  assert.equal(manifest.packageVersion, "0.9.2");
   assert.equal(manifest.channel, "pilot");
   assert.equal(manifest.targetComputerName, "LAB-PILOT");
   assert.equal(effectiveConfig.enforcementMode, "AuditOnly");

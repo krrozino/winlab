@@ -1,5 +1,6 @@
 import { IPC_CONSTANTS, IpcResponse, MachineInventoryDto, PolicyStateSummaryDto } from "./contracts";
 import { OperatingMode } from "../lib/types";
+import { getEligibleTargetUsers } from "./policy-state-machine";
 
 export interface PreflightSnapshotWithMessage {
   computerName: string;
@@ -19,13 +20,16 @@ export interface MachineDataSessionCallbacks {
   onPreflight(preflight: PreflightSnapshotWithMessage | null): void;
   onScanError(error: string | null): void;
   onScanning(scanning: boolean): void;
+  onSelectedUserSidChange?(sid: string | null): void;
 }
 
 export type IpcSender = <T>(action: string, payload?: unknown) => Promise<IpcResponse<T>>;
 
 export class MachineDataSession {
   private generation = 0;
+  private policyQueryGeneration = 0;
   private disposed = false;
+  private selectedUserSid: string | null = null;
 
   constructor(private readonly send: IpcSender, private readonly callbacks: MachineDataSessionCallbacks) {}
 
@@ -33,9 +37,18 @@ export class MachineDataSession {
     return !this.disposed && generation === this.generation;
   }
 
+  private isCurrentPolicyQuery(generation: number, policyGen: number): boolean {
+    return !this.disposed && generation === this.generation && policyGen === this.policyQueryGeneration;
+  }
+
+  getSelectedUserSid(): string | null {
+    return this.selectedUserSid;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.generation += 1;
+    this.policyQueryGeneration += 1;
   }
 
   async loadInitial(): Promise<void> {
@@ -51,6 +64,7 @@ export class MachineDataSession {
 
   async switchMode(targetMode: OperatingMode): Promise<void> {
     const generation = ++this.generation;
+    this.policyQueryGeneration += 1;
     const callbacks = this.callbacks;
 
     callbacks.onInventory(null);
@@ -85,6 +99,43 @@ export class MachineDataSession {
     }
   }
 
+  /**
+   * Consulta estados de políticas para uma conta-alvo específica com proteção contra corrida (stale responses).
+   */
+  async queryPoliciesForUser(
+    targetUserSid: string | null,
+    options?: { allowElevation?: boolean }
+  ): Promise<IpcResponse<PolicyStateSummaryDto> | null> {
+    const generation = this.generation;
+    const policyGen = ++this.policyQueryGeneration;
+    this.selectedUserSid = targetUserSid;
+    this.callbacks.onSelectedUserSidChange?.(targetUserSid);
+
+    const payload = targetUserSid
+      ? {
+          targetUserSid,
+          ...(options?.allowElevation ? { allowElevation: true } : {})
+        }
+      : options?.allowElevation
+        ? { allowElevation: true }
+        : undefined;
+
+    const polRes = await this.send<PolicyStateSummaryDto>(
+      IPC_CONSTANTS.ACTION_QUERY_POLICY_STATES,
+      payload
+    );
+
+    if (!this.isCurrentPolicyQuery(generation, policyGen)) {
+      return null;
+    }
+
+    if (polRes.success && polRes.data) {
+      this.callbacks.onPolicySummary(polRes.data);
+    }
+
+    return polRes;
+  }
+
   private async queryMachineData(generation: number): Promise<void> {
     const callbacks = this.callbacks;
 
@@ -92,11 +143,23 @@ export class MachineDataSession {
     if (!this.isCurrent(generation)) return;
     if (invRes.success && invRes.data) {
       callbacks.onInventory(invRes.data);
+      const eligible = getEligibleTargetUsers(invRes.data.localUsers);
+      const stillValid =
+        this.selectedUserSid !== null &&
+        eligible.some((u) => u.sid?.toLowerCase() === this.selectedUserSid?.toLowerCase());
+      if (!stillValid) {
+        this.selectedUserSid = eligible[0]?.sid ?? null;
+        callbacks.onSelectedUserSidChange?.(this.selectedUserSid);
+      }
     } else {
       callbacks.onScanError(invRes.error || "Falha ao consultar o inventário do computador.");
     }
 
-    const polRes = await this.send<PolicyStateSummaryDto>(IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE);
+    const policyPayload = this.selectedUserSid ? { targetUserSid: this.selectedUserSid } : undefined;
+    const polRes = await this.send<PolicyStateSummaryDto>(
+      IPC_CONSTANTS.ACTION_QUERY_POLICY_STATE,
+      policyPayload
+    );
     if (!this.isCurrent(generation)) return;
     if (polRes.success && polRes.data) {
       callbacks.onPolicySummary(polRes.data);
