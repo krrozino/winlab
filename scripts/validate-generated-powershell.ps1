@@ -354,7 +354,8 @@ $pilotManifest = Get-Content -Path $pilotManifestPath -Raw -Encoding UTF8 | Conv
 $pilotConfig = Get-Content -Path $pilotConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $pilotReadiness = Get-Content -Path $pilotReadinessPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
-if ($pilotManifest.packageVersion -ne "0.9.0") {
+$packageVersion = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+if ($pilotManifest.packageVersion -ne $packageVersion) {
     throw "Versão inesperada no manifesto piloto: $($pilotManifest.packageVersion)"
 }
 
