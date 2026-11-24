@@ -21,7 +21,10 @@ namespace WinLab.Contracts.Scanning
 
     public static class WindowsAccountPrivilegeHelper
     {
-        public static bool TryGetLocalizedAdministratorsGroupName(out string? groupName, out string? error)
+        public static bool TryGetLocalizedAdministratorsGroupName(out string? groupName, out string? error) =>
+            TryGetLocalizedBuiltinGroupName(WellKnownSidType.BuiltinAdministratorsSid, out groupName, out error);
+
+        internal static bool TryGetLocalizedBuiltinGroupName(WellKnownSidType type, out string? groupName, out string? error)
         {
             groupName = null;
             error = null;
@@ -33,29 +36,31 @@ namespace WinLab.Contracts.Scanning
 
             try
             {
-                var adminGroupSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-                var adminGroupAccount = (NTAccount)adminGroupSid.Translate(typeof(NTAccount));
-                string fullName = adminGroupAccount.Value;
+                var sid = new SecurityIdentifier(type, null);
+                string fullName = sid.Translate(typeof(NTAccount)).Value;
                 groupName = fullName.Contains('\\') ? fullName.Split('\\')[1] : fullName;
                 return !string.IsNullOrWhiteSpace(groupName);
             }
             catch (Exception ex)
             {
-                error = $"Falha ao resolver nome do grupo Administradores: {ex.Message}";
+                error = $"Falha ao resolver nome de grupo interno do Windows: {ex.Message}";
                 return false;
             }
         }
 
-        public static AdminGroupMembersSnapshot QueryAdminGroupMembers()
+        public static AdminGroupMembersSnapshot QueryAdminGroupMembers() =>
+            QueryBuiltinGroupMembers(WellKnownSidType.BuiltinAdministratorsSid);
+
+        internal static AdminGroupMembersSnapshot QueryBuiltinGroupMembers(WellKnownSidType type)
         {
             if (!OperatingSystem.IsWindows())
             {
                 return new AdminGroupMembersSnapshot(false, Array.Empty<string>(), false, "Plataforma não é Windows.");
             }
 
-            if (!TryGetLocalizedAdministratorsGroupName(out string? groupName, out string? groupError) || string.IsNullOrWhiteSpace(groupName))
+            if (!TryGetLocalizedBuiltinGroupName(type, out string? groupName, out string? groupError) || string.IsNullOrWhiteSpace(groupName))
             {
-                return new AdminGroupMembersSnapshot(false, Array.Empty<string>(), false, groupError ?? "Grupo Administradores não resolvido.");
+                return new AdminGroupMembersSnapshot(false, Array.Empty<string>(), false, groupError ?? "Grupo interno não resolvido.");
             }
 
             var adminSids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

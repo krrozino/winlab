@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using WinLab.Contracts;
+using WinLab.Contracts.Administration;
 using WinLab.Contracts.Expansion;
 using WinLab.Contracts.Policies;
 using WinLab.Contracts.RegistryServices;
@@ -32,6 +33,7 @@ namespace WinLab.Desktop.Services
         private readonly IUserHiveManager _hiveManager;
         private readonly TransactionEngine _localEngine;
         private readonly ExpansionIpc _expansion;
+        private readonly AdminIpc _administration;
         private readonly bool _isWindows;
 
         public RealAgentService(
@@ -56,12 +58,15 @@ namespace WinLab.Desktop.Services
                 : Path.Combine(Path.GetTempPath(), "WinLab_Transactions_Dev"));
             _localEngine = new TransactionEngine(_catalog, _registry, _hiveManager, txDir);
             _expansion = new ExpansionIpc(_registry, _scanner);
+            var accountStore = new WindowsAdminAccountStore(_registry, ExecutorInstallTrust.IsAdministrationStoreProtected);
+            _administration = new(new AdminAccountService(accountStore, WindowsAdminDiagnostics.QueryManagement),
+                new WindowsAdminDiagnostics(_registry), WindowsAdminDiagnostics.QueryManagement);
         }
 
         public async Task<IpcResponse<object>> HandleRequestAsync(string rawJson)
         {
             var shellCheck = SecurityValidator.ValidateNoArbitraryShell(rawJson);
-            if (!shellCheck.IsSafe && !ExpansionRequest.IsTypedEnvelope(rawJson))
+            if (!shellCheck.IsSafe && !ExpansionRequest.IsTypedEnvelope(rawJson) && !AdminRequest.IsTypedEnvelope(rawJson))
             {
                 return IpcResponse<object>.Fail(string.Empty, shellCheck.Error!, "FORBIDDEN_SHELL_INJECTION");
             }
@@ -90,6 +95,22 @@ namespace WinLab.Desktop.Services
                 }
 
                 string action = root.GetProperty("action").GetString()!;
+
+                if (AdminActions.Contains(action) || action == IpcConstants.ActionCreateLocalAccount)
+                {
+                    if (!_isWindows)
+                        return IpcResponse<object>.Fail(id, "Central administrativa disponível somente no Windows.", "PLATFORM_NOT_SUPPORTED");
+
+                    bool trusted = ExecutorInstallTrust.FindInstalledExecutor() != null
+                        && ExecutorInstallTrust.IsAdministrationStoreProtected();
+                    return await _administration.HandleAsync(id, action, root, trusted, async () =>
+                    {
+                        var response = _executorClient is ElevatedExecutorClient executor
+                            ? await executor.HandleRequestAsync(rawJson, freshElevation: true)
+                            : await _executorClient.HandleRequestAsync(rawJson);
+                        return EnsureReplyToId(response, id);
+                    });
+                }
 
                 if (ExpansionRequest.IsAction(action))
                 {
@@ -132,17 +153,6 @@ namespace WinLab.Desktop.Services
                     case IpcConstants.ActionQueryNetworkShares:
                     {
                         return IpcResponse<object>.Ok(id, NetworkShareScanner.Scan());
-                    }
-
-                    case IpcConstants.ActionCreateLocalAccount:
-                    {
-                        if (!_isWindows)
-                        {
-                            return IpcResponse<object>.Fail(id, "Criação de contas locais está disponível somente no Windows.", "PLATFORM_NOT_SUPPORTED");
-                        }
-
-                        var delegated = await _executorClient.HandleRequestAsync(rawJson);
-                        return EnsureReplyToId(delegated, id);
                     }
 
                     case IpcConstants.ActionCreateBaseline:

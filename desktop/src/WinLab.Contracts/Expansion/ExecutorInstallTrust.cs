@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
+using WinLab.Contracts.Administration;
 
 namespace WinLab.Contracts.Expansion;
 
@@ -116,6 +117,25 @@ public static class ExecutorInstallTrust
             using var publisher = machine.OpenSubKey(@"SOFTWARE\WinLab");
             using var journal = machine.OpenSubKey(ExpansionEngine.Journal);
             return publisher != null && IsTrustedRegistryKey(publisher) && (journal == null || IsTrustedRegistryKey(journal));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    public static bool IsAdministrationStoreProtected()
+    {
+        if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess) return false;
+        try
+        {
+            using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+            using var publisher = machine.OpenSubKey(@"SOFTWARE\WinLab");
+            using var administration = machine.OpenSubKey(@"SOFTWARE\WinLab\Administration");
+            using var accounts = machine.OpenSubKey(WindowsAdminAccountStore.RegistryPath);
+            return publisher != null && IsTrustedRegistryKey(publisher)
+                && (administration == null || IsTrustedRegistryKey(administration))
+                && (accounts == null || IsTrustedRegistryKey(accounts));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {

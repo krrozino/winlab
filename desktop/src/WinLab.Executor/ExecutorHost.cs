@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WinLab.Contracts;
+using WinLab.Contracts.Administration;
 using WinLab.Contracts.Expansion;
 using WinLab.Contracts.Policies;
 using WinLab.Contracts.RegistryServices;
@@ -33,6 +34,7 @@ namespace WinLab.Executor
         private readonly IUserHiveManager _hiveManager;
         private readonly TransactionEngine _engine;
         private readonly ExpansionIpc _expansion;
+        private readonly AdminIpc _administration;
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -58,6 +60,10 @@ namespace WinLab.Executor
             _hiveManager = hiveManager ?? (OperatingSystem.IsWindows() ? new Services.WindowsUserHiveManager() : new MockUserHiveManager());
             _engine = engine ?? new TransactionEngine(_catalog, _registry, _hiveManager);
             _expansion = new ExpansionIpc(_registry, _scanner);
+            var accountStore = new WindowsAdminAccountStore(_registry, ExecutorInstallTrust.IsAdministrationStoreProtected);
+            var provisioner = new Services.LocalAccountProvisioner(_registry, accountStore);
+            _administration = new(new AdminAccountService(provisioner, WindowsAdminDiagnostics.QueryManagement),
+                new WindowsAdminDiagnostics(_registry), WindowsAdminDiagnostics.QueryManagement);
         }
 
         public async Task<int> RunAsync(CancellationToken cancellationToken = default)
@@ -156,7 +162,7 @@ namespace WinLab.Executor
         public async Task<string> ProcessRequestAsync(string rawJson, CancellationToken cancellationToken = default)
         {
             var shellCheck = SecurityValidator.ValidateNoArbitraryShell(rawJson);
-            if (!shellCheck.IsSafe && !ExpansionRequest.IsTypedEnvelope(rawJson))
+            if (!shellCheck.IsSafe && !ExpansionRequest.IsTypedEnvelope(rawJson) && !AdminRequest.IsTypedEnvelope(rawJson))
             {
                 var errResp = IpcResponse<object>.Fail(string.Empty, shellCheck.Error!, "FORBIDDEN_SHELL_INJECTION");
                 return JsonSerializer.Serialize(errResp);
@@ -187,6 +193,14 @@ namespace WinLab.Executor
 
                 string action = root.GetProperty("action").GetString()!;
 
+                if (AdminActions.Contains(action) || action == IpcConstants.ActionCreateLocalAccount)
+                {
+                    bool authorized = OperatingSystem.IsWindows() && IsCurrentProcessElevated()
+                        && ExecutorInstallTrust.IsAdministrationStoreProtected();
+                    return JsonSerializer.Serialize(await _administration.HandleAsync(id, action, root,
+                        authorized, ct: cancellationToken));
+                }
+
                 if (ExpansionRequest.IsAction(action))
                 {
                     bool canWrite = false;
@@ -207,36 +221,6 @@ namespace WinLab.Executor
                         var inv = await _scanner.ScanInventoryAsync(cancellationToken);
                         var resp = IpcResponse<MachineInventoryDto>.Ok(id, inv);
                         return JsonSerializer.Serialize(resp);
-                    }
-
-                    case IpcConstants.ActionCreateLocalAccount:
-                    {
-                        if (!OperatingSystem.IsWindows() || !IsCurrentProcessElevated())
-                            return JsonSerializer.Serialize(IpcResponse<object>.Fail(id,
-                                "É necessária autorização administrativa do Windows.", "ADMIN_REQUIRED"));
-
-                        if (!root.TryGetProperty("payload", out var accountPayload) ||
-                            accountPayload.ValueKind != JsonValueKind.Object ||
-                            !accountPayload.TryGetProperty("name", out var nameElement) ||
-                            nameElement.ValueKind != JsonValueKind.String ||
-                            !accountPayload.TryGetProperty("password", out var passwordElement) ||
-                            passwordElement.ValueKind != JsonValueKind.String ||
-                            !accountPayload.TryGetProperty("isAdmin", out var roleElement) ||
-                            (roleElement.ValueKind != JsonValueKind.True && roleElement.ValueKind != JsonValueKind.False))
-                        {
-                            return JsonSerializer.Serialize(IpcResponse<object>.Fail(id,
-                                "Informe nome, senha e tipo de conta válidos.", "INVALID_ACCOUNT_REQUEST"));
-                        }
-
-                        string name = nameElement.GetString() ?? string.Empty;
-                        string password = passwordElement.GetString() ?? string.Empty;
-                        bool isAdmin = roleElement.GetBoolean();
-                        var result = Services.LocalAccountProvisioner.Create(name, password, isAdmin);
-                        if (!result.Success)
-                            return JsonSerializer.Serialize(IpcResponse<object>.Fail(id, result.Message, "ACCOUNT_CREATE_FAILED"));
-
-                        return JsonSerializer.Serialize(IpcResponse<object>.Ok(id,
-                            new { name, role = isAdmin ? "Administrator" : "Standard", message = result.Message }));
                     }
 
                     case IpcConstants.ActionCreateBaseline:
