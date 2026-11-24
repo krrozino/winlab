@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -18,6 +19,8 @@ namespace WinLab.Contracts.Transactions
         private readonly BaselineSnapshotManager _snapshotManager;
         private readonly string _transactionDir;
         private readonly Func<string, FileMode, Stream>? _protectedRecordWriter;
+        private readonly Func<string, bool>? _verifyProtectedRecord;
+        private const string SnapshotExtension = ".snapshot";
         private readonly SemaphoreSlim _lock = new(1, 1);
 
         public TransactionEngine(
@@ -26,7 +29,8 @@ namespace WinLab.Contracts.Transactions
             IUserHiveManager hiveManager,
             string? transactionDirectory = null,
             bool createDirectory = true,
-            Func<string, FileMode, Stream>? protectedRecordWriter = null)
+            Func<string, FileMode, Stream>? protectedRecordWriter = null,
+            Func<string, bool>? verifyProtectedRecord = null)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
             _registry = registry ?? throw new ArgumentNullException(nameof(registry));
@@ -34,6 +38,7 @@ namespace WinLab.Contracts.Transactions
             _snapshotManager = new BaselineSnapshotManager(_registry, _hiveManager);
             _transactionDir = ResolveTransactionDirectory(transactionDirectory);
             _protectedRecordWriter = protectedRecordWriter;
+            _verifyProtectedRecord = verifyProtectedRecord;
 
             if (createDirectory && !Directory.Exists(_transactionDir))
             {
@@ -1334,7 +1339,7 @@ namespace WinLab.Contracts.Transactions
             {
                 try
                 {
-                    var tx = await ReadTransactionRecordAsync(file, ct);
+                    var tx = await LoadTransactionAsync(Path.GetFileNameWithoutExtension(file), ct);
                     if (tx != null) list.Add(tx);
                 }
                 catch
@@ -1372,13 +1377,17 @@ namespace WinLab.Contracts.Transactions
             {
                 if (!TryResolveTransactionFilePath(tx.TransactionId, out string protectedPath))
                     throw new IOException("O caminho de persistência da transação não é confiável.");
-                string replacement = $"{protectedPath}.{Guid.NewGuid():N}.tmp";
+                var (_, latest) = FindSnapshot(protectedPath);
+                string suffix = checked(latest + 1).ToString("D12", CultureInfo.InvariantCulture);
+                string next = $"{protectedPath}.{suffix}{SnapshotExtension}";
+                string temporary = $"{next}.{Guid.NewGuid():N}.tmp";
                 try
                 {
-                    await WriteTransactionRecordAsync(tx, replacement, FileMode.CreateNew, ct);
-                    File.Move(replacement, protectedPath, overwrite: true);
+                    await WriteTransactionRecordAsync(tx, temporary, FileMode.CreateNew, ct);
+                    // Snapshots imutáveis podem ser publicados mesmo se outro processo estiver lendo a versão anterior.
+                    File.Move(temporary, next);
                 }
-                finally { File.Delete(replacement); }
+                finally { File.Delete(temporary); }
                 return;
             }
 
@@ -1413,7 +1422,32 @@ namespace WinLab.Contracts.Transactions
             if (!TryResolveTransactionFilePath(transactionId, out string path)) return null;
             if (!File.Exists(path)) return null;
 
+            if (_protectedRecordWriter != null)
+                path = FindSnapshot(path).Path;
+            if (_verifyProtectedRecord != null && !_verifyProtectedRecord(path))
+                throw new UnauthorizedAccessException("O arquivo de baseline não é confiável.");
             return await ReadTransactionRecordAsync(path, ct);
+        }
+
+        private static (string Path, long Sequence) FindSnapshot(string anchor)
+        {
+            string latest = anchor;
+            long highest = 0;
+            string prefix = Path.GetFileName(anchor) + ".";
+            foreach (string candidate in Directory.EnumerateFiles(Path.GetDirectoryName(anchor)!, prefix + "*" + SnapshotExtension))
+            {
+                string name = Path.GetFileName(candidate);
+                if (name.Length != prefix.Length + 12 + SnapshotExtension.Length ||
+                    !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !name.EndsWith(SnapshotExtension, StringComparison.Ordinal))
+                    continue;
+                var sequenceText = name.AsSpan(prefix.Length, name.Length - prefix.Length - SnapshotExtension.Length);
+                if (!long.TryParse(sequenceText, NumberStyles.None, CultureInfo.InvariantCulture, out long sequence)
+                    || sequence <= highest)
+                    continue;
+                latest = candidate;
+                highest = sequence;
+            }
+            return (latest, highest);
         }
 
         private static async Task<TransactionDto?> ReadTransactionRecordAsync(string path, CancellationToken ct)

@@ -48,10 +48,10 @@ public sealed class AdminPermissionService(
         return prepared.Preview;
     }
 
-    public bool CanRestoreBatch(TransactionDto transaction)
+    public bool CanRestoreBatch(TransactionDto transaction, AdminPolicyHistory history)
     {
         if (transaction.Status == TransactionStatus.RolledBack) return true;
-        if (transaction.Status != TransactionStatus.Committed || transaction.Actions.Count == 0) return false;
+        if (!history.Complete || transaction.Status != TransactionStatus.Committed || transaction.Actions.Count == 0) return false;
         var actions = transaction.Actions.Where(action => action.Status != "RolledBackAndVerified").ToArray();
         var expectedIds = actions.Select(action => action.PolicyId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (actions.Length != expectedIds.Count || transaction.RollbackPlan.Any(step =>
@@ -68,6 +68,8 @@ public sealed class AdminPermissionService(
                     { Protected: false, PrivilegeClassification: "StandardUser" }))
                 return false;
             var observed = Capture(policy, sid);
+            if (LatestRecord(policy, sid, history, observed)?.Transaction.TransactionId != transaction.TransactionId)
+                return false;
             bool matches = AppliedState(action) switch
             {
                 1 => Equal(observed, Expected(policy)),

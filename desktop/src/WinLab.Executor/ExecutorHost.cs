@@ -499,10 +499,11 @@ namespace WinLab.Executor
                                 ? await _engine.RollbackTransactionAsync(rollbackReq, cancellationToken)
                                 : await WithProtectedTransactionAsync(async store =>
                                 {
-                                    var record = await store.FindAsync(rollbackReq.TransactionId, cancellationToken);
+                                    var history = await store.ReadAsync(cancellationToken);
+                                    var record = AdminPolicyJournal.Find(history, rollbackReq.TransactionId);
                                     if (record == null) throw new InvalidOperationException();
                                     return await record.Engine.RollbackTransactionAsync(rollbackReq, cancellationToken,
-                                        _administration.CanRestoreBatch);
+                                        transaction => _administration.CanRestoreBatch(transaction, history));
                                 });
                         }
                         catch (Exception ex) when (IsProtectedTransactionFailure(ex))

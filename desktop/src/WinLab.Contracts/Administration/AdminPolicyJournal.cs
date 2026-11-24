@@ -36,8 +36,10 @@ public sealed class AdminPolicyJournal(IPolicyCatalog catalog, IRegistryService 
         && (!Directory.Exists(JournalPath) || IsProtectedDirectory(JournalPath));
 
     public async Task<AdminPolicyRecord?> FindAsync(string transactionId, CancellationToken ct = default)
+        => Find(await ReadAsync(ct), transactionId);
+
+    public static AdminPolicyRecord? Find(AdminPolicyHistory history, string transactionId)
     {
-        var history = await ReadAsync(ct);
         if (!history.Complete) throw new InvalidOperationException("O histórico de baselines não pôde ser confirmado.");
         var records = history.Records.Where(record => string.Equals(record.Transaction.TransactionId, transactionId,
             StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
@@ -106,8 +108,10 @@ public sealed class AdminPolicyJournal(IPolicyCatalog catalog, IRegistryService 
         }
     }
 
+    [SupportedOSPlatform("windows")]
     private TransactionEngine Engine(string path, Func<string, FileMode, Stream> writer) =>
-        new(catalog, registry, hives, path, createDirectory: false, protectedRecordWriter: writer);
+        new(catalog, registry, hives, path, createDirectory: false, protectedRecordWriter: writer,
+            verifyProtectedRecord: ExecutorInstallTrust.IsProtectedPath);
 
     [SupportedOSPlatform("windows")]
     private static Stream OpenProtectedRecord(string path, FileMode mode)

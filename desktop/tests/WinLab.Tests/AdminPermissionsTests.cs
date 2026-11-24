@@ -159,14 +159,61 @@ public sealed class AdminPermissionsTests : IDisposable
         Assert.True(applied.Success);
         _registry.SetValue(RegistryHiveType.LocalMachine, MsiPath, "DisableMSI", 2);
 
+        var history = await new Journal(_engine).ReadAsync(CancellationToken.None);
         var rolledBack = await _engine.RollbackTransactionAsync(new RollbackTransactionRequestDto
         {
             TransactionId = applied.TransactionId
-        }, confirmCurrent: _service.CanRestoreBatch);
+        }, confirmCurrent: tx => _service.CanRestoreBatch(tx, history));
 
         Assert.False(rolledBack.Success);
         Assert.Equal(1, _registry.GetValue(RegistryHiveType.LocalMachine, Path, Value));
         Assert.Equal(2, _registry.GetValue(RegistryHiveType.LocalMachine, MsiPath, "DisableMSI"));
+    }
+
+    [Fact]
+    public async Task LegacyBatchCannotRestoreAnOlderBaselineOverTheSameValueFromANewerTransaction()
+    {
+        var change = new ApplyTransactionRequestDto
+        {
+            Policies = [new PolicyApplyItemDto { PolicyId = Policy, DesiredState = "Blocked" }]
+        };
+        var older = await _engine.ApplyTransactionAsync(change);
+        var newer = await _engine.ApplyTransactionAsync(change);
+        Assert.True(older.Success && newer.Success);
+        var history = await new Journal(_engine).ReadAsync(CancellationToken.None);
+
+        var outcome = await _engine.RollbackTransactionAsync(new RollbackTransactionRequestDto
+        {
+            TransactionId = older.TransactionId
+        }, confirmCurrent: tx => _service.CanRestoreBatch(tx, history));
+
+        Assert.False(outcome.Success);
+        Assert.Equal(1, _registry.GetValue(RegistryHiveType.LocalMachine, Path, Value));
+    }
+
+    [Fact]
+    public async Task ProtectedJournalPublishesNewStateWhileAPreviousRecordIsOpen()
+    {
+        var engine = new TransactionEngine(new PolicyCatalog(), _registry, new MockUserHiveManager(), _directory,
+            protectedRecordWriter: (file, mode) => new FileStream(file, mode, FileAccess.Write, FileShare.None));
+        var applied = await engine.ApplyTransactionAsync(new ApplyTransactionRequestDto
+        {
+            Policies = [new PolicyApplyItemDto { PolicyId = Policy, DesiredState = "Blocked" }]
+        });
+        Assert.True(applied.Success);
+        string anchor = System.IO.Path.Combine(_directory, applied.TransactionId + ".json");
+        var previous = Directory.GetFiles(_directory, "*.snapshot").Order(StringComparer.Ordinal).Last();
+        using var anchorReader = File.Open(anchor, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var priorReader = File.Open(previous, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        var rollback = await engine.RollbackTransactionAsync(new RollbackTransactionRequestDto
+        {
+            TransactionId = applied.TransactionId
+        });
+
+        Assert.True(rollback.Success);
+        Assert.Equal(TransactionStatus.RolledBack, (await engine.GetTransactionAsync(applied.TransactionId))?.Status);
+        Assert.Null(_registry.GetValue(RegistryHiveType.LocalMachine, Path, Value));
     }
 
     [Fact]

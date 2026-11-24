@@ -20,7 +20,8 @@ public sealed class AdminIpc(AdminAccountService accounts, WindowsAdminDiagnosti
 {
     public const string AdministrativeWriteLock = @"Global\WinLab.Administration.Sprint03";
 
-    public bool CanRestoreBatch(TransactionDto transaction) => permissions.CanRestoreBatch(transaction);
+    public bool CanRestoreBatch(TransactionDto transaction, AdminPolicyHistory history) =>
+        permissions.CanRestoreBatch(transaction, history);
 
     public static AdminIpc ForWindows(IAdminAccountStore accountStore, IRegistryService registry,
         IUserHiveManager hives, IWindowsScanner scanner)
