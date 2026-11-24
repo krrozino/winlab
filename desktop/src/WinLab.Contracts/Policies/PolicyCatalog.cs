@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using WinLab.Contracts.Transactions;
 
 namespace WinLab.Contracts.Policies
 {
@@ -8,10 +9,11 @@ namespace WinLab.Contracts.Policies
     {
         private readonly Dictionary<string, IPolicyHandler> _policies;
 
-        public PolicyCatalog(Func<string, bool>? processChecker = null)
+        public PolicyCatalog(Func<string, bool>? processChecker = null, bool includeAdminPermissions = false)
         {
             _policies = new Dictionary<string, IPolicyHandler>(StringComparer.OrdinalIgnoreCase);
             RegisterDefaults(processChecker);
+            if (includeAdminPermissions) RegisterAdminPermissions();
         }
 
         private void RegisterDefaults(Func<string, bool>? processChecker)
@@ -207,6 +209,33 @@ namespace WinLab.Contracts.Policies
                 risk: PolicyRisk.Low,
                 scope: PolicyScope.User
             ));
+        }
+
+        private void RegisterAdminPermissions()
+        {
+            Register(new RegistryDWordPolicyHandler("personalization.lock_screen", "Personalização",
+                "Alteração da tela de bloqueio", "Impede mudar a imagem da tela de bloqueio e de entrada para toda a máquina.",
+                @"SOFTWARE\Policies\Microsoft\Windows\Personalization", "NoChangingLockScreen",
+                requiresLogoff: true, scope: PolicyScope.Machine));
+
+            Register(new RegistryDWordPolicyHandler("system.task_manager", "Sistema", "Gerenciador de Tarefas",
+                "Remove o acesso ao Gerenciador de Tarefas para a conta comum selecionada.",
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", "DisableTaskMgr", requiresLogoff: true, risk: PolicyRisk.Medium));
+
+            Register(new RegistryDWordPolicyHandler("network.lan_properties", "Rede", "Propriedades de conexões LAN",
+                "Bloqueia a abertura da caixa de propriedades da conexão no painel clássico da conta selecionada.",
+                @"SOFTWARE\Policies\Microsoft\Windows\Network Connections", "NC_LanProperties",
+                enforcedValue: 0, unconfiguredValue: 1, requiresLogoff: true, risk: PolicyRisk.Medium));
+
+            Register(new RegistryValuePolicyHandler("settings.hide_network_pages", "Configurações",
+                "Páginas de rede e proxy em Configurações", "Oculta as páginas de status, ethernet, Wi‑Fi e proxy da conta selecionada.",
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer", "SettingsPageVisibility",
+                "hide:network-status;network-ethernet;network-wifi;network-proxy", RegistryValueType.String, requiresLogoff: true));
+
+            Register(new RegistryDWordPolicyHandler("apps.block_unmanaged_msi", "Aplicativos",
+                "Instalação de MSI não gerenciado", "O Windows Installer bloqueia instalações não gerenciadas na máquina.",
+                @"SOFTWARE\Policies\Microsoft\Windows\Installer", "DisableMSI",
+                risk: PolicyRisk.High, scope: PolicyScope.Machine));
         }
 
         public void Register(IPolicyHandler handler)

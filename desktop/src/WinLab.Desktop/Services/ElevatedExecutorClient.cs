@@ -34,11 +34,14 @@ namespace WinLab.Desktop.Services
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetNamedPipeClientProcessId(SafeHandle Pipe, out uint ClientProcessId);
 
-        public async Task<IpcResponse<object>> HandleRequestAsync(string rawJson)
+        public Task<IpcResponse<object>> HandleRequestAsync(string rawJson) => HandleRequestAsync(rawJson, freshElevation: false);
+
+        public async Task<IpcResponse<object>> HandleRequestAsync(string rawJson, bool freshElevation)
         {
             await _lock.WaitAsync();
             try
             {
+                if (freshElevation) Disconnect();
                 var connectionResult = await EnsureConnectedAsync();
                 if (!connectionResult.Success)
                 {
@@ -57,6 +60,7 @@ namespace WinLab.Desktop.Services
             }
             finally
             {
+                if (freshElevation) Disconnect();
                 _lock.Release();
             }
         }

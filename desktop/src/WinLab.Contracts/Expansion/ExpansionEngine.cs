@@ -14,9 +14,11 @@ public sealed record ExpansionStatus(string Target, bool Supported, string Detai
     object? Configured, string? RollbackRevision, bool RequiresAppRestart, bool RequiresRestart, bool CanWrite = false);
 
 public sealed record ExpansionPreview(string Revision, object? Before, object? After, string Detail,
-    bool RequiresAppRestart, bool RequiresRestart);
+    bool RequiresAppRestart, bool RequiresRestart, string Scope = "Machine", string? TargetUserSid = null,
+    bool CanApply = true, IReadOnlyList<string>? Limitations = null);
 
-public sealed class ExpansionEngine(IRegistryService registry, Func<string, (bool Supported, string Detail)> capability)
+public sealed class ExpansionEngine(IRegistryService registry, Func<string, (bool Supported, string Detail)> capability,
+    bool protectExternal = false)
 {
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private const RegistryHiveType Hive = RegistryHiveType.LocalMachine;
@@ -46,8 +48,13 @@ public sealed class ExpansionEngine(IRegistryService registry, Func<string, (boo
         var saved = Load(plan.Target);
         Ensure(saved?.Pending == null, "Há uma operação interrompida. Restaure a configuração anterior primeiro.");
         var proposed = Propose(plan, observed);
+        bool canApply = !protectExternal || CanChange(observed, saved);
         return new(Hash(new { Plan = plan, Observed = observed, Saved = saved }),
-            Describe(plan.Target, observed), Describe(plan.Target, proposed), detail, plan.Target != "usb", plan.Target == "usb");
+            Describe(plan.Target, observed), Describe(plan.Target, proposed), detail, plan.Target != "usb", plan.Target == "usb",
+            CanApply: canApply,
+            Limitations: canApply
+                ? ["A releitura confirma configuração do registro. Outros controles podem ter precedência."]
+                : ["Há configuração externa ou divergência. O WinLab preservará os valores observados."]);
     }
 
     public ExpansionStatus Apply(ExpansionPlan plan, string revision)
@@ -58,6 +65,7 @@ public sealed class ExpansionEngine(IRegistryService registry, Func<string, (boo
         var old = Load(plan.Target);
         Ensure(old?.Pending == null && revision == Hash(new { Plan = plan, Observed = observed, Saved = old }),
             "A política mudou desde a prévia. Consulte as diferenças novamente.");
+        Ensure(!protectExternal || CanChange(observed, old), "Há configuração externa ou divergência. O WinLab preservou os valores observados.");
         var proposed = Propose(plan, observed);
         if (Match(proposed, observed) && (old == null || Match(observed, old.Desired))) return Query(plan.Target);
         var pending = new History(old?.Baseline ?? observed, proposed, observed);
@@ -265,6 +273,10 @@ public sealed class ExpansionEngine(IRegistryService registry, Func<string, (boo
 
     private static Value? Find(Value[] values, string name) =>
         Array.Find(values, value => string.Equals(value.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    private static bool CanChange(Snapshot observed, History? saved) => saved == null
+        ? observed.Keys.All(key => key.Values.Length == 0)
+        : saved.Pending == null && Match(observed, saved.Desired);
 
     internal static string Hash<T>(T value) => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(value, Json)));
     private static bool Match<T>(T left, T right) => Hash(left) == Hash(right);

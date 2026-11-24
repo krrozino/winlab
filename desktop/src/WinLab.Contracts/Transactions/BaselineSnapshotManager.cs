@@ -47,18 +47,18 @@ namespace WinLab.Contracts.Transactions
 
                 foreach (var policy in policyList)
                 {
-                    if (policy is RegistryDWordPolicyHandler dwordPolicy)
+                    if (policy is RegistryValuePolicyHandler valuePolicy)
                     {
-                        var (hive, subKey) = dwordPolicy.Scope == PolicyScope.Machine
-                            ? (RegistryHiveType.LocalMachine, dwordPolicy.RelativeSubKeyPath)
-                            : ResolveTargetKey(dwordPolicy.RelativeSubKeyPath, targetUserSid, hiveScope);
+                        var (hive, subKey) = valuePolicy.Scope == PolicyScope.Machine
+                            ? (RegistryHiveType.LocalMachine, valuePolicy.RelativeSubKeyPath)
+                            : ResolveTargetKey(valuePolicy.RelativeSubKeyPath, targetUserSid, hiveScope);
                         var entry = CaptureEntry(
-                            dwordPolicy.PolicyId,
-                            dwordPolicy.Scope,
+                            valuePolicy.PolicyId,
+                            valuePolicy.Scope,
                             hive,
                             subKey,
-                            dwordPolicy.RelativeSubKeyPath,
-                            dwordPolicy.ValueName);
+                            valuePolicy.RelativeSubKeyPath,
+                            valuePolicy.ValueName);
                         snapshot.Entries.Add(entry);
 
                         rollbackSteps.Add(CreateRollbackStep(entry));

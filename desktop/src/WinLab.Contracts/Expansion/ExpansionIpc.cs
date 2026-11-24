@@ -4,6 +4,7 @@ using System.Security;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using WinLab.Contracts.Administration;
 using WinLab.Contracts.RegistryServices;
 
 namespace WinLab.Contracts.Expansion;
@@ -12,9 +13,10 @@ public sealed class ExpansionIpc(
     IRegistryService registry,
     IWindowsScanner scanner,
     Func<string, (bool Supported, string Detail)>? capability = null,
-    IAppLockerAuditBackend? appLocker = null)
+    IAppLockerAuditBackend? appLocker = null,
+    bool protectExternal = false)
 {
-    private readonly ExpansionEngine _registryPolicies = new(registry, capability ?? WindowsPolicyCapabilities.Query);
+    private readonly ExpansionEngine _registryPolicies = new(registry, capability ?? WindowsPolicyCapabilities.Query, protectExternal);
     private readonly AppLockerAudit _audit = new(registry, appLocker ?? new WindowsAppLocker(scanner));
 
     public async Task<IpcResponse<object>> HandleAsync(string id, string action, JsonElement root, bool canWrite,
@@ -31,7 +33,8 @@ public sealed class ExpansionIpc(
             {
                 if (!canWrite) return IpcResponse<object>.Fail(id, ExecutorInstallTrust.ReadOnlyMessage, "TRUSTED_EXECUTOR_REQUIRED");
                 using var operation = OperatingSystem.IsWindows()
-                    ? new Semaphore(1, 1, @"Global\WinLab.PolicyExpansion")
+                    ? protectExternal ? AdminIpc.OpenProtectedWriteLock(@"Global\WinLab.PolicyExpansion")
+                        : new Semaphore(1, 1, @"Global\WinLab.PolicyExpansion")
                     : new Semaphore(1, 1);
                 if (!operation.WaitOne(0))
                     return IpcResponse<object>.Fail(id, "Outra alteração está em andamento.", "POLICY_EXPANSION_BUSY");
@@ -57,6 +60,8 @@ public sealed class ExpansionIpc(
 
             if (result is ExpansionStatus status)
                 result = status with { CanWrite = canWrite };
+            if (result is ExpansionPreview preview)
+                result = preview with { CanApply = canWrite && preview.CanApply };
             return IpcResponse<object>.Ok(id, JsonSerializer.SerializeToElement(result, ExpansionEngine.Json));
         }
         catch (ArgumentException ex)
@@ -68,7 +73,8 @@ public sealed class ExpansionIpc(
             return IpcResponse<object>.Fail(id, ex.Message, "POLICY_EXPANSION_PRECONDITION");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException
-            or JsonException or System.Xml.XmlException or OperationCanceledException or System.ComponentModel.Win32Exception)
+            or JsonException or System.Xml.XmlException or OperationCanceledException or System.ComponentModel.Win32Exception
+            or WaitHandleCannotBeOpenedException)
         {
             return IpcResponse<object>.Fail(id, "O Windows não confirmou a operação. Atualize a consulta e verifique se há restauração pendente.",
                 "POLICY_EXPANSION_UNKNOWN_RESULT");

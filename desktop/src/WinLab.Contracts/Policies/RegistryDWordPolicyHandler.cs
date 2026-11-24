@@ -4,7 +4,7 @@ using WinLab.Contracts.Transactions;
 
 namespace WinLab.Contracts.Policies
 {
-    public class RegistryDWordPolicyHandler : IPolicyHandler
+    public class RegistryValuePolicyHandler : IPolicyHandler
     {
         public string PolicyId { get; }
         public string Category { get; }
@@ -20,18 +20,18 @@ namespace WinLab.Contracts.Policies
 
         public string RelativeSubKeyPath { get; }
         public string ValueName { get; }
-        public int EnforcedValue { get; }
-        public int UnconfiguredValue { get; }
+        public object BlockedValue { get; }
+        public RegistryValueType ValueType { get; }
 
-        public RegistryDWordPolicyHandler(
+        public RegistryValuePolicyHandler(
             string policyId,
             string category,
             string title,
             string description,
             string relativeSubKeyPath,
             string valueName,
-            int enforcedValue = 1,
-            int unconfiguredValue = 0,
+            object blockedValue,
+            RegistryValueType valueType,
             bool requiresLogoff = false,
             bool requiresRestart = false,
             bool requiresAppRestart = false,
@@ -44,8 +44,8 @@ namespace WinLab.Contracts.Policies
             Description = description;
             RelativeSubKeyPath = relativeSubKeyPath.Trim('\\');
             ValueName = valueName;
-            EnforcedValue = enforcedValue;
-            UnconfiguredValue = unconfiguredValue;
+            BlockedValue = blockedValue;
+            ValueType = valueType;
             RequiresLogoff = requiresLogoff;
             RequiresRestart = requiresRestart;
             RequiresAppRestart = requiresAppRestart;
@@ -148,20 +148,14 @@ namespace WinLab.Contracts.Policies
                     };
                 }
 
-                bool isDwordType = (kind == null || kind == RegistryValueType.DWord) && !(rawValue is string) && !(rawValue is bool);
-
                 bool isActive = false;
-                if (rawValue != null && isDwordType)
+                if (rawValue != null && (kind == null || kind == ValueType))
                 {
-                    try
-                    {
-                        int val = Convert.ToInt32(rawValue);
-                        isActive = (val == EnforcedValue);
-                    }
-                    catch
-                    {
-                        isActive = false;
-                    }
+                    if (ValueType == RegistryValueType.String)
+                        isActive = Equals(rawValue, BlockedValue);
+                    else if (ValueType == RegistryValueType.DWord && rawValue is not (string or bool))
+                        try { isActive = Equals(Convert.ToInt32(rawValue), BlockedValue); }
+                        catch (Exception ex) when (ex is InvalidCastException or FormatException or OverflowException) { }
                 }
 
                 PolicyEffectiveState state = isActive
@@ -238,7 +232,7 @@ namespace WinLab.Contracts.Policies
 
                 if (desiredState == PolicyDesiredState.Blocked)
                 {
-                    registry.SetValue(hive, subKey, ValueName, EnforcedValue, RegistryValueType.DWord);
+                    registry.SetValue(hive, subKey, ValueName, BlockedValue, ValueType);
                     return new PolicyApplyResult
                     {
                         PolicyId = PolicyId,
@@ -320,6 +314,23 @@ namespace WinLab.Contracts.Policies
             {
                 hiveScope?.Dispose();
             }
+        }
+    }
+
+    public class RegistryDWordPolicyHandler : RegistryValuePolicyHandler
+    {
+        public int EnforcedValue { get; }
+        public int UnconfiguredValue { get; }
+
+        public RegistryDWordPolicyHandler(string policyId, string category, string title, string description,
+            string relativeSubKeyPath, string valueName, int enforcedValue = 1, int unconfiguredValue = 0,
+            bool requiresLogoff = false, bool requiresRestart = false, bool requiresAppRestart = false,
+            PolicyRisk risk = PolicyRisk.Low, PolicyScope scope = PolicyScope.User)
+            : base(policyId, category, title, description, relativeSubKeyPath, valueName, enforcedValue,
+                RegistryValueType.DWord, requiresLogoff, requiresRestart, requiresAppRestart, risk, scope)
+        {
+            EnforcedValue = enforcedValue;
+            UnconfiguredValue = unconfiguredValue;
         }
     }
 }
