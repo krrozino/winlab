@@ -390,7 +390,7 @@ namespace WinLab.Contracts.Transactions
                         handlers.Select(h => h.Handler),
                         request.TargetUserSid);
                     if (confirmBaseline != null && !confirmBaseline(baseline))
-                        throw new InvalidOperationException("O registro mudou desde a prévia. Nenhuma política foi alterada.");
+                        throw new InvalidOperationException("O registro não atende às precondições da operação. Nenhuma política foi alterada.");
                 }
                 catch (Exception ex)
                 {
@@ -641,7 +641,12 @@ namespace WinLab.Contracts.Transactions
                     };
                 }
 
-                tx.Status = TransactionStatus.RollingBack;
+                var selectedActions = policyId == null ? [] : tx.Actions.Where(action =>
+                    string.Equals(action.PolicyId, policyId, StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (policyId == null)
+                    tx.Status = TransactionStatus.RollingBack;
+                else
+                    foreach (var action in selectedActions) action.Status = "RollingBack";
                 await SaveTransactionAsync(tx, ct);
 
                 HashSet<string>? filter = null;
@@ -659,7 +664,10 @@ namespace WinLab.Contracts.Transactions
                 if (rollbackFailures > 0)
                 {
                     string incompleteMsg = $"Recuperação incompleta na transação '{request.TransactionId}': {restored} item(ns) restaurado(s), {rollbackFailures} falha(s) ({string.Join("; ", rollbackErrors)}).";
-                    tx.Status = TransactionStatus.Failed;
+                    if (policyId == null)
+                        tx.Status = TransactionStatus.Failed;
+                    else
+                        foreach (var action in selectedActions) action.Status = "RollbackFailed";
                     tx.FailureReason = incompleteMsg;
                     tx.UpdatedAt = DateTime.UtcNow;
                     await SaveTransactionAsync(tx, ct);
@@ -675,9 +683,7 @@ namespace WinLab.Contracts.Transactions
                     };
                 }
 
-                if (policyId != null)
-                    foreach (var action in tx.Actions.Where(action => string.Equals(action.PolicyId, policyId, StringComparison.OrdinalIgnoreCase)))
-                        action.Status = "RolledBackAndVerified";
+                foreach (var action in selectedActions) action.Status = "RolledBackAndVerified";
 
                 tx.Status = policyId == null || tx.Actions.All(action => action.Status == "RolledBackAndVerified")
                     ? TransactionStatus.RolledBack : TransactionStatus.Committed;
@@ -1074,6 +1080,16 @@ namespace WinLab.Contracts.Transactions
             }
         }
 
+        internal static bool IsMatchingRestoreValue(string? type, object? baseline, object? restore)
+        {
+            if (!Enum.TryParse<RegistryValueType>(type, out var kind) || !Enum.IsDefined(kind)) return false;
+            try
+            {
+                return RegistryValuesEqual(kind, NormalizeRegistryValue(kind, baseline), NormalizeRegistryValue(kind, restore));
+            }
+            catch (InvalidOperationException) { return false; }
+        }
+
         private static object CloneValueForWrite(RegistryValueType kind, object value)
         {
             return kind switch
@@ -1318,8 +1334,7 @@ namespace WinLab.Contracts.Transactions
             {
                 try
                 {
-                    string json = await File.ReadAllTextAsync(file, ct);
-                    var tx = JsonSerializer.Deserialize<TransactionDto>(json);
+                    var tx = await ReadTransactionRecordAsync(file, ct);
                     if (tx != null) list.Add(tx);
                 }
                 catch
@@ -1335,6 +1350,8 @@ namespace WinLab.Contracts.Transactions
         {
             if (!Directory.Exists(_transactionDir))
             {
+                if (_protectedRecordWriter != null)
+                    throw new IOException("O diretório confiável de baselines não está disponível.");
                 Directory.CreateDirectory(_transactionDir);
             }
 
@@ -1396,8 +1413,14 @@ namespace WinLab.Contracts.Transactions
             if (!TryResolveTransactionFilePath(transactionId, out string path)) return null;
             if (!File.Exists(path)) return null;
 
-            string json = await File.ReadAllTextAsync(path, ct);
-            return JsonSerializer.Deserialize<TransactionDto>(json);
+            return await ReadTransactionRecordAsync(path, ct);
+        }
+
+        private static async Task<TransactionDto?> ReadTransactionRecordAsync(string path, CancellationToken ct)
+        {
+            // O leitor pode concluir a leitura do snapshot enquanto um escritor publica a versão seguinte por rename.
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            return await JsonSerializer.DeserializeAsync<TransactionDto>(stream, cancellationToken: ct);
         }
     }
 }

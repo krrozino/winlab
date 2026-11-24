@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.Versioning;
 using System.Security;
 using System.Security.AccessControl;
@@ -33,6 +34,15 @@ public sealed class AdminPolicyJournal(IPolicyCatalog catalog, IRegistryService 
 
     public bool CanWrite => OperatingSystem.IsWindows() && IsProtectedDirectory(InstallRoot)
         && (!Directory.Exists(JournalPath) || IsProtectedDirectory(JournalPath));
+
+    public async Task<AdminPolicyRecord?> FindAsync(string transactionId, CancellationToken ct = default)
+    {
+        var history = await ReadAsync(ct);
+        if (!history.Complete) throw new InvalidOperationException("O histórico de baselines não pôde ser confirmado.");
+        var records = history.Records.Where(record => string.Equals(record.Transaction.TransactionId, transactionId,
+            StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
+        return records.Length == 1 ? records[0] : null;
+    }
 
     public TransactionEngine OpenForWrite()
     {

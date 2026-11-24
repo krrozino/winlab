@@ -48,6 +48,37 @@ public sealed class AdminPermissionService(
         return prepared.Preview;
     }
 
+    public bool CanRestoreBatch(TransactionDto transaction)
+    {
+        if (transaction.Status == TransactionStatus.RolledBack) return true;
+        if (transaction.Status != TransactionStatus.Committed || transaction.Actions.Count == 0) return false;
+        var actions = transaction.Actions.Where(action => action.Status != "RolledBackAndVerified").ToArray();
+        var expectedIds = actions.Select(action => action.PolicyId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (actions.Length != expectedIds.Count || transaction.RollbackPlan.Any(step =>
+                !transaction.Actions.Any(action => action.PolicyId.Equals(step.PolicyId, StringComparison.OrdinalIgnoreCase))))
+            return false;
+
+        foreach (var action in actions)
+        {
+            var policy = catalog.GetPolicy(action.PolicyId);
+            if (policy == null || action.Status != "AppliedAndVerified" || !HasValidRollbackLayout(transaction, policy))
+                return false;
+            string? sid = policy.Scope == PolicyScope.User ? transaction.TargetUserSid : null;
+            if (policy.Scope == PolicyScope.User && (sid == null || FindTarget(sid) is not
+                    { Protected: false, PrivilegeClassification: "StandardUser" }))
+                return false;
+            var observed = Capture(policy, sid);
+            bool matches = AppliedState(action) switch
+            {
+                1 => Equal(observed, Expected(policy)),
+                0 => observed.All(value => !value.Exists),
+                _ => false
+            };
+            if (!matches) return false;
+        }
+        return true;
+    }
+
     public async Task<AdminPermissionResultDto> ApplyAsync(AdminPermissionPlan plan, string revision, CancellationToken ct = default)
     {
         var prepared = await PrepareAsync(plan, true, ct);
@@ -219,7 +250,8 @@ public sealed class AdminPermissionService(
         var intents = new List<string> { "Preserve" };
         if (canWrite && status.Supported && (origin == "None" || winlab) && target != "apps")
             intents.Add("Block");
-        if (canWrite && winlab) intents.Add("Restore");
+        if (canWrite && expansionStoreTrusted?.Invoke() == true && status.RollbackRevision != null &&
+            (winlab || status.State == "RecoveryRequired")) intents.Add("Restore");
         return new(id, name, category, effect, effect, "Machine", target == "apps" ? "High" : "Medium",
             status.Detail, status.Supported, status.RequiresRestart, false, status.RequiresAppRestart,
             "Expansion", intents, ["Escopo de máquina. Use a prévia e a restauração do mecanismo de expansão.", ObservationLimit, BaselineLimit],
@@ -249,11 +281,16 @@ public sealed class AdminPermissionService(
 
     private static bool IsBlockedRecord(TransactionDto tx, IPolicyHandler policy) =>
         tx.Actions.LastOrDefault(action => SamePolicy(action.PolicyId, policy)) is { Status: "AppliedAndVerified" } action &&
-        action.AppliedValue is JsonElement { ValueKind: JsonValueKind.Number } value && value.TryGetInt32(out int state) && state == 1;
+        AppliedState(action) == 1;
 
-    private static bool EligibleRollback(TransactionDto tx, IPolicyHandler policy)
+    private static int? AppliedState(TransactionActionRecordDto action) =>
+        action.AppliedValue is JsonElement { ValueKind: JsonValueKind.Number } value && value.TryGetInt32(out int state) ? state : null;
+
+    private static bool EligibleRollback(TransactionDto tx, IPolicyHandler policy) =>
+        tx.Status == TransactionStatus.Committed && IsBlockedRecord(tx, policy) && HasValidRollbackLayout(tx, policy);
+
+    private static bool HasValidRollbackLayout(TransactionDto tx, IPolicyHandler policy)
     {
-        if (tx.Status != TransactionStatus.Committed || !IsBlockedRecord(tx, policy)) return false;
         var layout = Expected(policy);
         var entries = tx.Baseline.Entries.Where(entry => SamePolicy(entry.PolicyId, policy)).ToArray();
         var original = Describe(entries);
@@ -261,9 +298,21 @@ public sealed class AdminPermissionService(
         return layout.Length != 0 && entries.All(entry => entry.Scope == policy.Scope) &&
             layout.Length == original.Length && layout.Length == steps.Length &&
             layout.Select(value => (value.Path, value.Name)).SequenceEqual(original.Select(value => (value.Path, value.Name))) &&
-            layout.All(value => steps.Count(step => step.Scope == policy.Scope && step.RelativeSubKey == value.Path &&
-                step.ValueName == value.Name && (policy.Scope == PolicyScope.User ||
-                    step.Hive == RegistryHiveType.LocalMachine.ToString() && step.SubKey == value.Path)) == 1);
+            entries.All(entry => steps.Count(step => IsValidRollbackStep(policy, entry, step)) == 1);
+    }
+
+    private static bool IsValidRollbackStep(IPolicyHandler policy, RegistryValueSnapshotDto entry, RollbackStepDto step)
+    {
+        if (step.Scope != policy.Scope || step.RelativeSubKey != entry.RelativeSubKey || step.ValueName != entry.ValueName)
+            return false;
+        if (policy.Scope == PolicyScope.Machine &&
+            (step.Hive != RegistryHiveType.LocalMachine.ToString() || step.SubKey != entry.RelativeSubKey))
+            return false;
+        if (entry.State is BaselineValueState.DoesNotExist or BaselineValueState.KeyDoesNotExist)
+            return step.Operation == "DeleteValue";
+        return entry.State == BaselineValueState.Exists && step.Operation == "RestoreValue" &&
+            entry.ValueKind == step.RestoreKind &&
+            TransactionEngine.IsMatchingRestoreValue(entry.ValueKind, entry.OriginalValue, step.RestoreValue);
     }
 
     private static SettingsValue[] BaselineFor(TransactionDto transaction, IPolicyHandler policy) =>

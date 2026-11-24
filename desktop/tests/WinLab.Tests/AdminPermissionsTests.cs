@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WinLab.Contracts.Administration;
@@ -60,6 +62,22 @@ public sealed class AdminPermissionsTests : IDisposable
         Assert.Equal("ExternalLocal", block.Before.Origin);
         Assert.False(block.CanApply);
         Assert.False(allow.CanApply);
+    }
+
+    [Fact]
+    public void ExpansionPreservesExistingExternalRemovableDiskPolicy()
+    {
+        const string removableDisks = @"SOFTWARE\Policies\Microsoft\Windows\RemovableStorageDevices\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}";
+        _registry.SetValue(RegistryHiveType.LocalMachine, removableDisks, "Deny_Read", 1);
+        var expansion = new ExpansionEngine(_registry, _ => (true, "Synthetic capability"), protectExternal: true);
+        var plan = new ExpansionPlan { Target = "usb", DenyExecute = true };
+
+        var preview = expansion.Preview(plan);
+
+        Assert.False(preview.CanApply);
+        Assert.Throws<InvalidOperationException>(() => expansion.Apply(plan, preview.Revision));
+        Assert.Equal(1, _registry.GetValue(RegistryHiveType.LocalMachine, removableDisks, "Deny_Read"));
+        Assert.Null(_registry.GetValue(RegistryHiveType.LocalMachine, removableDisks, "Deny_Execute"));
     }
 
     [Fact]
@@ -125,6 +143,77 @@ public sealed class AdminPermissionsTests : IDisposable
         Assert.Null(_registry.GetValue(RegistryHiveType.LocalMachine, Path, Value));
         Assert.Equal(1, _registry.GetValue(RegistryHiveType.LocalMachine, MsiPath, "DisableMSI"));
         Assert.True((await _service.PreviewAsync(new(MsiPolicy, "Restore"), true)).CanApply);
+    }
+
+    [Fact]
+    public async Task LegacyBatchCannotOverwriteDriftInAnotherPolicy()
+    {
+        var applied = await _engine.ApplyTransactionAsync(new ApplyTransactionRequestDto
+        {
+            Policies =
+            [
+                new PolicyApplyItemDto { PolicyId = Policy, DesiredState = "Blocked" },
+                new PolicyApplyItemDto { PolicyId = MsiPolicy, DesiredState = "Blocked" }
+            ]
+        });
+        Assert.True(applied.Success);
+        _registry.SetValue(RegistryHiveType.LocalMachine, MsiPath, "DisableMSI", 2);
+
+        var rolledBack = await _engine.RollbackTransactionAsync(new RollbackTransactionRequestDto
+        {
+            TransactionId = applied.TransactionId
+        }, confirmCurrent: _service.CanRestoreBatch);
+
+        Assert.False(rolledBack.Success);
+        Assert.Equal(1, _registry.GetValue(RegistryHiveType.LocalMachine, Path, Value));
+        Assert.Equal(2, _registry.GetValue(RegistryHiveType.LocalMachine, MsiPath, "DisableMSI"));
+    }
+
+    [Fact]
+    public async Task InconsistentMultiValueBaselineCannotBePreviewedAsRestorable()
+    {
+        const string browserPolicy = "browser.chrome.incognito";
+        var applied = await _engine.ApplyTransactionAsync(new ApplyTransactionRequestDto
+        {
+            Policies = [new PolicyApplyItemDto { PolicyId = browserPolicy, DesiredState = "Blocked" }]
+        });
+        Assert.True(applied.Success);
+        await ChangeStoredTransaction(applied.TransactionId, tx => tx.RollbackPlan.Last().Operation = "InvalidOperation");
+
+        var preview = await _service.PreviewAsync(new(browserPolicy, "Restore"), true);
+
+        Assert.False(preview.CanApply);
+    }
+
+    [Fact]
+    public async Task FailedSelectiveRollbackDoesNotInvalidateOtherBaselinesInItsBatch()
+    {
+        var applied = await _engine.ApplyTransactionAsync(new ApplyTransactionRequestDto
+        {
+            Policies =
+            [
+                new PolicyApplyItemDto { PolicyId = Policy, DesiredState = "Blocked" },
+                new PolicyApplyItemDto { PolicyId = MsiPolicy, DesiredState = "Blocked" }
+            ]
+        });
+        Assert.True(applied.Success);
+        await ChangeStoredTransaction(applied.TransactionId,
+            tx => tx.RollbackPlan.Single(step => step.PolicyId == Policy).Operation = "InvalidOperation");
+
+        var failed = await _engine.RollbackTransactionAsync(new RollbackTransactionRequestDto
+        {
+            TransactionId = applied.TransactionId
+        }, policyId: Policy);
+
+        Assert.False(failed.Success);
+        Assert.True((await _service.PreviewAsync(new(MsiPolicy, "Restore"), true)).CanApply);
+    }
+
+    private async Task ChangeStoredTransaction(string id, Action<TransactionDto> change)
+    {
+        var transaction = Assert.IsType<TransactionDto>(await _engine.GetTransactionAsync(id));
+        change(transaction);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(_directory, id + ".json"), JsonSerializer.Serialize(transaction));
     }
 
     [Fact]

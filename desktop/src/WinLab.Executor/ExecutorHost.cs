@@ -33,6 +33,7 @@ namespace WinLab.Executor
         private readonly IRegistryService _registry;
         private readonly IUserHiveManager _hiveManager;
         private readonly TransactionEngine _engine;
+        private readonly AdminPolicyJournal? _protectedTransactions;
         private readonly ExpansionIpc _expansion;
         private readonly AdminIpc _administration;
 
@@ -58,7 +59,9 @@ namespace WinLab.Executor
             _catalog = catalog ?? new PolicyCatalog();
             _registry = registry ?? (OperatingSystem.IsWindows() ? new Services.WindowsRegistryService() : new InMemoryRegistryService());
             _hiveManager = hiveManager ?? (OperatingSystem.IsWindows() ? new Services.WindowsUserHiveManager() : new MockUserHiveManager());
-            _engine = engine ?? new TransactionEngine(_catalog, _registry, _hiveManager);
+            if (OperatingSystem.IsWindows() && engine == null && scanner == null && catalog == null && registry == null && hiveManager == null)
+                _protectedTransactions = new AdminPolicyJournal(_catalog, _registry, _hiveManager);
+            _engine = engine ?? new TransactionEngine(_catalog, _registry, _hiveManager, createDirectory: _protectedTransactions == null);
             _expansion = new ExpansionIpc(_registry, _scanner, protectExternal: true);
             var accountStore = new WindowsAdminAccountStore(_registry, ExecutorInstallTrust.IsAdministrationStoreProtected);
             var provisioner = new Services.LocalAccountProvisioner(_registry, accountStore);
@@ -447,7 +450,18 @@ namespace WinLab.Executor
                             }
                         }
 
-                        var applyResult = await _engine.ApplyTransactionAsync(applyReq, cancellationToken);
+                        ApplyTransactionResultDto applyResult;
+                        try
+                        {
+                            applyResult = _protectedTransactions == null
+                                ? await _engine.ApplyTransactionAsync(applyReq, cancellationToken)
+                                : await WithProtectedTransactionAsync(store => store.OpenForWrite().ApplyTransactionAsync(
+                                    applyReq, cancellationToken, baseline => baseline.Entries.All(entry => entry.State != BaselineValueState.Exists)));
+                        }
+                        catch (Exception ex) when (IsProtectedTransactionFailure(ex))
+                        {
+                            return ProtectedTransactionError(id);
+                        }
                         if (applyResult.Success)
                         {
                             var okResp = IpcResponse<ApplyTransactionResultDto>.Ok(id, applyResult);
@@ -478,7 +492,23 @@ namespace WinLab.Executor
                             return JsonSerializer.Serialize(errResp);
                         }
 
-                        var rollbackResult = await _engine.RollbackTransactionAsync(rollbackReq, cancellationToken);
+                        RollbackResultDto rollbackResult;
+                        try
+                        {
+                            rollbackResult = _protectedTransactions == null
+                                ? await _engine.RollbackTransactionAsync(rollbackReq, cancellationToken)
+                                : await WithProtectedTransactionAsync(async store =>
+                                {
+                                    var record = await store.FindAsync(rollbackReq.TransactionId, cancellationToken);
+                                    if (record == null) throw new InvalidOperationException();
+                                    return await record.Engine.RollbackTransactionAsync(rollbackReq, cancellationToken,
+                                        _administration.CanRestoreBatch);
+                                });
+                        }
+                        catch (Exception ex) when (IsProtectedTransactionFailure(ex))
+                        {
+                            return ProtectedTransactionError(id);
+                        }
                         if (rollbackResult.Success)
                         {
                             var okResp = IpcResponse<RollbackResultDto>.Ok(id, rollbackResult);
@@ -508,7 +538,17 @@ namespace WinLab.Executor
                             return JsonSerializer.Serialize(errResp);
                         }
 
-                        var txRecord = await _engine.GetTransactionAsync(txId, cancellationToken);
+                        TransactionDto? txRecord;
+                        try
+                        {
+                            txRecord = _protectedTransactions == null
+                                ? await _engine.GetTransactionAsync(txId, cancellationToken)
+                                : (await _protectedTransactions.FindAsync(txId, cancellationToken))?.Transaction;
+                        }
+                        catch (Exception ex) when (IsProtectedTransactionFailure(ex))
+                        {
+                            return ProtectedTransactionError(id);
+                        }
                         if (txRecord != null)
                         {
                             var okResp = IpcResponse<TransactionDto>.Ok(id, txRecord);
@@ -529,6 +569,25 @@ namespace WinLab.Executor
                 }
             }
         }
+
+        private async Task<T> WithProtectedTransactionAsync<T>(Func<AdminPolicyJournal, Task<T>> operation)
+        {
+            if (_protectedTransactions == null || !IsCurrentProcessElevated() ||
+                !ExecutorInstallTrust.IsAdministrationStoreProtected() || WindowsAdminDiagnostics.QueryManagement().Status != "NotDetected")
+                throw new InvalidOperationException();
+
+            using var gate = AdminIpc.OpenProtectedWriteLock(AdminIpc.AdministrativeWriteLock);
+            if (!gate.WaitOne(0)) throw new InvalidOperationException();
+            try { return await operation(_protectedTransactions); }
+            finally { gate.Release(); }
+        }
+
+        private static bool IsProtectedTransactionFailure(Exception ex) => ex is IOException or InvalidOperationException or
+            UnauthorizedAccessException or System.Security.SecurityException or JsonException or WaitHandleCannotBeOpenedException;
+
+        private static string ProtectedTransactionError(string id) => JsonSerializer.Serialize(IpcResponse<object>.Fail(id,
+            "O WinLab não confirmou autorização, histórico ou estado atual da transação. Consulte a Central Administrativa.",
+            "PROTECTED_TRANSACTION_PRECONDITION"));
 
         private void SetupParentWatchdog()
         {

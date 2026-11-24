@@ -32,6 +32,7 @@ namespace WinLab.Desktop.Services
         private readonly IRegistryService _registry;
         private readonly IUserHiveManager _hiveManager;
         private readonly TransactionEngine _localEngine;
+        private readonly AdminPolicyJournal? _protectedTransactions;
         private readonly ExpansionIpc _expansion;
         private readonly AdminIpc _administration;
         private readonly bool _isWindows;
@@ -56,7 +57,9 @@ namespace WinLab.Desktop.Services
             string txDir = transactionDirectory ?? (_isWindows
                 ? @"C:\ProgramData\WinLab\Transactions"
                 : Path.Combine(Path.GetTempPath(), "WinLab_Transactions_Dev"));
-            _localEngine = new TransactionEngine(_catalog, _registry, _hiveManager, txDir);
+            if (_isWindows && simulateWindows == null && transactionDirectory == null)
+                _protectedTransactions = new AdminPolicyJournal(_catalog, _registry, _hiveManager);
+            _localEngine = new TransactionEngine(_catalog, _registry, _hiveManager, txDir, createDirectory: _protectedTransactions == null);
             _expansion = new ExpansionIpc(_registry, _scanner, protectExternal: true);
             var accountStore = new WindowsAdminAccountStore(_registry, ExecutorInstallTrust.IsAdministrationStoreProtected);
             _administration = AdminIpc.ForWindows(accountStore, _registry, _hiveManager, _scanner);
@@ -304,7 +307,16 @@ namespace WinLab.Desktop.Services
                             return EnsureReplyToId(delegated, id);
                         }
 
-                        var tx = await _localEngine.GetTransactionAsync(txId);
+                        TransactionDto? tx;
+                        try
+                        {
+                            tx = _protectedTransactions == null ? await _localEngine.GetTransactionAsync(txId)
+                                : (await _protectedTransactions.FindAsync(txId))?.Transaction;
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            return IpcResponse<object>.Fail(id, "O histórico de baselines não pôde ser confirmado.", "TRANSACTION_HISTORY_UNAVAILABLE");
+                        }
                         return tx != null
                             ? IpcResponse<object>.Ok(id, tx)
                             : IpcResponse<object>.Fail(id, $"Transação '{txId}' não encontrada.", "TRANSACTION_NOT_FOUND");

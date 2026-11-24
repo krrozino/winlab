@@ -11,12 +11,17 @@ using System.Threading.Tasks;
 using WinLab.Contracts.Expansion;
 using WinLab.Contracts.Policies;
 using WinLab.Contracts.RegistryServices;
+using WinLab.Contracts.Transactions;
 
 namespace WinLab.Contracts.Administration;
 
 public sealed class AdminIpc(AdminAccountService accounts, WindowsAdminDiagnostics diagnostics,
     AdminPermissionService permissions)
 {
+    public const string AdministrativeWriteLock = @"Global\WinLab.Administration.Sprint03";
+
+    public bool CanRestoreBatch(TransactionDto transaction) => permissions.CanRestoreBatch(transaction);
+
     public static AdminIpc ForWindows(IAdminAccountStore accountStore, IRegistryService registry,
         IUserHiveManager hives, IWindowsScanner scanner)
     {
@@ -50,7 +55,8 @@ public sealed class AdminIpc(AdminAccountService accounts, WindowsAdminDiagnosti
                 if (callExecutor != null) return await callExecutor();
 
                 ct.ThrowIfCancellationRequested();
-                using var operation = OperatingSystem.IsWindows() ? OpenAdministrationLock() : new Semaphore(1, 1);
+                using var operation = OperatingSystem.IsWindows()
+                    ? OpenProtectedWriteLock(AdministrativeWriteLock) : new Semaphore(1, 1);
                 if (!operation.WaitOne(0))
                     return IpcResponse<object>.Fail(id, "Outra alteração administrativa está em andamento.", "ADMIN_BUSY");
                 try
@@ -108,7 +114,7 @@ public sealed class AdminIpc(AdminAccountService accounts, WindowsAdminDiagnosti
         IpcResponse<object>.Ok(id, JsonSerializer.SerializeToElement(data, AdminAccountService.Json));
 
     [SupportedOSPlatform("windows")]
-    private static Semaphore OpenAdministrationLock()
+    public static Semaphore OpenProtectedWriteLock(string name)
     {
         var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
@@ -117,7 +123,7 @@ public sealed class AdminIpc(AdminAccountService accounts, WindowsAdminDiagnosti
         security.SetOwner(administrators);
         security.AddAccessRule(new SemaphoreAccessRule(administrators, SemaphoreRights.FullControl, AccessControlType.Allow));
         security.AddAccessRule(new SemaphoreAccessRule(system, SemaphoreRights.FullControl, AccessControlType.Allow));
-        var handle = SemaphoreAcl.Create(1, 1, @"Global\WinLab.Administration.Sprint03", out bool created, security);
+        var handle = SemaphoreAcl.Create(1, 1, name, out bool created, security);
         if (created) return handle;
         try
         {

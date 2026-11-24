@@ -4,6 +4,7 @@ using System.Security;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using WinLab.Contracts.Administration;
 using WinLab.Contracts.RegistryServices;
 
 namespace WinLab.Contracts.Expansion;
@@ -32,7 +33,8 @@ public sealed class ExpansionIpc(
             {
                 if (!canWrite) return IpcResponse<object>.Fail(id, ExecutorInstallTrust.ReadOnlyMessage, "TRUSTED_EXECUTOR_REQUIRED");
                 using var operation = OperatingSystem.IsWindows()
-                    ? new Semaphore(1, 1, @"Global\WinLab.PolicyExpansion")
+                    ? protectExternal ? AdminIpc.OpenProtectedWriteLock(@"Global\WinLab.PolicyExpansion")
+                        : new Semaphore(1, 1, @"Global\WinLab.PolicyExpansion")
                     : new Semaphore(1, 1);
                 if (!operation.WaitOne(0))
                     return IpcResponse<object>.Fail(id, "Outra alteração está em andamento.", "POLICY_EXPANSION_BUSY");
@@ -71,7 +73,8 @@ public sealed class ExpansionIpc(
             return IpcResponse<object>.Fail(id, ex.Message, "POLICY_EXPANSION_PRECONDITION");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException
-            or JsonException or System.Xml.XmlException or OperationCanceledException or System.ComponentModel.Win32Exception)
+            or JsonException or System.Xml.XmlException or OperationCanceledException or System.ComponentModel.Win32Exception
+            or WaitHandleCannotBeOpenedException)
         {
             return IpcResponse<object>.Fail(id, "O Windows não confirmou a operação. Atualize a consulta e verifique se há restauração pendente.",
                 "POLICY_EXPANSION_UNKNOWN_RESULT");

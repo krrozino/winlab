@@ -168,6 +168,7 @@ internal sealed class LocalAccountProvisioner(IRegistryService registry, Windows
             throw new InvalidOperationException("Operação disponível somente no Windows.");
         using var identity = WindowsIdentity.GetCurrent();
         if (identity.User == null || !AdminRequest.IsLocalSid(identity.User.Value)
+            || WindowsAdminAccountStore.ResolveLocalSid(identity.Name[(identity.Name.LastIndexOf('\\') + 1)..]) != identity.User.Value
             || !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
             throw new InvalidOperationException("É necessária autorização administrativa local do Windows.");
     }
