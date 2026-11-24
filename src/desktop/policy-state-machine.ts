@@ -1,5 +1,7 @@
 import type {
   ApplyTransactionRequestDto,
+  ApplyTransactionResultDto,
+  IpcResponse,
   LocalUserDto,
   PolicyApplyItemDto,
   PolicyItemDto,
@@ -540,4 +542,153 @@ export function computeSavedProfileDiff(
 
   return { toEnable, toDisable, unchangedCount, pendingMap };
 }
+
+export type ItemExecutionPhase =
+  | "idle"
+  | "selected"
+  | "processing"
+  | "confirmed"
+  | "inconclusive"
+  | "failed";
+
+export interface PolicyExecutionOutcome {
+  policyId: string;
+  requestedState: "Blocked" | "NotConfigured" | string;
+  phase: "confirmed" | "inconclusive" | "failed";
+  detail: string;
+  updatedAt: string;
+}
+
+/**
+ * Deriva o resultado honesto de cada item apos a resposta real do executor e a releitura do Windows.
+ * Nunca marca um item como confirmado antes da resposta IPC e da confirmacao na releitura.
+ */
+export function derivePostApplyOutcomes(params: {
+  requestedItems: PolicyApplyItemDto[];
+  applyResponse: IpcResponse<ApplyTransactionResultDto>;
+  refreshedPolicies: PolicyItemDto[] | null;
+}): Record<string, PolicyExecutionOutcome> {
+  const { requestedItems, applyResponse, refreshedPolicies } = params;
+  const updatedAt = new Date().toISOString();
+  const outcomes: Record<string, PolicyExecutionOutcome> = {};
+
+  if (!applyResponse.success || !applyResponse.data?.success) {
+    const failedPolicyId = applyResponse.data?.failedPolicyId ?? null;
+    const baseFailure =
+      applyResponse.error ||
+      applyResponse.data?.failureReason ||
+      applyResponse.data?.message ||
+      "Não foi possível concluir a aplicação. As alterações foram revertidas.";
+
+    for (const item of requestedItems) {
+      outcomes[item.policyId] = {
+        policyId: item.policyId,
+        requestedState: item.desiredState,
+        phase: "failed",
+        detail:
+          failedPolicyId === item.policyId && applyResponse.data?.failureReason
+            ? applyResponse.data.failureReason
+            : baseFailure,
+        updatedAt
+      };
+    }
+    return outcomes;
+  }
+
+  const refreshedMap = new Map((refreshedPolicies ?? []).map((p) => [p.id, p]));
+
+  for (const item of requestedItems) {
+    const refreshed = refreshedMap.get(item.policyId);
+    if (!refreshed) {
+      outcomes[item.policyId] = {
+        policyId: item.policyId,
+        requestedState: item.desiredState,
+        phase: "inconclusive",
+        detail: "Gravação enviada, mas a releitura não retornou o estado atualizado desta política.",
+        updatedAt
+      };
+      continue;
+    }
+
+    const effective = refreshed.effectiveState ?? refreshed.currentState;
+    if (effective === "Inconclusive" || refreshed.currentState === "Inconclusive") {
+      outcomes[item.policyId] = {
+        policyId: item.policyId,
+        requestedState: item.desiredState,
+        phase: "inconclusive",
+        detail: "Gravação enviada, mas a releitura da conta retornou inconclusiva.",
+        updatedAt
+      };
+      continue;
+    }
+
+    if (effective === "Failed" || refreshed.currentState === "Failed") {
+      outcomes[item.policyId] = {
+        policyId: item.policyId,
+        requestedState: item.desiredState,
+        phase: "failed",
+        detail: refreshed.evidence || "A verificação pós-aplicação relatou falha na leitura do registro.",
+        updatedAt
+      };
+      continue;
+    }
+
+    const enabledAfter = isPolicyCurrentlyEnabled(refreshed);
+    if (item.desiredState === "Blocked") {
+      outcomes[item.policyId] = enabledAfter
+        ? {
+            policyId: item.policyId,
+            requestedState: item.desiredState,
+            phase: "confirmed",
+            detail:
+              effective === "PendingLogoff"
+                ? "Gravada e verificada no registro; requer novo login da conta comum."
+                : effective === "PendingAppRestart"
+                  ? "Gravada e verificada no registro; reinicie o navegador para concluir."
+                  : effective === "PendingReboot"
+                    ? "Gravada e verificada no registro; requer reinício do Windows."
+                    : "Aplicada e confirmada na releitura do sistema.",
+            updatedAt
+          }
+        : {
+            policyId: item.policyId,
+            requestedState: item.desiredState,
+            phase: "inconclusive",
+            detail: "Execução concluída, porém a releitura não confirmou o bloqueio ativo.",
+            updatedAt
+          };
+      continue;
+    }
+
+    if (item.desiredState === "NotConfigured") {
+      outcomes[item.policyId] = !enabledAfter
+        ? {
+            policyId: item.policyId,
+            requestedState: item.desiredState,
+            phase: "confirmed",
+            detail: "Restrição removida e herança padrão confirmada na releitura.",
+            updatedAt
+          }
+        : {
+            policyId: item.policyId,
+            requestedState: item.desiredState,
+            phase: "inconclusive",
+            detail: "Remoção enviada, porém a releitura ainda detectou restrição ativa.",
+            updatedAt
+          };
+      continue;
+    }
+
+    outcomes[item.policyId] = {
+      policyId: item.policyId,
+      requestedState: item.desiredState,
+      phase: "inconclusive",
+      detail: "Estado retornado requer verificação manual.",
+      updatedAt
+    };
+  }
+
+  return outcomes;
+}
+
 

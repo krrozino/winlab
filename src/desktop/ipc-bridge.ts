@@ -4,6 +4,7 @@ import {
   IpcEnvelope,
   IpcResponse
 } from "./contracts";
+import { isMutationIpcAction } from "./admin-contracts-compat";
 import { MockDesktopAgent } from "./mock-agent";
 
 /**
@@ -69,14 +70,21 @@ export class WebViewIpcBridge implements DesktopIpcTransport {
     }
 
     const messageId = envelope.id || crypto.randomUUID();
-    const expansionMutation = envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_APPLY ||
-      envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_ROLLBACK;
-    const expansionQuery = envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_QUERY ||
-      envelope.action === IPC_CONSTANTS.ACTION_EXPANSION_PREVIEW;
-    const timeoutMs = Math.max(this.timeoutMs, expansionMutation ? 150_000 : expansionQuery ? 30_000 : 0);
+    const extendedQueryActions: ReadonlySet<string> = new Set([
+      IPC_CONSTANTS.ACTION_EXPANSION_QUERY,
+      IPC_CONSTANTS.ACTION_EXPANSION_PREVIEW,
+      IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_QUERY,
+      IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_PREVIEW,
+      IPC_CONSTANTS.ACTION_ADMIN_DIAGNOSTICS_QUERY,
+      IPC_CONSTANTS.ACTION_ADMIN_PERMISSIONS_QUERY,
+      IPC_CONSTANTS.ACTION_ADMIN_PERMISSIONS_PREVIEW
+    ]);
+    const isLongMutation = isMutationIpcAction(envelope.action);
+    const isExtendedQuery = extendedQueryActions.has(envelope.action);
+    const timeoutMs = Math.max(this.timeoutMs, isLongMutation ? 150_000 : isExtendedQuery ? 30_000 : 0);
     const finalEnvelope: IpcEnvelope = {
       ...envelope,
-      type: expansionMutation ? "command" : envelope.type,
+      type: isLongMutation ? "command" : envelope.type,
       id: messageId
     };
 
