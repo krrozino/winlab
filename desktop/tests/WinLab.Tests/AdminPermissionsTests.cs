@@ -97,6 +97,62 @@ public sealed class AdminPermissionsTests : IDisposable
         Assert.Null(_registry.GetValue(RegistryHiveType.LocalMachine, Path, Value));
     }
 
+    [Theory]
+    [InlineData("personalization.lock_screen", false, @"SOFTWARE\Policies\Microsoft\Windows\Personalization", "NoChangingLockScreen", 1)]
+    [InlineData("system.task_manager", true, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", "DisableTaskMgr", 1)]
+    [InlineData("network.lan_properties", true, @"SOFTWARE\Policies\Microsoft\Windows\Network Connections", "NC_LanProperties", 0)]
+    [InlineData("settings.hide_network_pages", true, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer", "SettingsPageVisibility", "hide:network-status;network-ethernet;network-wifi;network-proxy")]
+    [InlineData("apps.block_unmanaged_msi", false, MsiPath, "DisableMSI", 1)]
+    public async Task HistoryRestoresAdministrativePolicyFromItsOwnTransaction(string id, bool perUser, string path, string valueName, object appliedValue)
+    {
+        string? sid = perUser ? StudentSid : null;
+        var hive = perUser ? RegistryHiveType.Users : RegistryHiveType.LocalMachine;
+        string key = perUser ? $@"{sid}\{path}" : path;
+        var block = new AdminPermissionPlan(id, "Block", sid);
+        var result = await _service.ApplyAsync(block, (await _service.PreviewAsync(block, true)).Revision);
+        string transactionId = Assert.IsType<string>(result.TransactionId);
+        Assert.Equal(appliedValue, _registry.GetValue(hive, key, valueName));
+
+        var payload = new Dictionary<string, string>
+        {
+            ["permissionId"] = id, ["intent"] = "Restore", ["transactionId"] = transactionId
+        };
+        if (sid != null) payload["targetUserSid"] = sid;
+        var envelope = JsonSerializer.SerializeToElement(new { type = "query", payload });
+        var restore = Assert.IsType<AdminPermissionPlan>(
+            AdminRequest.Parse(AdminActions.PermissionsPreview, envelope).PermissionPlan);
+        var preview = await _service.PreviewAsync(restore, true);
+        Assert.True(preview.CanApply);
+        Assert.Equal(transactionId, preview.TransactionId);
+        Assert.Equal(sid, preview.Target?.Sid);
+
+        await _service.ApplyAsync(restore, preview.Revision);
+
+        Assert.Null(_registry.GetValue(hive, key, valueName));
+        Assert.Equal(TransactionStatus.RolledBack, (await _engine.GetTransactionAsync(transactionId))?.Status);
+    }
+
+    [Fact]
+    public async Task HistoryCannotRestoreAnOlderAdministrativeTransactionOverTheCurrentOne()
+    {
+        var request = new ApplyTransactionRequestDto
+        {
+            Policies = [new PolicyApplyItemDto { PolicyId = MsiPolicy, DesiredState = "Blocked" }]
+        };
+        var older = await _engine.ApplyTransactionAsync(request);
+        var newer = await _engine.ApplyTransactionAsync(request);
+        Assert.True(older.Success && newer.Success);
+
+        var restoreOld = new AdminPermissionPlan(MsiPolicy, "Restore", TransactionId: older.TransactionId);
+        var oldPreview = await _service.PreviewAsync(restoreOld, true);
+        var currentPreview = await _service.PreviewAsync(restoreOld with { TransactionId = newer.TransactionId }, true);
+
+        Assert.False(oldPreview.CanApply);
+        Assert.True(currentPreview.CanApply);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _service.ApplyAsync(restoreOld, oldPreview.Revision));
+        Assert.Equal(1, _registry.GetValue(RegistryHiveType.LocalMachine, MsiPath, "DisableMSI"));
+    }
+
     [Fact]
     public async Task ExternalChangeAfterPreviewPreventsRollback()
     {

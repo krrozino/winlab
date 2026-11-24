@@ -49,10 +49,11 @@ public sealed record AdminPermissionDto(string Id, string Name, string Category,
 public sealed record AdminPermissionsDto(AdminAccountDto? Target, AdminManagementDto Management,
     IReadOnlyList<AdminPermissionDto> Permissions, bool CanWrite);
 
-public sealed record AdminPermissionPlan(string PermissionId, string Intent, string? TargetUserSid = null);
+public sealed record AdminPermissionPlan(string PermissionId, string Intent, string? TargetUserSid = null,
+    string? TransactionId = null);
 
 public sealed record AdminPermissionPreviewDto(string Revision, string PermissionId, string Intent, string Scope,
     AdminAccountDto? Target, AdminPermissionStateDto Before, AdminPermissionStateDto After, bool CanApply,
-    IReadOnlyList<string> Limitations);
+    IReadOnlyList<string> Limitations, string? TransactionId = null);
 
 public sealed record AdminPermissionResultDto(AdminPermissionDto Permission, string? TransactionId, string Message);

@@ -10,7 +10,7 @@ namespace WinLab.Contracts.Scanning
     public static class UpdateChannelInspector
     {
         public const string DefaultReleaseRepositoryUrl = "https://github.com/krrozino/winlab";
-        public const string FallbackVersion = "0.9.1";
+        public const string FallbackVersion = "0.9.2";
 
         private static string? _lastCheckedAt;
         private static string _lastCheckState = "Idle";

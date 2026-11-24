@@ -122,14 +122,23 @@ public sealed class AdminRequest
 
     private static AdminPermissionPlan ParsePermissionPlan(JsonElement plan, bool preview = false)
     {
-        Fields(plan, ["permissionId", "intent"], preview ? ["targetUserSid", "elevatedRead"] : ["targetUserSid"]);
+        Fields(plan, ["permissionId", "intent"], preview
+            ? ["targetUserSid", "elevatedRead", "transactionId"] : ["targetUserSid", "transactionId"]);
         string id = Text(plan, "permissionId");
         string intent = Text(plan, "intent");
         if (id.Length is < 1 or > 80 || id.Any(character => !(char.IsAsciiLetterLower(character) ||
                 char.IsAsciiDigit(character) || character is '.' or '_')) ||
             intent is not ("Allow" or "Block" or "Preserve" or "Restore"))
             throw Invalid();
-        return new(id, intent, OptionalSid(plan));
+        string? transactionId = null;
+        if (plan.TryGetProperty("transactionId", out _))
+        {
+            if (intent != "Restore" || !Guid.TryParseExact(Text(plan, "transactionId"), "D", out var parsed) ||
+                parsed == Guid.Empty)
+                throw Invalid();
+            transactionId = parsed.ToString("D");
+        }
+        return new(id, intent, OptionalSid(plan), transactionId);
     }
 
     private static JsonElement Payload(JsonElement root, string type)

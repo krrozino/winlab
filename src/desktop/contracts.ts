@@ -504,6 +504,7 @@ export interface AdminPermissionPlan {
   permissionId: string;
   intent: AdminPermissionIntent;
   targetUserSid?: string;
+  transactionId?: string;
 }
 
 export interface AdminPermissionPreviewPayload extends AdminPermissionPlan {
@@ -520,6 +521,7 @@ export interface AdminPermissionPreviewDto {
   after: AdminPermissionStateDto;
   canApply: boolean;
   limitations: string[];
+  transactionId?: string | null;
 }
 
 export interface AdminPermissionApplyPayload {

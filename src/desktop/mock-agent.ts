@@ -299,7 +299,7 @@ export class MockDesktopAgent implements DesktopIpcTransport {
           replyToId: envelope.id,
           success: true,
           data: {
-            currentVersion: "0.9.1",
+            currentVersion: "0.9.2",
             installChannel: "Velopack",
             autoUpdateSupported: true,
             feedUrl: "https://github.com/krrozino/winlab",

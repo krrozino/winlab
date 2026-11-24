@@ -634,6 +634,43 @@ test("Strict admin.* payload builders follow AdminRequest.cs validation rules an
   assert.equal("targetUserSid" in machineApplyPayload.plan, false);
   assert.equal("elevatedRead" in (machineApplyPayload.plan as unknown as Record<string, unknown>), false);
 
+  const transactionId = "fc619446-4f16-4be8-b2fc-26d5617c5fd3";
+  assert.deepEqual(buildAdminPermissionPreviewPayload({
+    permissionId: "system.task_manager",
+    intent: "Restore",
+    scope: "User",
+    targetUserSid: CANONICAL_STUDENT_SID,
+    transactionId,
+    elevatedRead: true
+  }), {
+    permissionId: "system.task_manager",
+    intent: "Restore",
+    targetUserSid: CANONICAL_STUDENT_SID,
+    transactionId,
+    elevatedRead: true
+  });
+  const { plan } = buildAdminPermissionApplyPayload({
+    revision: "restore-revision",
+    permissionId: "system.task_manager",
+    intent: "Restore",
+    scope: "User",
+    target: {
+      name: "Aluno01",
+      sid: CANONICAL_STUDENT_SID,
+      enabled: true,
+      role: "Student",
+      privilegeClassification: "StandardUser",
+      protected: false,
+      groupSids: []
+    },
+    before: { origin: "WinLab", configuredState: "Blocked", effectiveState: "NotVerified", observedValue: [], evidence: null },
+    after: { origin: "None", configuredState: "NotConfigured", effectiveState: "NotVerified", observedValue: [], evidence: null },
+    canApply: true,
+    limitations: [],
+    transactionId
+  });
+  assert.deepEqual(plan, { permissionId: "system.task_manager", intent: "Restore", targetUserSid: CANONICAL_STUDENT_SID, transactionId });
+
   assert.equal(isMutationIpcAction(IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_APPLY), true);
   assert.equal(isMutationIpcAction(IPC_CONSTANTS.ACTION_ADMIN_PERMISSIONS_APPLY), true);
   assert.equal(isMutationIpcAction(IPC_CONSTANTS.ACTION_ADMIN_ACCOUNTS_QUERY), false);

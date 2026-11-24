@@ -144,6 +144,7 @@ export function buildAdminPermissionPreviewPayload(params: {
   scope: PolicyScope;
   targetUserSid?: string | null;
   elevatedRead?: boolean;
+  transactionId?: string;
 }): AdminPermissionPreviewPayload {
   const payload: AdminPermissionPreviewPayload = {
     permissionId: params.permissionId,
@@ -155,6 +156,9 @@ export function buildAdminPermissionPreviewPayload(params: {
   }
   if (params.elevatedRead === true) {
     payload.elevatedRead = true;
+  }
+  if (params.intent === "Restore" && params.transactionId) {
+    payload.transactionId = params.transactionId;
   }
   return payload;
 }
@@ -170,6 +174,7 @@ export function buildAdminPermissionApplyPayload(
   const plan: AdminPermissionPlan = {
     permissionId: preview.permissionId,
     intent: preview.intent,
+    ...(preview.intent === "Restore" && preview.transactionId ? { transactionId: preview.transactionId } : {}),
     ...(preview.scope === "User" && isCanonicalLocalWindowsSid(targetSid)
       ? { targetUserSid: targetSid }
       : {})
@@ -402,6 +407,7 @@ export class AdminCenterSession {
       scope: PolicyScope;
       targetUserSid?: string | null;
       elevatedRead?: boolean;
+      transactionId?: string;
     }
   ): Promise<AdminPermissionPreviewResult> {
     const targetGen = this.generation;

@@ -502,6 +502,15 @@ namespace WinLab.Executor
                                     var history = await store.ReadAsync(cancellationToken);
                                     var record = AdminPolicyJournal.Find(history, rollbackReq.TransactionId);
                                     if (record == null) throw new InvalidOperationException();
+                                    if (record.Transaction.Status != TransactionStatus.RolledBack &&
+                                        record.Transaction.Actions.Any(action => action.Status != "RolledBackAndVerified" &&
+                                            _catalog.GetPolicy(action.PolicyId) == null))
+                                        return new RollbackResultDto
+                                        {
+                                            TransactionId = record.Transaction.TransactionId,
+                                            Status = record.Transaction.Status,
+                                            Error = "Esta transação exige restauração individual. Use Revisar restauração no Histórico ou abra a política na Central de Permissões."
+                                        };
                                     return await record.Engine.RollbackTransactionAsync(rollbackReq, cancellationToken,
                                         transaction => _administration.CanRestoreBatch(transaction, history));
                                 });

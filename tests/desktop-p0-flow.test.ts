@@ -525,7 +525,7 @@ test("MockDesktopAgent responds to system.update_status and network.query_shares
     makeEnvelope(IPC_CONSTANTS.ACTION_QUERY_UPDATE_STATUS)
   );
   assert.equal(updateRes.success, true);
-  assert.equal(updateRes.data?.currentVersion, "0.9.1");
+  assert.equal(updateRes.data?.currentVersion, "0.9.2");
   assert.equal(updateRes.data?.installChannel, "Velopack");
   assert.equal(updateRes.data?.autoUpdateSupported, true);
 

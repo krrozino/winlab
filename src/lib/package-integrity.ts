@@ -14,7 +14,7 @@ import { cmdSafeLabel, withPsUtf8Bom } from "./powershell";
 import type { Config } from "./types";
 
 export const PACKAGE_MANIFEST_SCHEMA_VERSION = 1;
-export const WINLAB_PACKAGE_VERSION = "0.9.0";
+export const WINLAB_PACKAGE_VERSION = "0.9.2";
 
 export type PackageFile = {
   name: string;

@@ -109,6 +109,7 @@ interface SessionTransactionEntry {
   targetUserSid?: string;
   appliedCount: number;
   status: "Committed" | "RolledBack";
+  adminPermission?: AdminPermissionDto;
 }
 
 function SectionIcon({ id }: { id: DesktopSection }) {
@@ -932,9 +933,15 @@ export function DesktopControlCenter({
   ]);
 
   const handleSelectAdminIntent = useCallback(
-    async (permission: AdminPermissionDto, intent: AdminPermissionIntent, elevatedRead = false) => {
+    async (
+      permission: AdminPermissionDto,
+      intent: AdminPermissionIntent,
+      elevatedRead = false,
+      recovery?: Pick<SessionTransactionEntry, "transactionId" | "targetUserSid">
+    ) => {
       if (!adminCapabilities.permissions || !adminSessionRef.current) return;
-      if (permission.scope === "User" && !isCanonicalLocalWindowsSid(selectedUserSid)) {
+      const targetSid = recovery ? recovery.targetUserSid : selectedUserSid;
+      if (permission.scope === "User" && !isCanonicalLocalWindowsSid(targetSid)) {
         setFeedback({
           tone: "error",
           message:
@@ -950,8 +957,9 @@ export function DesktopControlCenter({
           permissionId: permission.id,
           intent,
           scope: permission.scope,
-          targetUserSid: selectedUserSid,
-          elevatedRead
+          targetUserSid: targetSid,
+          elevatedRead,
+          transactionId: recovery?.transactionId
         });
         if (previewResult.stale) return;
         const res = previewResult.response;
@@ -968,6 +976,11 @@ export function DesktopControlCenter({
             message: res.error || "Não foi possível gerar a prévia da permissão administrativa."
           });
         }
+      } catch (error) {
+        setFeedback({
+          tone: "error",
+          message: error instanceof Error ? error.message : "Não foi possível gerar a prévia da permissão administrativa."
+        });
       } finally {
         setBusy(false);
       }
@@ -983,7 +996,9 @@ export function DesktopControlCenter({
       adminPermissionsData?.permissions.find((item) => item.id === preview.permissionId) ??
       null;
     if (!perm) return;
-    await handleSelectAdminIntent(perm, preview.intent, true);
+    await handleSelectAdminIntent(perm, preview.intent, true, preview.transactionId
+      ? { transactionId: preview.transactionId, targetUserSid: preview.target?.sid ?? undefined }
+      : undefined);
   }, [adminPermPreview, adminPermissionsData, handleSelectAdminIntent]);
 
   const handleConfirmAdminPermPreview = useCallback(async () => {
@@ -1017,18 +1032,24 @@ export function DesktopControlCenter({
             updatedAt: new Date().toISOString()
           }
         }));
-        if (res.data.transactionId) {
-          setTransactionHistory((prev) => [
-            {
-              transactionId: res.data!.transactionId!,
-              appliedAt: new Date().toISOString(),
-              targetUserName: preview.target?.name,
-              targetUserSid: preview.target?.sid ?? undefined,
-              appliedCount: 1,
-              status: "Committed"
-            },
-            ...prev.slice(0, 14)
-          ]);
+        const { transactionId, permission: appliedPermission } = res.data;
+        if (transactionId && preview.intent === "Block") {
+          const entry: SessionTransactionEntry = {
+            transactionId,
+            appliedAt: new Date().toISOString(),
+            targetUserName: preview.target?.name,
+            targetUserSid: preview.target?.sid ?? undefined,
+            appliedCount: 1,
+            status: "Committed",
+            adminPermission: appliedPermission
+          };
+          setTransactionHistory((prev) => [entry, ...prev.filter((item) => item.transactionId !== transactionId)].slice(0, 15));
+        } else if (transactionId && (preview.intent === "Allow" || preview.intent === "Restore")) {
+          setTransactionHistory((prev) => prev.map((entry) =>
+            entry.transactionId === transactionId && entry.adminPermission?.id === preview.permissionId
+              ? { ...entry, status: "RolledBack" }
+              : entry
+          ));
         }
         setAdminPermPreview(null);
         await refreshAdminTarget(selectedUserSid ?? null, false);
@@ -1061,6 +1082,10 @@ export function DesktopControlCenter({
   const handleRollbackTransaction = useCallback(
     async (tx: SessionTransactionEntry) => {
       if (tx.status === "RolledBack") return;
+      if (tx.adminPermission) {
+        await handleSelectAdminIntent(tx.adminPermission, "Restore", false, tx);
+        return;
+      }
       setBusy(true);
       setFeedback(null);
       try {
@@ -1098,7 +1123,7 @@ export function DesktopControlCenter({
         setBusy(false);
       }
     },
-    [sendIpc, onSelectUser, selectedUserSid, onRefresh]
+    [handleSelectAdminIntent, sendIpc, onSelectUser, selectedUserSid, onRefresh]
   );
 
   const handleCreateBaseline = useCallback(async () => {
@@ -2631,7 +2656,7 @@ export function DesktopControlCenter({
                     <div key={tx.transactionId} className="wl-tx-item">
                       <div>
                         <strong>
-                          {tx.appliedCount} política(s) ·{" "}
+                          {tx.adminPermission?.name ?? (tx.appliedCount + " política(s)")} ·{" "}
                           {tx.targetUserName ? `Conta ${tx.targetUserName}` : "Escopo do computador"}
                         </strong>
                         <small>
@@ -2653,7 +2678,7 @@ export function DesktopControlCenter({
                             onClick={() => void handleRollbackTransaction(tx)}
                             disabled={busy}
                           >
-                            Desfazer
+                            {tx.adminPermission ? "Revisar restauração" : "Desfazer"}
                           </button>
                         )}
                       </div>
@@ -2720,7 +2745,7 @@ export function DesktopControlCenter({
                 </div>
               ) : (
                 <p className="wl-muted">
-                  WinLab Desktop v0.9.1 (Pré-lançamento de piloto · sem publicação estável 1.0).
+                  WinLab Desktop v0.9.2 (Candidato de homologação).
                 </p>
               )}
             </div>

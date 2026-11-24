@@ -275,7 +275,7 @@ namespace WinLab.Agent.Mock
                     case IpcConstants.ActionQueryUpdateStatus:
                         return IpcResponse<object>.Ok(id, new UpdateStatusDto
                         {
-                            CurrentVersion = "0.9.1",
+                            CurrentVersion = WinLab.Contracts.Scanning.UpdateChannelInspector.FallbackVersion,
                             InstallChannel = "Velopack",
                             AutoUpdateSupported = true,
                             FeedUrl = "https://github.com/krrozino/winlab",

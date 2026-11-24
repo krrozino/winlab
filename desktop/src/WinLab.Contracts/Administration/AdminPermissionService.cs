@@ -135,11 +135,13 @@ public sealed class AdminPermissionService(
         var history = await journal.ReadAsync(ct);
         bool canWrite = authorized && journal.CanWrite && history.Complete && environment.Status == "NotDetected";
         var observation = Inspect(policy, target, environment, history, canWrite);
+        bool matchesTransaction = plan.TransactionId == null || plan.Intent == "Restore" &&
+            string.Equals(plan.TransactionId, observation.Record?.Transaction.TransactionId, StringComparison.OrdinalIgnoreCase);
         var before = observation.Permission.State;
         var after = plan.Intent switch
         {
             "Block" => DescribeState(observation.Blocked, observation.Blocked, "WinLab"),
-            "Allow" or "Restore" when observation.Baseline != null =>
+            "Allow" or "Restore" when matchesTransaction && observation.Baseline != null =>
                 DescribeState(observation.Baseline, observation.Blocked, observation.Baseline.Any(value => value.Exists)
                     ? WindowsAdminDiagnostics.ExternalOrigin(environment) : "None"),
             "Allow" or "Restore" or "Preserve" => before,
@@ -152,10 +154,13 @@ public sealed class AdminPermissionService(
             transactionStatus = observation.Record?.Transaction.Status,
             observation.Permission.Supported
         });
-        bool allowed = authorized && observation.Permission.Intents.Contains(plan.Intent) &&
+        bool allowed = matchesTransaction && authorized && observation.Permission.Intents.Contains(plan.Intent) &&
             (plan.Intent == "Preserve" || canWrite);
+        var limitations = matchesTransaction ? observation.Permission.Limitations
+            : [..observation.Permission.Limitations,
+                "Esta transação não foi confirmada como a configuração mais recente para esta política e conta."];
         var preview = new AdminPermissionPreviewDto(revision, policy.PolicyId, plan.Intent, policy.Scope.ToString(),
-            target, before, after, allowed, observation.Permission.Limitations);
+            target, before, after, allowed, limitations, plan.TransactionId);
         return new(policy, observation, preview);
     }
 

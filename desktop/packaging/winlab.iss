@@ -1,8 +1,8 @@
 ; Script do Inno Setup para o WinLab Desktop
-; Gera o instalador autocontido WinLabSetup-0.9.1-x64.exe para Windows x64
+; Gera o instalador autocontido WinLabSetup-{versão}-x64.exe para Windows x64
 
 #define MyAppName "WinLab Desktop"
-#define MyAppVersion "0.9.1"
+#define MyAppVersion "0.9.2"
 #define MyAppPublisher "WinLab Project"
 #define MyAppURL "https://github.com/krrozino/winlab"
 #define MyAppExeName "WinLab.Desktop.exe"
@@ -24,7 +24,8 @@ PrivilegesRequired=admin
 DisableDirPage=yes
 UsePreviousAppDir=no
 OutputDir=..\..\artifacts\installers
-OutputBaseFilename=WinLabSetup-0.9.1-x64
+OutputBaseFilename=WinLabSetup-{#MyAppVersion}-x64
+VersionInfoVersion={#MyAppVersion}.0
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -61,8 +62,8 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 Type: files; Name: "{app}\*.log"
 
 [Messages]
-brazilianportuguese.BeveledLabel=WinLab Desktop 0.9.1 (Build de Piloto / Não Assinada)
-english.BeveledLabel=WinLab Desktop 0.9.1 (Pilot Build / Unsigned)
+brazilianportuguese.BeveledLabel=WinLab Desktop {#MyAppVersion} (Build de Piloto / Não Assinada)
+english.BeveledLabel=WinLab Desktop {#MyAppVersion} (Pilot Build / Unsigned)
 
 [Code]
 function PrepareToInstall(var NeedsRestart: Boolean): String;
