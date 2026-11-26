@@ -28,6 +28,10 @@ function numberValue(value: unknown, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function normalizeSearchValue(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
 function parseUser(value: unknown): InventoryUser | null {
   if (!record(value)) return null;
   const name = stringValue(value.name).trim();
@@ -162,15 +166,17 @@ export function findPotentiallyRelevantInstalledApps(
   inventory: PcInventory,
   query: string
 ): InventoryInstalledApp[] {
-  const needle = query.trim().toLowerCase();
+  const trimmedQuery = query.trim();
+  const needle = normalizeSearchValue(trimmedQuery);
 
-  if (!needle) return inventory.installedApps.slice(0, 40);
+  if (!trimmedQuery) return inventory.installedApps.slice(0, 40);
+  if (!needle) return [];
 
   return inventory.installedApps
     .filter((app) =>
       [app.name, app.publisher, app.installLocation]
         .filter(Boolean)
-        .some((value) => value!.toLowerCase().includes(needle))
+        .some((value) => normalizeSearchValue(value!).includes(needle))
     )
     .slice(0, 40);
 }

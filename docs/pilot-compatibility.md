@@ -36,9 +36,9 @@ Em 2026, máquinas Windows 10 devem ser tratadas como:
 O WinLab não deve considerar um Windows 10 "saudável" apenas porque as políticas funcionam.
 
 Referências:
-https://support.microsoft.com/windows/deployment/updates-lifecycle/windows-10-support-has-ended-on-october-14-2025
-https://learn.microsoft.com/windows/whats-new/extended-security-updates
-https://learn.microsoft.com/windows/release-health/release-information
+- [Fim do suporte ao Windows 10](https://support.microsoft.com/windows/deployment/updates-lifecycle/windows-10-support-has-ended-on-october-14-2025)
+- [Atualizações de Segurança Estendidas (ESU)](https://learn.microsoft.com/windows/whats-new/extended-security-updates)
+- [Informações de versão do Windows](https://learn.microsoft.com/windows/release-health/release-information)
 
 ## Capability detection
 
