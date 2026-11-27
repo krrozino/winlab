@@ -241,6 +241,8 @@ export default function DesktopPage() {
     );
   }
 
+  const readinessScore = preflightData?.readinessScore;
+
   return (
     <main style={{ maxWidth: 1240, margin: "0 auto", padding: "24px 20px 80px" }}>
       <button type="button" className="secondary" onClick={() => setShowAdvanced(false)} style={{ marginBottom: 16 }}>← Voltar ao painel simples</button>
@@ -433,14 +435,11 @@ export default function DesktopPage() {
           }}
         >
           <div style={{ color: "var(--muted)", fontSize: 11, textTransform: "uppercase" }}>
-            Alvo do Piloto Físico
+            Prontidão da sessão
           </div>
-          <strong style={{ display: "block", color: "var(--accent-2)", marginTop: 4, fontSize: 14 }}>
-            LAB-MICROLINS (Windows 11 Pro)
+          <strong style={{ display: "block", color: "var(--muted)", marginTop: 4, fontSize: 14 }}>
+            Readiness Score: {Number.isFinite(readinessScore) ? `${readinessScore}/100` : "Indisponível"}
           </strong>
-          <small style={{ color: "var(--muted)", fontSize: 11 }}>
-            Readiness Score: {preflightData?.readinessScore ?? 100}/100
-          </small>
         </div>
       </div>
 
