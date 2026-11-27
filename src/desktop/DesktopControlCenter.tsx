@@ -1854,7 +1854,7 @@ export function DesktopControlCenter({
                   <small>
                     {driftSummary.hasDrift
                       ? `${driftSummary.driftedPolicies.length} divergência(s) detectada(s)`
-                      : preflightData?.readinessMessage || "Estados verificados diretamente no sistema"}
+                      : preflightData?.readinessMessage || "Diagnóstico pré-voo indisponível"}
                   </small>
                 </div>
                 <div>
